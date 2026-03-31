@@ -1,0 +1,16 @@
+# aish 設定ファイル
+# このファイルを ~/.aish/config.toml にコピーして使用してください。
+# 環境変数が設定されている場合は、環境変数の値が優先されます。
+
+# AI API キー
+anthropic_api_key = ""
+openai_api_key = ""
+google_api_key = ""
+
+# デフォルト AI (claude, chatgpt, gemini)
+default_ai = "claude"
+
+# SSH 設定
+[ssh]
+# identity_file = "~/.ssh/id_ed25519"
+# extra_args = ["-p", "2222"]

@@ -1,0 +1,20 @@
+# Rust build artifacts
+/target/
+
+# Environment / secrets
+.env
+.env.*
+
+# aish config (contains API keys)
+.aish/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

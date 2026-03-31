@@ -1,0 +1,14 @@
+{
+  "enabledPlugins": {
+    "rust-analyzer-lsp@claude-plugins-official": true
+  },
+  "model": "opus",
+  "effort": "high",
+  "allowedTools": [
+    "Bash(npm run build)",
+    "Bash(npm test)",
+    "Bash(git log)",
+    "Bash(ls *)",
+    "Bash(cat *)"
+  ]
+}
