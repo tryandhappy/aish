@@ -1,21 +1,13 @@
 [package]
 name = "aish"
 version = "0.1.0"
-edition = "2024"
-description = "CLI SSH + AI (Claude, ChatGPT, Gemini)"
+edition = "2021"
+description = "CLI SSH + AI (Claude Code)"
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+portable-pty = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
-clap = { version = "4", features = ["derive"] }
-rustyline = "15"
-portable-pty = "0.8"
-crossterm = "0.28"
-anyhow = "1"
-thiserror = "2"
-dirs = "6"
-regex = "1"
-async-trait = "0.1"
+strip-ansi-escapes = "0.2"
+dirs = "5"

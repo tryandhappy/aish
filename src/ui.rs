@@ -1,101 +1,93 @@
-use crossterm::style::{Color, Stylize};
+use std::io::{self, Read, Write};
 
-use crate::ai::ProviderKind;
+const AI_COLOR_START: &str = "\x1b[46m";
+const AI_COLOR_END: &str = "\x1b[0m";
 
-pub fn print_welcome(target: &str, ai: ProviderKind) {
-    println!(
-        "{}",
-        "╔══════════════════════════════════════════╗"
-            .with(Color::Cyan)
-    );
-    println!(
-        "{}",
-        "║            aish - SSH + AI               ║"
-            .with(Color::Cyan)
-    );
-    println!(
-        "{}",
-        "╚══════════════════════════════════════════╝"
-            .with(Color::Cyan)
-    );
-    println!(
-        "  接続先: {}  |  AI: {}",
-        target.with(Color::Green),
-        ai.to_string().with(Color::Yellow)
-    );
-    println!(
-        "  {} でヘルプ表示",
-        "/help".with(Color::DarkGrey)
-    );
-    println!();
+pub fn print_ai_message(message: &str) {
+    print!("{}{}{}\n", AI_COLOR_START, message, AI_COLOR_END);
+    io::stdout().flush().ok();
 }
 
-pub fn print_help() {
-    println!("{}", "=== aish コマンド一覧 ===".with(Color::Cyan));
-    println!(
-        "  {}        SSH上でコマンドを直接実行",
-        "!<command>".with(Color::Green)
+pub fn print_ai_commands(commands: &[String]) {
+    if commands.is_empty() {
+        return;
+    }
+    print!(
+        "{}Proposed commands:{}\n",
+        AI_COLOR_START, AI_COLOR_END
     );
-    println!(
-        "  {}          テキストをAIに送信",
-        "<prompt>".with(Color::Green)
-    );
-    println!(
-        "  {}          メインAIをClaudeに切替",
-        "/claude".with(Color::Green)
-    );
-    println!(
-        "  {}         メインAIをChatGPTに切替",
-        "/chatgpt".with(Color::Green)
-    );
-    println!(
-        "  {}          メインAIをGeminiに切替",
-        "/gemini".with(Color::Green)
-    );
-    println!(
-        "  {}               現在のAIに解説を依頼",
-        "/?".with(Color::Green)
-    );
-    println!(
-        "  {}         指定AIに解説を依頼",
-        "/? <ai>".with(Color::Green)
-    );
-    println!(
-        "  {}          全AIに解説を依頼",
-        "/? all".with(Color::Green)
-    );
-    println!(
-        "  {}            終了",
-        "/quit".with(Color::Green)
-    );
-    println!(
-        "  {}            ヘルプ表示",
-        "/help".with(Color::Green)
-    );
-    println!();
+    for (i, cmd) in commands.iter().enumerate() {
+        print!(
+        "{}  {}: {}{}\n",
+            AI_COLOR_START,
+            i + 1,
+            cmd,
+            AI_COLOR_END
+        );
+    }
+    io::stdout().flush().ok();
 }
 
-pub fn print_ai_message(provider_name: &str, message: &str) {
-    let header = format!("[{}]", provider_name);
-    println!("{} {}", header.with(Color::Yellow), message);
+pub fn confirm_execution(commands: &[String]) -> bool {
+    if commands.is_empty() {
+        return false;
+    }
+    print_ai_commands(commands);
+    print!("Execute? (Y/n) ");
+    io::stdout().flush().ok();
+
+    let mut buf = [0u8; 1];
+    match io::stdin().read(&mut buf) {
+        Ok(1) => {
+            match buf[0] {
+                b'\n' | b'Y' | b'y' => true,
+                0x1b => {  // ESC
+                    false
+                }
+                b'N' | b'n' => {
+                    // consume trailing newline
+                    let _ = io::stdin().read(&mut buf);
+                    false
+                }
+                _ => {
+                    let _ = io::stdin().read(&mut buf);
+                    false
+                }
+            }
+        }
+        _ => false,
+    }
 }
 
-pub fn print_suggested_command(command: &str, index: usize) {
-    println!(
-        "  {} {}",
-        format!("提案コマンド {}:", index + 1).with(Color::Magenta),
-        command.with(Color::White)
-    );
+pub enum UserInput {
+    AiPrompt(String),
+    ShellCommand(String),
+    Exit,
 }
 
-pub fn print_status(msg: &str) {
-    println!("{}", msg.with(Color::DarkGrey));
+pub fn parse_input(input: &str) -> UserInput {
+    let trimmed = input.trim();
+
+    if trimmed.eq_ignore_ascii_case("exit") {
+        return UserInput::Exit;
+    }
+
+    if let Some(prompt) = trimmed.strip_prefix("@ai") {
+        return UserInput::AiPrompt(prompt.trim().to_string());
+    }
+
+    if let Some(prompt) = trimmed.strip_prefix('?') {
+        return UserInput::AiPrompt(prompt.trim().to_string());
+    }
+
+    UserInput::ShellCommand(input.to_string())
 }
 
-pub fn print_error(msg: &str) {
-    println!("{} {}", "[エラー]".with(Color::Red), msg);
-}
-
-pub fn prompt_string(ai_name: &str) -> String {
-    format!("aish({})> ", ai_name)
+pub fn read_line() -> Option<String> {
+    let mut line = String::new();
+    match io::stdin().read_line(&mut line) {
+        Ok(0) => None, // EOF
+        Ok(_) => Some(line.trim_end_matches('\n').trim_end_matches('\r').to_string()),
+        Err(_) => None,
+    }
 }
