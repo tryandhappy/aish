@@ -153,36 +153,75 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         let context = ring_buffer.get_unsent();
                         ui::print_ai_message("Thinking...");
 
-                        match ai_session.send(&context, &prompt) {
-                            Ok(response) => {
-                                ring_buffer.mark_sent();
-                                ui::print_ai_message(&response.message);
+                        let mut ai_result = ai_session.send(&context, &prompt);
 
-                                if !response.commands.is_empty()
-                                    && mode.accepts_shell_command()
-                                    && ui::confirm_execution(&response.commands)
-                                {
+                        // AIとの対話ループ: コマンド実行→結果をAIに送信→分析→繰り返し
+                        loop {
+                            match ai_result {
+                                Ok(response) => {
+                                    ring_buffer.mark_sent();
+                                    ui::print_ai_message(&response.message);
+
+                                    // コマンド提案がない場合は対話終了
+                                    if response.commands.is_empty() {
+                                        break;
+                                    }
+
+                                    if !mode.accepts_shell_command() {
+                                        ui::print_ai_message(
+                                            "(Commands cannot be executed in current mode)",
+                                        );
+                                        break;
+                                    }
+
+                                    ui::print_confirm_prompt(&response.commands);
+                                    let confirmed = match input_rx.recv() {
+                                        Ok(line) => ui::parse_confirm(&line),
+                                        Err(_) => false,
+                                    };
+
+                                    if !confirmed {
+                                        break;
+                                    }
+
+                                    // コマンド実行
                                     for cmd in &response.commands {
                                         pty.write(format!("{}\n", cmd).as_bytes())?;
-                                        // コマンド間に少し待機
                                         thread::sleep(Duration::from_millis(500));
-                                        // 出力を読み取る
                                         while let Ok(data) = pty_rx.try_recv() {
                                             io::stdout().write_all(&data)?;
                                             io::stdout().flush()?;
                                             ring_buffer.append(&data);
                                         }
                                     }
-                                } else if !response.commands.is_empty()
-                                    && !mode.accepts_shell_command()
-                                {
-                                    ui::print_ai_message(
-                                        "(Commands cannot be executed in current mode)",
+
+                                    // 出力が落ち着くまで待機
+                                    loop {
+                                        thread::sleep(Duration::from_millis(500));
+                                        let mut got_data = false;
+                                        while let Ok(data) = pty_rx.try_recv() {
+                                            io::stdout().write_all(&data)?;
+                                            io::stdout().flush()?;
+                                            ring_buffer.append(&data);
+                                            got_data = true;
+                                        }
+                                        if !got_data {
+                                            break;
+                                        }
+                                    }
+
+                                    // 実行結果をAIに送信して分析を継続
+                                    let follow_up_context = ring_buffer.get_unsent();
+                                    ui::print_ai_message("Thinking...");
+                                    ai_result = ai_session.send(
+                                        &follow_up_context,
+                                        "コマンドの実行結果です。分析してください。追加の操作が必要であれば提案してください。",
                                     );
                                 }
-                            }
-                            Err(e) => {
-                                eprintln!("AI error: {}", e);
+                                Err(e) => {
+                                    eprintln!("AI error: {}", e);
+                                    break;
+                                }
                             }
                         }
                     }

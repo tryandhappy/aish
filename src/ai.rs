@@ -20,12 +20,6 @@ pub struct AiResponse {
     pub commands: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ClaudeJsonOutput {
-    pub result: String,
-    pub session_id: String,
-}
-
 pub struct AiSession {
     session_id: Option<String>,
     system_prompt: String,
@@ -86,21 +80,98 @@ impl AiSession {
                 .output()?
         };
 
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(format!("claude command failed: {}", stderr).into());
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let claude_output: ClaudeJsonOutput = serde_json::from_str(&stdout)?;
-
-        if self.session_id.is_none() {
-            self.session_id = Some(claude_output.session_id.clone());
+        let stdout_trimmed = stdout.trim();
+        if stdout_trimmed.is_empty() {
+            return Err(format!("claude returned empty output. stderr: {}", stderr).into());
         }
 
-        let ai_response: AiResponse = serde_json::from_str(&claude_output.result)?;
+        // claude CLIの出力にJSON以外のテキストが含まれる場合があるため、
+        // JSON部分を抽出する
+        let json_str = extract_json(stdout_trimmed)
+            .ok_or_else(|| format!("No JSON found in claude output: {}", stdout_trimmed))?;
+
+        let claude_output: serde_json::Value = serde_json::from_str(json_str)
+            .map_err(|e| format!("Failed to parse claude output: {}\nRaw: {}", e, stdout_trimmed))?;
+
+        if let Some(sid) = claude_output["session_id"].as_str() {
+            if self.session_id.is_none() {
+                self.session_id = Some(sid.to_string());
+            }
+        }
+
+        // --json-schema使用時はstructured_outputにレスポンスが入る
+        // structured_outputがなければresultにフォールバック
+        let result_value = if claude_output["structured_output"].is_object() {
+            &claude_output["structured_output"]
+        } else {
+            &claude_output["result"]
+        };
+
+        let ai_response = match result_value {
+            serde_json::Value::Object(_) => {
+                serde_json::from_value::<AiResponse>(result_value.clone())
+                    .unwrap_or_else(|_| AiResponse {
+                        message: result_value.to_string(),
+                        commands: vec![],
+                    })
+            }
+            serde_json::Value::String(s) => {
+                let s = s.trim();
+                if s.is_empty() {
+                    return Err(format!(
+                        "claude returned empty result.\nFull output: {}",
+                        stdout_trimmed
+                    ).into());
+                }
+                serde_json::from_str::<AiResponse>(s).unwrap_or_else(|_| AiResponse {
+                    message: s.to_string(),
+                    commands: vec![],
+                })
+            }
+            _ => {
+                return Err(format!(
+                    "Unexpected result from claude.\nFull output: {}",
+                    stdout_trimmed
+                ).into());
+            }
+        };
         Ok(ai_response)
     }
+}
+
+/// stdout から最外のJSONオブジェクトを抽出する。
+/// claude CLIがJSON前後にテキストを出力する場合に対応。
+fn extract_json(s: &str) -> Option<&str> {
+    let start = s.find('{')?;
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape_next = false;
+    for (i, ch) in s[start..].char_indices() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_string => escape_next = true,
+            '"' => in_string = !in_string,
+            '{' if !in_string => depth += 1,
+            '}' if !in_string => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&s[start..start + i + 1]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 pub fn check_claude_installed() -> bool {

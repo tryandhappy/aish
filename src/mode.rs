@@ -10,10 +10,12 @@ impl Mode {
         matches!(self, Mode::Local | Mode::Remote)
     }
 
+    #[allow(dead_code)]
     pub fn accepts_ai_prompt(&self) -> bool {
         true
     }
 
+    #[allow(dead_code)]
     pub fn accepts_exit(&self) -> bool {
         true
     }
