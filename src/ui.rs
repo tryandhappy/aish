@@ -1,11 +1,48 @@
 use std::io::{self, Read, Write};
+use std::sync::OnceLock;
 use unicode_width::UnicodeWidthChar;
 
-const AI_COLOR_START: &str = "\x1b[46m";
+const AI_COLOR_START: &str = "\x1b[48;5;238m\x1b[K";
+
+#[cfg(unix)]
+static ORIG_TERMIOS: OnceLock<libc::termios> = OnceLock::new();
+
+/// 起動時にtermiosを保存する。main開始直後に呼ぶこと。
+#[cfg(unix)]
+pub fn save_terminal_settings() {
+    use std::os::unix::io::AsRawFd;
+    let fd = io::stdin().as_raw_fd();
+    if let Some(t) = termios_get(fd) {
+        let _ = ORIG_TERMIOS.set(t);
+    }
+}
+
+#[cfg(not(unix))]
+pub fn save_terminal_settings() {}
+
+/// termiosを起動時の状態に復元する。終了時に呼ぶこと。
+#[cfg(unix)]
+pub fn restore_terminal_settings() {
+    use std::os::unix::io::AsRawFd;
+    if let Some(orig) = ORIG_TERMIOS.get() {
+        let fd = io::stdin().as_raw_fd();
+        unsafe { libc::tcsetattr(fd, libc::TCSANOW, orig) };
+    }
+}
+
+#[cfg(not(unix))]
+pub fn restore_terminal_settings() {}
 const AI_COLOR_END: &str = "\x1b[0m";
 
+pub fn print_ai_thinking() {
+    print!("\x1b[36mThinking...\x1b[0m\n");
+    io::stdout().flush().ok();
+}
+
 pub fn print_ai_message(message: &str) {
-    print!("{}{}{}\n", AI_COLOR_START, message, AI_COLOR_END);
+    for line in message.lines() {
+        print!("{}{}{}\n", AI_COLOR_START, line, AI_COLOR_END);
+    }
     io::stdout().flush().ok();
 }
 
@@ -13,18 +50,9 @@ pub fn print_ai_commands(commands: &[String]) {
     if commands.is_empty() {
         return;
     }
-    print!(
-        "{}Proposed commands:{}\n",
-        AI_COLOR_START, AI_COLOR_END
-    );
+    print!("{}Proposed commands:{}\n", AI_COLOR_START, AI_COLOR_END);
     for (i, cmd) in commands.iter().enumerate() {
-        print!(
-        "{}  {}: {}{}\n",
-            AI_COLOR_START,
-            i + 1,
-            cmd,
-            AI_COLOR_END
-        );
+        print!("{}  {}: {}{}\n", AI_COLOR_START, i + 1, cmd, AI_COLOR_END);
     }
     io::stdout().flush().ok();
 }
@@ -34,7 +62,7 @@ pub fn print_confirm_prompt(commands: &[String]) {
         return;
     }
     print_ai_commands(commands);
-    print!("Execute? (Y/n) ");
+    print!("\x1b[43mExecute? (Y/n) \x1b[0m ");
     io::stdout().flush().ok();
 }
 
@@ -45,11 +73,18 @@ pub fn parse_confirm(input: &str) -> bool {
 
 pub enum UserInput {
     AiPrompt(String),
+    AiAnalyze,
     ShellCommand(String),
     Exit,
 }
 
+const AI_ANALYZE_MARKER: &str = "\x1f";
+
 pub fn parse_input(input: &str) -> UserInput {
+    if input == AI_ANALYZE_MARKER {
+        return UserInput::AiAnalyze;
+    }
+
     let trimmed = input.trim();
 
     if trimmed.eq_ignore_ascii_case("exit") {
@@ -227,6 +262,12 @@ fn read_line_raw_loop() -> Option<String> {
                     let _ = stdout.write_all(b"\x08 \x08");
                 }
                 let _ = stdout.flush();
+            }
+            0x1f => {
+                // Ctrl+? : AI分析
+                let _ = stdout.write_all(b"\n");
+                let _ = stdout.flush();
+                return Some("\x1f".to_string());
             }
             0x1b => {
                 // ESCシーケンス（矢印キー等）を読み飛ばす

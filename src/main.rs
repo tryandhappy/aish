@@ -49,6 +49,8 @@ fn parse_args() -> AishArgs {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    ui::save_terminal_settings();
+
     if !ai::check_claude_installed() {
         eprintln!("Please install Claude Code.");
         eprintln!("curl -fsSL https://claude.ai/install.sh | bash");
@@ -146,14 +148,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             pty.write(b"exit\n")?;
                         }
                     },
-                    ui::UserInput::AiPrompt(prompt) => {
-                        if prompt.is_empty() {
-                            continue;
-                        }
-                        let context = ring_buffer.get_unsent();
-                        ui::print_ai_message("Thinking...");
+                    ui::UserInput::AiAnalyze | ui::UserInput::AiPrompt(_) => {
+                        let initial_prompt = match ui::parse_input(&line) {
+                            ui::UserInput::AiAnalyze => {
+                                "表示されている内容を調べて、気になる点や問題点があれば解説してください。".to_string()
+                            }
+                            ui::UserInput::AiPrompt(p) => {
+                                if p.is_empty() { continue; }
+                                p
+                            }
+                            _ => unreachable!(),
+                        };
 
-                        let mut ai_result = ai_session.send(&context, &prompt);
+                        let context = ring_buffer.get_unsent();
+                        ui::print_ai_thinking();
+
+                        let mut ai_result = ai_session.send(&context, &initial_prompt);
 
                         // AIとの対話ループ: コマンド実行→結果をAIに送信→分析→繰り返し
                         loop {
@@ -212,7 +222,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
                                     // 実行結果をAIに送信して分析を継続
                                     let follow_up_context = ring_buffer.get_unsent();
-                                    ui::print_ai_message("Thinking...");
+                                    print!("\n");
+                                    ui::print_ai_thinking();
                                     ai_result = ai_session.send(
                                         &follow_up_context,
                                         "コマンドの実行結果です。分析してください。追加の操作が必要であれば提案してください。",
@@ -222,6 +233,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     eprintln!("AI error: {}", e);
                                     break;
                                 }
+                            }
+                        }
+
+                        // AI対話終了後、シェルのプロンプトを再表示させる
+                        if mode.accepts_shell_command() {
+                            pty.write(b"\n")?;
+                            thread::sleep(Duration::from_millis(200));
+                            let mut first = true;
+                            while let Ok(data) = pty_rx.try_recv() {
+                                let output = if first {
+                                    first = false;
+                                    // 先頭の改行を除去してプロンプトだけ表示
+                                    let trimmed = data.iter()
+                                        .position(|&b| b != b'\r' && b != b'\n')
+                                        .unwrap_or(data.len());
+                                    &data[trimmed..]
+                                } else {
+                                    &data
+                                };
+                                if !output.is_empty() {
+                                    io::stdout().write_all(output)?;
+                                    io::stdout().flush()?;
+                                }
+                                ring_buffer.append(&data);
                             }
                         }
                     }
@@ -243,7 +278,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() {
-    if let Err(e) = run() {
+    let result = run();
+    ui::restore_terminal_settings();
+    if let Err(e) = result {
         eprintln!("Error: {}", e);
         std::process::exit(1);
     }

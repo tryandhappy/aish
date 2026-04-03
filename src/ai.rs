@@ -70,7 +70,7 @@ impl AiSession {
                     "Bash,Edit,Write,Read",
                     "--append-system-prompt",
                     &format!(
-                        "{} コマンドを提案してください。直接実行しないでください。",
+                        "{} コマンドを提案してください。直接実行しないでください。コマンドは;で結合せず個別に提案してください。ただし&&や||による条件付き実行は1つのコマンドとして維持してください。",
                         self.system_prompt
                     ),
                     "--json-schema",
