@@ -1,0 +1,39 @@
+# aish configuration file
+# Default path: ~/.aish/config.toml
+
+# Global system prompt (default)
+system_prompt = "あなたはLinuxサーバ管理の専門家です。SSHセッションの内容を把握しています。"
+
+# Display settings
+# Colors: "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"
+#         or 256-color number "0"-"255"
+#         or "" (empty) for terminal default
+[display]
+prompt_label = "[aish]"
+prompt_foreground = "cyan"
+prompt_background = ""
+thinking_message = "Thinking..."
+thinking_foreground = "cyan"
+thinking_background = ""
+ai_foreground = ""
+ai_background = "238"
+
+# Host-specific settings
+# - patterns: OR match (any pattern matches), glob wildcards supported
+# - First match wins (evaluated top to bottom)
+# - Falls back to global system_prompt if no match
+
+# Web servers
+[[hosts]]
+patterns = ["web*.example.com", "nginx.example.com", "apache.example.com"]
+system_prompt = "あなたはWebサーバの専門家です。"
+
+# DB servers
+[[hosts]]
+patterns = ["db*.example.com", "postgres-*"]
+system_prompt = "あなたはデータベース管理の専門家です。"
+
+# Bastion host
+[[hosts]]
+patterns = ["bastion.example.com"]
+system_prompt = "あなたは踏み台サーバの管理者です。"

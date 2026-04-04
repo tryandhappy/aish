@@ -9,7 +9,7 @@ use mode::Mode;
 use std::io::{self, Read, Write};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 struct AishArgs {
     config_path: Option<String>,
@@ -100,10 +100,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // ユーザ入力を読み取るスレッド
+    let aish_label = format!(
+        "{}{}\x1b[0m ",
+        ui::build_color_start(&config.display.prompt_foreground, &config.display.prompt_background),
+        config.display.prompt_label,
+    );
+
+    // ユーザ入力を読み取るスレッド（プロンプト信号を待ってから読み取り開始）
+    let (prompt_tx, prompt_rx) = mpsc::channel::<String>();
     let (input_tx, input_rx) = mpsc::channel::<String>();
     thread::spawn(move || {
         loop {
+            let prompt = match prompt_rx.recv() {
+                Ok(p) => p,
+                Err(_) => break,
+            };
+            if !prompt.is_empty() {
+                print!("{}", prompt);
+                io::stdout().flush().ok();
+            }
             match ui::read_line() {
                 Some(line) => {
                     if input_tx.send(line).is_err() {
@@ -115,6 +130,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let mut pending_prompt = true;
+    let mut last_pty_output = Instant::now();
+    let mut last_line: Vec<u8> = Vec::new();
+
     // メインループ
     loop {
         // PTY出力をチェック
@@ -122,6 +141,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             io::stdout().write_all(&data)?;
             io::stdout().flush()?;
             ring_buffer.append(&data);
+            last_pty_output = Instant::now();
+            for &b in &data {
+                if b == b'\n' || b == b'\r' {
+                    last_line.clear();
+                } else {
+                    last_line.push(b);
+                }
+            }
+        }
+
+        // PTY出力が落ち着いたらプロンプトを表示
+        if pending_prompt && last_pty_output.elapsed() > Duration::from_millis(200) {
+            let last_line_str = String::from_utf8_lossy(&last_line);
+            let prompt = format!("\r\x1b[2K{}{}", aish_label, last_line_str);
+            let _ = prompt_tx.send(prompt);
+            pending_prompt = false;
         }
 
         // PTYプロセスの終了チェック
@@ -130,6 +165,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 Mode::Remote => {
                     eprintln!("\nSSH session ended.");
                     mode = Mode::RemoteEnded;
+                    pending_prompt = true;
+                    last_pty_output = Instant::now();
                 }
                 Mode::Local => {
                     break;
@@ -146,6 +183,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         Mode::Local | Mode::RemoteEnded => break,
                         Mode::Remote => {
                             pty.write(b"exit\n")?;
+                            pending_prompt = true;
+                            last_pty_output = Instant::now();
                         }
                     },
                     ui::UserInput::AiAnalyze | ui::UserInput::AiPrompt(_) => {
@@ -154,14 +193,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 "表示されている内容を調べて、気になる点や問題点があれば解説してください。".to_string()
                             }
                             ui::UserInput::AiPrompt(p) => {
-                                if p.is_empty() { continue; }
+                                if p.is_empty() {
+                                    pending_prompt = true;
+                                    last_pty_output = Instant::now();
+                                    continue;
+                                }
                                 p
                             }
                             _ => unreachable!(),
                         };
 
                         let context = ring_buffer.get_unsent();
-                        ui::print_ai_thinking();
+                        ui::print_ai_thinking(&config.display);
 
                         let mut ai_result = ai_session.send(&context, &initial_prompt);
 
@@ -170,7 +213,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             match ai_result {
                                 Ok(response) => {
                                     ring_buffer.mark_sent();
-                                    ui::print_ai_message(&response.message);
+                                    ui::print_ai_message(&response.message, &config.display);
 
                                     // コマンド提案がない場合は対話終了
                                     if response.commands.is_empty() {
@@ -180,11 +223,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     if !mode.accepts_shell_command() {
                                         ui::print_ai_message(
                                             "(Commands cannot be executed in current mode)",
+                                            &config.display,
                                         );
                                         break;
                                     }
 
-                                    ui::print_confirm_prompt(&response.commands);
+                                    ui::print_confirm_prompt(&response.commands, &config.display);
+                                    let _ = prompt_tx.send(String::new());
                                     let confirmed = match input_rx.recv() {
                                         Ok(line) => ui::parse_confirm(&line),
                                         Err(_) => false,
@@ -223,7 +268,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     // 実行結果をAIに送信して分析を継続
                                     let follow_up_context = ring_buffer.get_unsent();
                                     print!("\n");
-                                    ui::print_ai_thinking();
+                                    ui::print_ai_thinking(&config.display);
                                     ai_result = ai_session.send(
                                         &follow_up_context,
                                         "コマンドの実行結果です。分析してください。追加の操作が必要であれば提案してください。",
@@ -257,8 +302,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     io::stdout().flush()?;
                                 }
                                 ring_buffer.append(&data);
+                                for &b in &data {
+                                    if b == b'\n' || b == b'\r' {
+                                        last_line.clear();
+                                    } else {
+                                        last_line.push(b);
+                                    }
+                                }
                             }
                         }
+                        pending_prompt = true;
+                        last_pty_output = Instant::now();
                     }
                     ui::UserInput::ShellCommand(cmd) => {
                         if mode.accepts_shell_command() {
@@ -266,6 +320,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         } else {
                             eprintln!("Cannot execute commands in {} mode.", mode);
                         }
+                        pending_prompt = true;
+                        last_pty_output = Instant::now();
                     }
                 }
             }

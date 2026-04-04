@@ -9,6 +9,7 @@
     "Bash(npm test)",
     "Bash(git log)",
     "Bash(ls *)",
-    "Bash(cat *)"
+    "Bash(cat *)",
+    "Bash(cargo *)"
   ]
 }

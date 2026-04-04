@@ -1,8 +1,7 @@
+use crate::config::DisplayConfig;
 use std::io::{self, Read, Write};
 use std::sync::OnceLock;
 use unicode_width::UnicodeWidthChar;
-
-const AI_COLOR_START: &str = "\x1b[48;5;238m\x1b[K";
 
 #[cfg(unix)]
 static ORIG_TERMIOS: OnceLock<libc::termios> = OnceLock::new();
@@ -32,36 +31,86 @@ pub fn restore_terminal_settings() {
 
 #[cfg(not(unix))]
 pub fn restore_terminal_settings() {}
-const AI_COLOR_END: &str = "\x1b[0m";
+fn color_to_fg(color: &str) -> String {
+    if color.is_empty() {
+        return String::new();
+    }
+    match color {
+        "black" => "\x1b[30m".to_string(),
+        "red" => "\x1b[31m".to_string(),
+        "green" => "\x1b[32m".to_string(),
+        "yellow" => "\x1b[33m".to_string(),
+        "blue" => "\x1b[34m".to_string(),
+        "magenta" => "\x1b[35m".to_string(),
+        "cyan" => "\x1b[36m".to_string(),
+        "white" => "\x1b[37m".to_string(),
+        n => n
+            .parse::<u8>()
+            .ok()
+            .map(|num| format!("\x1b[38;5;{}m", num))
+            .unwrap_or_default(),
+    }
+}
 
-pub fn print_ai_thinking() {
-    print!("\x1b[36mThinking...\x1b[0m\n");
+fn color_to_bg(color: &str) -> String {
+    if color.is_empty() {
+        return String::new();
+    }
+    match color {
+        "black" => "\x1b[40m".to_string(),
+        "red" => "\x1b[41m".to_string(),
+        "green" => "\x1b[42m".to_string(),
+        "yellow" => "\x1b[43m".to_string(),
+        "blue" => "\x1b[44m".to_string(),
+        "magenta" => "\x1b[45m".to_string(),
+        "cyan" => "\x1b[46m".to_string(),
+        "white" => "\x1b[47m".to_string(),
+        n => n
+            .parse::<u8>()
+            .ok()
+            .map(|num| format!("\x1b[48;5;{}m", num))
+            .unwrap_or_default(),
+    }
+}
+
+pub fn build_color_start(fg: &str, bg: &str) -> String {
+    let fg_code = color_to_fg(fg);
+    let bg_code = color_to_bg(bg);
+    let erase = if bg.is_empty() { "" } else { "\x1b[K" };
+    format!("{}{}{}", fg_code, bg_code, erase)
+}
+
+pub fn print_ai_thinking(display: &DisplayConfig) {
+    let color = build_color_start(&display.thinking_foreground, &display.thinking_background);
+    print!("{}{}\x1b[0m\n", color, display.thinking_message);
     io::stdout().flush().ok();
 }
 
-pub fn print_ai_message(message: &str) {
+pub fn print_ai_message(message: &str, display: &DisplayConfig) {
+    let color = build_color_start(&display.ai_foreground, &display.ai_background);
     for line in message.lines() {
-        print!("{}{}{}\n", AI_COLOR_START, line, AI_COLOR_END);
+        print!("{}{}\x1b[0m\n", color, line);
     }
     io::stdout().flush().ok();
 }
 
-pub fn print_ai_commands(commands: &[String]) {
+pub fn print_ai_commands(commands: &[String], display: &DisplayConfig) {
     if commands.is_empty() {
         return;
     }
-    print!("{}Proposed commands:{}\n", AI_COLOR_START, AI_COLOR_END);
+    let color = build_color_start(&display.ai_foreground, &display.ai_background);
+    print!("{}Proposed commands:\x1b[0m\n", color);
     for (i, cmd) in commands.iter().enumerate() {
-        print!("{}  {}: {}{}\n", AI_COLOR_START, i + 1, cmd, AI_COLOR_END);
+        print!("{}  {}: {}\x1b[0m\n", color, i + 1, cmd);
     }
     io::stdout().flush().ok();
 }
 
-pub fn print_confirm_prompt(commands: &[String]) {
+pub fn print_confirm_prompt(commands: &[String], display: &DisplayConfig) {
     if commands.is_empty() {
         return;
     }
-    print_ai_commands(commands);
+    print_ai_commands(commands, display);
     print!("\x1b[43mExecute? (Y/n) \x1b[0m ");
     io::stdout().flush().ok();
 }

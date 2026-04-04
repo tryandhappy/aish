@@ -6,10 +6,67 @@ use std::path::PathBuf;
 pub struct Config {
     #[serde(default = "default_system_prompt")]
     pub system_prompt: String,
+    #[serde(default)]
+    pub display: DisplayConfig,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct DisplayConfig {
+    #[serde(default = "default_prompt_label")]
+    pub prompt_label: String,
+    #[serde(default = "default_prompt_foreground")]
+    pub prompt_foreground: String,
+    #[serde(default)]
+    pub prompt_background: String,
+    #[serde(default = "default_thinking_message")]
+    pub thinking_message: String,
+    #[serde(default = "default_thinking_foreground")]
+    pub thinking_foreground: String,
+    #[serde(default)]
+    pub thinking_background: String,
+    #[serde(default)]
+    pub ai_foreground: String,
+    #[serde(default = "default_ai_background")]
+    pub ai_background: String,
+}
+
+impl Default for DisplayConfig {
+    fn default() -> Self {
+        Self {
+            prompt_label: default_prompt_label(),
+            prompt_foreground: default_prompt_foreground(),
+            prompt_background: String::new(),
+            thinking_message: default_thinking_message(),
+            thinking_foreground: default_thinking_foreground(),
+            thinking_background: String::new(),
+            ai_foreground: String::new(),
+            ai_background: default_ai_background(),
+        }
+    }
 }
 
 fn default_system_prompt() -> String {
     "あなたはLinuxサーバ管理の専門家です。SSHセッションの内容を把握しています。".to_string()
+}
+
+fn default_prompt_label() -> String {
+    "[aish]".to_string()
+}
+
+fn default_prompt_foreground() -> String {
+    "cyan".to_string()
+}
+
+fn default_thinking_message() -> String {
+    "Thinking...".to_string()
+}
+
+fn default_thinking_foreground() -> String {
+    "cyan".to_string()
+}
+
+fn default_ai_background() -> String {
+    "238".to_string()
 }
 
 impl Config {
