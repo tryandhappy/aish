@@ -1,18 +1,49 @@
 use crate::config::DisplayConfig;
 use std::io::{self, Read, Write};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::OnceLock;
 use unicode_width::UnicodeWidthChar;
+
+pub enum InputEvent {
+    PtyData(Vec<u8>),
+    Line(String),
+    PassthroughEnded,
+    #[allow(dead_code)]
+    CtrlCExit,
+}
+
+static CTRL_C_COUNT: AtomicU32 = AtomicU32::new(0);
+
+pub fn record_ctrl_c() {
+    CTRL_C_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn ctrl_c_count() -> u32 {
+    CTRL_C_COUNT.load(Ordering::Relaxed)
+}
+
+pub enum InputRequest {
+    Passthrough(String),
+    ReadLine(String),
+}
 
 #[cfg(unix)]
 static ORIG_TERMIOS: OnceLock<libc::termios> = OnceLock::new();
 
-/// 起動時にtermiosを保存する。main開始直後に呼ぶこと。
+/// 起動時にtermiosを保存し、rawモードに設定する。main開始直後に呼ぶこと。
 #[cfg(unix)]
 pub fn save_terminal_settings() {
     use std::os::unix::io::AsRawFd;
     let fd = io::stdin().as_raw_fd();
     if let Some(t) = termios_get(fd) {
         let _ = ORIG_TERMIOS.set(t);
+        // セッション全体でrawモードを維持する
+        let mut raw = t;
+        raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG);
+        raw.c_cc[libc::VMIN] = 1;
+        raw.c_cc[libc::VTIME] = 0;
+        unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) };
     }
 }
 
@@ -115,6 +146,20 @@ pub fn print_confirm_prompt(commands: &[String], display: &DisplayConfig) {
     io::stdout().flush().ok();
 }
 
+/// last_lineがシェルプロンプトらしいかを判定する。
+pub fn looks_like_prompt(last_line: &[u8]) -> bool {
+    let stripped = strip_ansi_escapes::strip(last_line);
+    let s = String::from_utf8_lossy(&stripped);
+    let trimmed = s.trim_end();
+    if trimmed.is_empty() {
+        return false;
+    }
+    trimmed.ends_with('$')
+        || trimmed.ends_with('#')
+        || trimmed.ends_with('%')
+        || trimmed.ends_with('>')
+}
+
 pub fn parse_confirm(input: &str) -> bool {
     let trimmed = input.trim();
     trimmed.is_empty() || trimmed.eq_ignore_ascii_case("y") || trimmed.eq_ignore_ascii_case("yes")
@@ -180,41 +225,8 @@ fn read_line_cooked() -> Option<String> {
 
 #[cfg(unix)]
 fn read_line_raw() -> Option<String> {
-    use std::os::unix::io::AsRawFd;
-
-    let fd = io::stdin().as_raw_fd();
-
-    // 現在のtermios設定を保存
-    let orig = match termios_get(fd) {
-        Some(t) => t,
-        None => return read_line_cooked_unix(),
-    };
-
-    // rawモードに設定（エコーoff, canonical off）
-    let mut raw = orig;
-    raw.c_lflag &= !(libc::ICANON | libc::ECHO);
-    raw.c_cc[libc::VMIN] = 1;
-    raw.c_cc[libc::VTIME] = 0;
-    if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } != 0 {
-        return read_line_cooked_unix();
-    }
-
-    let result = read_line_raw_loop();
-
-    // termios設定を復元
-    unsafe { libc::tcsetattr(fd, libc::TCSANOW, &orig) };
-
-    result
-}
-
-#[cfg(unix)]
-fn read_line_cooked_unix() -> Option<String> {
-    let mut line = String::new();
-    match io::stdin().read_line(&mut line) {
-        Ok(0) => None,
-        Ok(_) => Some(line.trim_end_matches('\n').trim_end_matches('\r').to_string()),
-        Err(_) => None,
-    }
+    // rawモードはセッション全体で維持されているため、ここでは設定・復元しない
+    read_line_raw_loop()
 }
 
 #[cfg(unix)]
@@ -274,6 +286,7 @@ fn read_line_raw_loop() -> Option<String> {
             }
             0x03 => {
                 // Ctrl-C
+                record_ctrl_c();
                 let _ = stdout.write_all(b"^C\n");
                 let _ = stdout.flush();
                 return Some(String::new());
@@ -358,6 +371,189 @@ fn read_line_raw_loop() -> Option<String> {
     }
 
     Some(line)
+}
+
+/// パススルーモードで入力を読む。AIプレフィックス検出付き。
+/// キー入力はPTYに直送され、@aiや?が検出された場合はAI入力モードに切り替わる。
+pub fn passthrough_read(tx: &Sender<InputEvent>) {
+    #[cfg(unix)]
+    {
+        passthrough_read_unix(tx);
+    }
+    #[cfg(not(unix))]
+    {
+        match read_line_cooked() {
+            Some(line) => {
+                let _ = tx.send(InputEvent::Line(line));
+            }
+            None => {}
+        }
+    }
+}
+
+#[cfg(unix)]
+fn passthrough_read_unix(tx: &Sender<InputEvent>) {
+    // rawモードはセッション全体で維持されているため、ここでは設定・復元しない
+    passthrough_read_raw(tx);
+    let _ = tx.send(InputEvent::PassthroughEnded);
+}
+
+#[cfg(unix)]
+fn passthrough_read_raw(tx: &Sender<InputEvent>) {
+    let mut stdin = io::stdin();
+    let mut stdout = io::stdout();
+    let mut detect_buf: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 1];
+
+    #[derive(PartialEq)]
+    enum State {
+        LineStart,
+        DetectAt,
+        DetectAtA,
+        DetectAtAi,
+        Passthrough,
+    }
+    let mut state = State::LineStart;
+
+    loop {
+        match stdin.read(&mut buf) {
+            Ok(0) => return,
+            Ok(_) => {}
+            Err(_) => return,
+        }
+        let b = buf[0];
+
+        match state {
+            State::LineStart => match b {
+                b'?' => {
+                    let _ = stdout.write_all(b"?");
+                    let _ = stdout.flush();
+                    let rest = read_line_raw_loop().unwrap_or_default();
+                    let _ = tx.send(InputEvent::Line(format!("?{}", rest)));
+                    return;
+                }
+                b'@' => {
+                    detect_buf.clear();
+                    detect_buf.push(b);
+                    state = State::DetectAt;
+                }
+                0x1f => {
+                    let _ = stdout.write_all(b"\n");
+                    let _ = stdout.flush();
+                    let _ = tx.send(InputEvent::Line("\x1f".to_string()));
+                    return;
+                }
+                0x03 => {
+                    let _ = tx.send(InputEvent::PtyData(vec![b]));
+                    return;
+                }
+                b'\r' | b'\n' => {
+                    let _ = tx.send(InputEvent::PtyData(vec![b]));
+                    return;
+                }
+                _ => {
+                    let _ = tx.send(InputEvent::PtyData(vec![b]));
+                    state = State::Passthrough;
+                }
+            },
+            State::DetectAt => match b {
+                b'a' | b'A' => {
+                    detect_buf.push(b);
+                    state = State::DetectAtA;
+                }
+                0x7f | 0x08 => {
+                    detect_buf.clear();
+                    state = State::LineStart;
+                }
+                0x03 => {
+                    detect_buf.clear();
+                    let _ = tx.send(InputEvent::PtyData(vec![b]));
+                    return;
+                }
+                b'\r' | b'\n' => {
+                    detect_buf.push(b);
+                    let _ = tx.send(InputEvent::PtyData(detect_buf.clone()));
+                    detect_buf.clear();
+                    return;
+                }
+                _ => {
+                    detect_buf.push(b);
+                    let _ = tx.send(InputEvent::PtyData(detect_buf.clone()));
+                    detect_buf.clear();
+                    state = State::Passthrough;
+                }
+            },
+            State::DetectAtA => match b {
+                b'i' | b'I' => {
+                    detect_buf.push(b);
+                    state = State::DetectAtAi;
+                }
+                0x7f | 0x08 => {
+                    detect_buf.pop();
+                    state = State::DetectAt;
+                }
+                0x03 => {
+                    detect_buf.clear();
+                    let _ = tx.send(InputEvent::PtyData(vec![b]));
+                    return;
+                }
+                b'\r' | b'\n' => {
+                    detect_buf.push(b);
+                    let _ = tx.send(InputEvent::PtyData(detect_buf.clone()));
+                    detect_buf.clear();
+                    return;
+                }
+                _ => {
+                    detect_buf.push(b);
+                    let _ = tx.send(InputEvent::PtyData(detect_buf.clone()));
+                    detect_buf.clear();
+                    state = State::Passthrough;
+                }
+            },
+            State::DetectAtAi => match b {
+                b' ' | b'\t' => {
+                    let _ = stdout.write_all(b"@ai ");
+                    let _ = stdout.flush();
+                    let rest = read_line_raw_loop().unwrap_or_default();
+                    let _ = tx.send(InputEvent::Line(format!("@ai {}", rest)));
+                    return;
+                }
+                b'\r' | b'\n' => {
+                    let _ = stdout.write_all(b"@ai\n");
+                    let _ = stdout.flush();
+                    let _ = tx.send(InputEvent::Line("@ai".to_string()));
+                    return;
+                }
+                0x7f | 0x08 => {
+                    detect_buf.pop();
+                    state = State::DetectAtA;
+                }
+                0x03 => {
+                    detect_buf.clear();
+                    let _ = tx.send(InputEvent::PtyData(vec![b]));
+                    return;
+                }
+                _ => {
+                    detect_buf.push(b);
+                    let _ = tx.send(InputEvent::PtyData(detect_buf.clone()));
+                    detect_buf.clear();
+                    state = State::Passthrough;
+                }
+            },
+            State::Passthrough => {
+                if b == 0x1f {
+                    let _ = stdout.write_all(b"\n");
+                    let _ = stdout.flush();
+                    let _ = tx.send(InputEvent::Line("\x1f".to_string()));
+                    return;
+                }
+                let _ = tx.send(InputEvent::PtyData(vec![b]));
+                if b == b'\r' || b == b'\n' {
+                    return;
+                }
+            }
+        }
+    }
 }
 
 /// UTF-8の先頭バイトから文字のバイト長を返す

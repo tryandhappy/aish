@@ -48,8 +48,18 @@ fn parse_args() -> AishArgs {
     }
 }
 
+#[cfg(unix)]
+extern "C" fn sigint_handler(_sig: libc::c_int) {
+    ui::record_ctrl_c();
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     ui::save_terminal_settings();
+
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGINT, sigint_handler as *const () as libc::sighandler_t);
+    }
 
     if !ai::check_claude_installed() {
         eprintln!("Please install Claude Code.");
@@ -100,42 +110,90 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // ターミナルタイトルにaishラベルを設定
+    let title = if args.ssh_args.is_empty() {
+        config.display.prompt_label.clone()
+    } else {
+        format!("{} {}", config.display.prompt_label, args.ssh_args.join(" "))
+    };
+    print!("\x1b]2;{}\x07", title);
+    io::stdout().flush().ok();
+
     let aish_label = format!(
         "{}{}\x1b[0m ",
         ui::build_color_start(&config.display.prompt_foreground, &config.display.prompt_background),
         config.display.prompt_label,
     );
 
-    // ユーザ入力を読み取るスレッド（プロンプト信号を待ってから読み取り開始）
-    let (prompt_tx, prompt_rx) = mpsc::channel::<String>();
-    let (input_tx, input_rx) = mpsc::channel::<String>();
+    // ユーザ入力を読み取るスレッド（パススルーモード対応）
+    let (prompt_tx, prompt_rx) = mpsc::channel::<ui::InputRequest>();
+    let (input_tx, input_rx) = mpsc::channel::<ui::InputEvent>();
     thread::spawn(move || {
         loop {
-            let prompt = match prompt_rx.recv() {
-                Ok(p) => p,
+            let request = match prompt_rx.recv() {
+                Ok(r) => r,
                 Err(_) => break,
             };
-            if !prompt.is_empty() {
-                print!("{}", prompt);
-                io::stdout().flush().ok();
-            }
-            match ui::read_line() {
-                Some(line) => {
-                    if input_tx.send(line).is_err() {
-                        break;
+            match request {
+                ui::InputRequest::Passthrough(prompt) => {
+                    if !prompt.is_empty() {
+                        print!("{}", prompt);
+                        io::stdout().flush().ok();
+                    }
+                    ui::passthrough_read(&input_tx);
+                }
+                ui::InputRequest::ReadLine(prompt) => {
+                    if !prompt.is_empty() {
+                        print!("{}", prompt);
+                        io::stdout().flush().ok();
+                    }
+                    match ui::read_line() {
+                        Some(line) => {
+                            if input_tx.send(ui::InputEvent::Line(line)).is_err() {
+                                break;
+                            }
+                        }
+                        None => break,
                     }
                 }
-                None => break,
             }
         }
     });
 
-    let mut pending_prompt = true;
+    let mut pending_input = true; // 入力スレッド起動待ち
+    let mut input_idle = true;
     let mut last_pty_output = Instant::now();
     let mut last_line: Vec<u8> = Vec::new();
+    let mut aish_drawn = false; // [aish]が現在の行に描画済みか
+    let mut last_ctrl_c_count: u32 = 0;
+    let mut last_ctrl_c_time = Instant::now();
+    let mut ctrl_c_hint_until: Option<Instant> = None;
 
     // メインループ
     loop {
+        // Ctrl+C連打チェック
+        let cc = ui::ctrl_c_count();
+        if cc > last_ctrl_c_count {
+            let now = Instant::now();
+            if cc - last_ctrl_c_count >= 2
+                || (last_ctrl_c_count > 0
+                    && now.duration_since(last_ctrl_c_time) < Duration::from_secs(2))
+            {
+                eprintln!();
+                break;
+            }
+            last_ctrl_c_count = cc;
+            last_ctrl_c_time = now;
+            ctrl_c_hint_until = Some(now + Duration::from_secs(2));
+        }
+
+        // Ctrl+Cヒントの期限切れチェック
+        if let Some(deadline) = ctrl_c_hint_until {
+            if Instant::now() >= deadline {
+                ctrl_c_hint_until = None;
+            }
+        }
+
         // PTY出力をチェック
         while let Ok(data) = pty_rx.try_recv() {
             io::stdout().write_all(&data)?;
@@ -145,18 +203,46 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             for &b in &data {
                 if b == b'\n' || b == b'\r' {
                     last_line.clear();
+                    aish_drawn = false;
                 } else {
                     last_line.push(b);
                 }
             }
         }
 
-        // PTY出力が落ち着いたらプロンプトを表示
-        if pending_prompt && last_pty_output.elapsed() > Duration::from_millis(200) {
+        // PTY出力が落ち着いたら入力スレッドを起動
+        if pending_input && input_idle && last_pty_output.elapsed() > Duration::from_millis(50) {
+            let hint = if ctrl_c_hint_until.is_some() {
+                "\x1b[33m(Ctrl+C to exit)\x1b[0m "
+            } else {
+                ""
+            };
+            let request = if mode.accepts_shell_command() {
+                ui::InputRequest::Passthrough(String::new())
+            } else {
+                ui::InputRequest::ReadLine(format!("{}{}", aish_label, hint))
+            };
+            let _ = prompt_tx.send(request);
+            pending_input = false;
+            input_idle = false;
+        }
+
+        // [aish]ラベル描画（入力スレッドとは独立）
+        // PTY出力が落ち着き、プロンプトらしい行で、まだ描画していなければ描画
+        if !aish_drawn
+            && mode.accepts_shell_command()
+            && last_pty_output.elapsed() > Duration::from_millis(50)
+            && ui::looks_like_prompt(&last_line)
+        {
             let last_line_str = String::from_utf8_lossy(&last_line);
-            let prompt = format!("\r\x1b[2K{}{}", aish_label, last_line_str);
-            let _ = prompt_tx.send(prompt);
-            pending_prompt = false;
+            let hint = if ctrl_c_hint_until.is_some() {
+                "\x1b[33m(Ctrl+C to exit)\x1b[0m "
+            } else {
+                ""
+            };
+            print!("\r\x1b[2K{}{}{}", aish_label, last_line_str, hint);
+            io::stdout().flush().ok();
+            aish_drawn = true;
         }
 
         // PTYプロセスの終了チェック
@@ -165,7 +251,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 Mode::Remote => {
                     eprintln!("\nSSH session ended.");
                     mode = Mode::RemoteEnded;
-                    pending_prompt = true;
+                    pending_input = true;
                     last_pty_output = Instant::now();
                 }
                 Mode::Local => {
@@ -176,14 +262,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // ユーザ入力をチェック
-        match input_rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(line) => {
+        match input_rx.try_recv() {
+            Ok(ui::InputEvent::PtyData(data)) => {
+                if mode.accepts_shell_command() {
+                    let _ = pty.write(&data);
+                }
+                continue;
+            }
+            Ok(ui::InputEvent::PassthroughEnded) => {
+                // 入力スレッドがidle状態に戻った
+                input_idle = true;
+                // PTY出力が落ち着いてから[aish]プロンプトを再表示し入力を再開
+                pending_input = true;
+                last_pty_output = Instant::now();
+                continue;
+            }
+            Ok(ui::InputEvent::CtrlCExit) => break,
+            Ok(ui::InputEvent::Line(line)) => {
+                input_idle = true;
                 match ui::parse_input(&line) {
                     ui::UserInput::Exit => match mode {
                         Mode::Local | Mode::RemoteEnded => break,
                         Mode::Remote => {
                             pty.write(b"exit\n")?;
-                            pending_prompt = true;
+                            pending_input = true;
                             last_pty_output = Instant::now();
                         }
                     },
@@ -194,7 +296,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             ui::UserInput::AiPrompt(p) => {
                                 if p.is_empty() {
-                                    pending_prompt = true;
+                                    pending_input = true;
                                     last_pty_output = Instant::now();
                                     continue;
                                 }
@@ -229,10 +331,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     }
 
                                     ui::print_confirm_prompt(&response.commands, &config.display);
-                                    let _ = prompt_tx.send(String::new());
-                                    let confirmed = match input_rx.recv() {
-                                        Ok(line) => ui::parse_confirm(&line),
-                                        Err(_) => false,
+                                    let _ = prompt_tx.send(ui::InputRequest::ReadLine(String::new()));
+                                    let confirmed = loop {
+                                        match input_rx.recv() {
+                                            Ok(ui::InputEvent::Line(line)) => break ui::parse_confirm(&line),
+                                            Ok(ui::InputEvent::PtyData(_))
+                                            | Ok(ui::InputEvent::PassthroughEnded) => continue,
+                                            Ok(ui::InputEvent::CtrlCExit) => break false,
+                                            Err(_) => break false,
+                                        }
                                     };
 
                                     if !confirmed {
@@ -247,6 +354,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                             io::stdout().write_all(&data)?;
                                             io::stdout().flush()?;
                                             ring_buffer.append(&data);
+                                            for &b in &data {
+                                                if b == b'\n' || b == b'\r' {
+                                                    last_line.clear();
+                                                } else {
+                                                    last_line.push(b);
+                                                }
+                                            }
                                         }
                                     }
 
@@ -258,6 +372,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                             io::stdout().write_all(&data)?;
                                             io::stdout().flush()?;
                                             ring_buffer.append(&data);
+                                            for &b in &data {
+                                                if b == b'\n' || b == b'\r' {
+                                                    last_line.clear();
+                                                } else {
+                                                    last_line.push(b);
+                                                }
+                                            }
                                             got_data = true;
                                         }
                                         if !got_data {
@@ -305,28 +426,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 for &b in &data {
                                     if b == b'\n' || b == b'\r' {
                                         last_line.clear();
+                                        aish_drawn = false;
                                     } else {
                                         last_line.push(b);
                                     }
                                 }
                             }
                         }
-                        pending_prompt = true;
+                        input_idle = true;
+                        pending_input = true;
                         last_pty_output = Instant::now();
                     }
                     ui::UserInput::ShellCommand(cmd) => {
                         if mode.accepts_shell_command() {
                             pty.write(format!("{}\n", cmd).as_bytes())?;
-                        } else {
-                            eprintln!("Cannot execute commands in {} mode.", mode);
                         }
-                        pending_prompt = true;
+                        pending_input = true;
                         last_pty_output = Instant::now();
                     }
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::TryRecvError::Empty) => {
+                thread::sleep(Duration::from_millis(1));
+            }
+            Err(mpsc::TryRecvError::Disconnected) => break,
         }
     }
 
@@ -335,6 +458,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() {
     let result = run();
+    // ターミナルタイトルを復元
+    print!("\x1b]2;\x07");
+    io::stdout().flush().ok();
     ui::restore_terminal_settings();
     if let Err(e) = result {
         eprintln!("Error: {}", e);

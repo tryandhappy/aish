@@ -11,6 +11,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[allow(dead_code)]
 pub struct DisplayConfig {
     #[serde(default = "default_prompt_label")]
     pub prompt_label: String,
