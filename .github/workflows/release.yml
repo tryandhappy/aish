@@ -11,11 +11,10 @@ on:
         required: true
         type: string
 
-permissions:
-  contents: write  # GitHub Releases 作成に必要
-
 env:
   BINARY_NAME: aish
+  # 配布先リポジトリ (owner/name 形式)
+  RELEASE_REPO: tryandhappy/aish
 
 jobs:
   build:
@@ -78,7 +77,7 @@ jobs:
           retention-days: 1
 
   release:
-    name: Create GitHub Release
+    name: Publish to ${{ env.RELEASE_REPO }}
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -102,12 +101,13 @@ jobs:
           find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec mv {} dist/ \;
           ls -la dist/
 
-      - name: Create GitHub Release
+      - name: Create Release on public repo
         uses: softprops/action-gh-release@v2
         with:
+          repository: ${{ env.RELEASE_REPO }}
+          token: ${{ secrets.RELEASE_TOKEN }}
           tag_name: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.tag }}
           files: dist/*
-          generate_release_notes: true
           draft: false
           prerelease: false
