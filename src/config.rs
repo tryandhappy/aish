@@ -29,6 +29,8 @@ pub struct DisplayConfig {
     pub ai_foreground: String,
     #[serde(default = "default_ai_background")]
     pub ai_background: String,
+    #[serde(default = "default_input_background")]
+    pub input_background: String,
 }
 
 impl Default for DisplayConfig {
@@ -42,6 +44,7 @@ impl Default for DisplayConfig {
             thinking_background: String::new(),
             ai_foreground: String::new(),
             ai_background: default_ai_background(),
+            input_background: default_input_background(),
         }
     }
 }
@@ -63,11 +66,15 @@ fn default_thinking_message() -> String {
 }
 
 fn default_thinking_foreground() -> String {
-    "cyan".to_string()
+    "208".to_string()
 }
 
 fn default_ai_background() -> String {
     "238".to_string()
+}
+
+fn default_input_background() -> String {
+    "yellow".to_string()
 }
 
 impl Config {

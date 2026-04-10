@@ -13,10 +13,11 @@ prompt_label = "[aish]"
 prompt_foreground = "cyan"
 prompt_background = ""
 thinking_message = "Thinking..."
-thinking_foreground = "cyan"
+thinking_foreground = "208"
 thinking_background = ""
 ai_foreground = ""
 ai_background = "238"
+input_background = "yellow"
 
 # Host-specific settings
 # - patterns: OR match (any pattern matches), glob wildcards supported

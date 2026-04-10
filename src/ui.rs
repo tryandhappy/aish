@@ -1,8 +1,9 @@
 use crate::config::DisplayConfig;
 use std::io::{self, Read, Write};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 use unicode_width::UnicodeWidthChar;
 
 pub enum InputEvent {
@@ -111,10 +112,54 @@ pub fn build_color_start(fg: &str, bg: &str) -> String {
     format!("{}{}{}", fg_code, bg_code, erase)
 }
 
-pub fn print_ai_thinking(display: &DisplayConfig) {
-    let color = build_color_start(&display.thinking_foreground, &display.thinking_background);
-    print!("{}{}\x1b[0m\n", color, display.thinking_message);
-    io::stdout().flush().ok();
+const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+pub struct Spinner {
+    running: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Spinner {
+    pub fn start(display: &DisplayConfig) -> Self {
+        let running = Arc::new(AtomicBool::new(true));
+        let running_clone = running.clone();
+        let color = build_color_start(&display.thinking_foreground, &display.thinking_background);
+        let message = display.thinking_message.clone();
+
+        let handle = std::thread::spawn(move || {
+            let mut stdout = io::stdout();
+            let mut i = 0;
+            while running_clone.load(Ordering::Relaxed) {
+                let _ = write!(stdout, "\r{}{} {}\x1b[0m\x1b[K", color, SPINNER_FRAMES[i], message);
+                let _ = stdout.flush();
+                i = (i + 1) % SPINNER_FRAMES.len();
+                std::thread::sleep(Duration::from_millis(80));
+            }
+            let _ = write!(stdout, "\r\x1b[K");
+            let _ = stdout.flush();
+        });
+
+        Spinner {
+            running,
+            handle: Some(handle),
+        }
+    }
+
+    pub fn stop(mut self) {
+        self.running.store(false, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+impl Drop for Spinner {
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
 }
 
 pub fn print_ai_message(message: &str, display: &DisplayConfig) {
@@ -142,7 +187,8 @@ pub fn print_confirm_prompt(commands: &[String], display: &DisplayConfig) {
         return;
     }
     print_ai_commands(commands, display);
-    print!("\x1b[43mExecute? (Y/n) \x1b[0m ");
+    let bg = color_to_bg(&display.input_background);
+    print!("{}Execute? (Y/n) \x1b[0m ", bg);
     io::stdout().flush().ok();
 }
 
@@ -168,6 +214,7 @@ pub fn parse_confirm(input: &str) -> bool {
 pub enum UserInput {
     AiPrompt(String),
     AiAnalyze,
+    ClaudeHandover,
     ShellCommand(String),
     Exit,
 }
@@ -190,7 +237,11 @@ pub fn parse_input(input: &str) -> UserInput {
     }
 
     if let Some(prompt) = trimmed.strip_prefix('?') {
-        return UserInput::AiPrompt(prompt.trim().to_string());
+        let prompt = prompt.trim();
+        if prompt.eq_ignore_ascii_case("claude") {
+            return UserInput::ClaudeHandover;
+        }
+        return UserInput::AiPrompt(prompt.to_string());
     }
 
     UserInput::ShellCommand(input.to_string())
@@ -269,7 +320,7 @@ fn read_line_raw_loop() -> Option<String> {
         match b {
             b'\n' | b'\r' => {
                 // Enter
-                let _ = stdout.write_all(b"\n");
+                let _ = stdout.write_all(b"\x1b[0m\n");
                 let _ = stdout.flush();
                 break;
             }
@@ -375,13 +426,14 @@ fn read_line_raw_loop() -> Option<String> {
 
 /// パススルーモードで入力を読む。AIプレフィックス検出付き。
 /// キー入力はPTYに直送され、@aiや?が検出された場合はAI入力モードに切り替わる。
-pub fn passthrough_read(tx: &Sender<InputEvent>) {
+pub fn passthrough_read(tx: &Sender<InputEvent>, input_bg: &str) {
     #[cfg(unix)]
     {
-        passthrough_read_unix(tx);
+        passthrough_read_unix(tx, input_bg);
     }
     #[cfg(not(unix))]
     {
+        let _ = input_bg;
         match read_line_cooked() {
             Some(line) => {
                 let _ = tx.send(InputEvent::Line(line));
@@ -392,14 +444,14 @@ pub fn passthrough_read(tx: &Sender<InputEvent>) {
 }
 
 #[cfg(unix)]
-fn passthrough_read_unix(tx: &Sender<InputEvent>) {
+fn passthrough_read_unix(tx: &Sender<InputEvent>, input_bg: &str) {
     // rawモードはセッション全体で維持されているため、ここでは設定・復元しない
-    passthrough_read_raw(tx);
+    passthrough_read_raw(tx, input_bg);
     let _ = tx.send(InputEvent::PassthroughEnded);
 }
 
 #[cfg(unix)]
-fn passthrough_read_raw(tx: &Sender<InputEvent>) {
+fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str) {
     let mut stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut detect_buf: Vec<u8> = Vec::new();
@@ -408,6 +460,7 @@ fn passthrough_read_raw(tx: &Sender<InputEvent>) {
     #[derive(PartialEq)]
     enum State {
         LineStart,
+        DetectQuestion,
         DetectAt,
         DetectAtA,
         DetectAtAi,
@@ -426,11 +479,10 @@ fn passthrough_read_raw(tx: &Sender<InputEvent>) {
         match state {
             State::LineStart => match b {
                 b'?' => {
-                    let _ = stdout.write_all(b"?");
+                    let bg = color_to_bg(input_bg);
+                    let _ = write!(stdout, "{}?", bg);
                     let _ = stdout.flush();
-                    let rest = read_line_raw_loop().unwrap_or_default();
-                    let _ = tx.send(InputEvent::Line(format!("?{}", rest)));
-                    return;
+                    state = State::DetectQuestion;
                 }
                 b'@' => {
                     detect_buf.clear();
@@ -451,9 +503,88 @@ fn passthrough_read_raw(tx: &Sender<InputEvent>) {
                     let _ = tx.send(InputEvent::PtyData(vec![b]));
                     return;
                 }
+                0x1b => {
+                    // ESCシーケンス(フォーカスイベント等)を読み飛ばし、LineStartを維持
+                    let mut seq = [0u8; 1];
+                    if stdin.read(&mut seq).is_ok() && seq[0] == b'[' {
+                        // CSIシーケンス: 終端文字(0x40-0x7E)まで読み飛ばす
+                        loop {
+                            match stdin.read(&mut seq) {
+                                Ok(1) if seq[0] >= 0x40 && seq[0] <= 0x7E => break,
+                                Ok(1) => continue,
+                                _ => break,
+                            }
+                        }
+                    }
+                }
+                _ if b < 0x20 || b == 0x7f => {
+                    // 制御文字は無視してLineStartを維持
+                }
                 _ => {
                     let _ = tx.send(InputEvent::PtyData(vec![b]));
                     state = State::Passthrough;
+                }
+            },
+            State::DetectQuestion => match b {
+                0x7f | 0x08 => {
+                    // BS: 背景色リセットしてから?を消し、LineStartに戻る
+                    let _ = stdout.write_all(b"\x1b[0m\x08 \x08");
+                    let _ = stdout.flush();
+                    state = State::LineStart;
+                }
+                0x03 => {
+                    // Ctrl-C
+                    let _ = stdout.write_all(b"\x1b[0m");
+                    let _ = stdout.flush();
+                    let _ = tx.send(InputEvent::PtyData(vec![b]));
+                    return;
+                }
+                b'\r' | b'\n' => {
+                    // ?だけでEnter → 空のAIプロンプト
+                    let _ = stdout.write_all(b"\x1b[0m\n");
+                    let _ = stdout.flush();
+                    let _ = tx.send(InputEvent::Line("?".to_string()));
+                    return;
+                }
+                _ => {
+                    // ?の後に文字入力 → read_line_raw_loopに移行
+                    // 入力された文字をstdinに戻せないので、手動で処理
+                    let first_char = if b >= 0x20 {
+                        let byte_len = utf8_char_len(b);
+                        if byte_len > 1 {
+                            let mut mb_buf = [0u8; 4];
+                            mb_buf[0] = b;
+                            let mut read_so_far = 1;
+                            while read_so_far < byte_len {
+                                match stdin.read(&mut mb_buf[read_so_far..byte_len]) {
+                                    Ok(n) if n > 0 => read_so_far += n,
+                                    _ => break,
+                                }
+                            }
+                            if read_so_far == byte_len {
+                                if let Ok(s) = std::str::from_utf8(&mb_buf[..byte_len]) {
+                                    let _ = stdout.write_all(&mb_buf[..byte_len]);
+                                    let _ = stdout.flush();
+                                    s.to_string()
+                                } else {
+                                    String::new()
+                                }
+                            } else {
+                                String::new()
+                            }
+                        } else {
+                            let _ = stdout.write_all(&[b]);
+                            let _ = stdout.flush();
+                            String::from(b as char)
+                        }
+                    } else {
+                        String::new()
+                    };
+                    let rest = read_line_raw_loop().unwrap_or_default();
+                    let _ = stdout.write_all(b"\x1b[0m");
+                    let _ = stdout.flush();
+                    let _ = tx.send(InputEvent::Line(format!("?{}{}", first_char, rest)));
+                    return;
                 }
             },
             State::DetectAt => match b {

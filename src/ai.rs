@@ -1,5 +1,8 @@
 use serde::Deserialize;
-use std::process::Command;
+use std::io::Read;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::Duration;
 
 const AI_RESPONSE_SCHEMA: &str = r#"{
   "type": "object",
@@ -13,6 +16,8 @@ const AI_RESPONSE_SCHEMA: &str = r#"{
   },
   "required": ["message", "commands"]
 }"#;
+
+pub const CANCELLED: &str = "Cancelled";
 
 #[derive(Debug, Deserialize)]
 pub struct AiResponse {
@@ -33,6 +38,22 @@ impl AiSession {
         }
     }
 
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
+
+    /// Claude Codeをインタラクティブモードで起動し、セッションを引き継ぐ
+    pub fn launch_interactive(&self) -> Result<std::process::ExitStatus, Box<dyn std::error::Error>> {
+        let sid = self.session_id.as_ref().ok_or("No session ID")?;
+        let status = Command::new("claude")
+            .args(["--resume", sid])
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()?;
+        Ok(status)
+    }
+
     pub fn send(
         &mut self,
         terminal_context: &str,
@@ -47,7 +68,7 @@ impl AiSession {
             )
         };
 
-        let output = if let Some(ref sid) = self.session_id {
+        let mut child = if let Some(ref sid) = self.session_id {
             Command::new("claude")
                 .args([
                     "-p",
@@ -59,7 +80,9 @@ impl AiSession {
                     AI_RESPONSE_SCHEMA,
                     &prompt,
                 ])
-                .output()?
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()?
         } else {
             Command::new("claude")
                 .args([
@@ -77,13 +100,52 @@ impl AiSession {
                     AI_RESPONSE_SCHEMA,
                     &prompt,
                 ])
-                .output()?
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()?
         };
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        // stdout/stderrを別スレッドで読み取り
+        let child_stdout = child.stdout.take().unwrap();
+        let child_stderr = child.stderr.take().unwrap();
 
-        if !output.status.success() {
+        let stdout_handle = thread::spawn(move || {
+            let mut buf = Vec::new();
+            let mut r = child_stdout;
+            let _ = r.read_to_end(&mut buf);
+            buf
+        });
+
+        let stderr_handle = thread::spawn(move || {
+            let mut buf = Vec::new();
+            let mut r = child_stderr;
+            let _ = r.read_to_end(&mut buf);
+            buf
+        });
+
+        // 子プロセス完了を待ちつつ、Ctrl+Cをチェック
+        let status = loop {
+            match child.try_wait()? {
+                Some(status) => break status,
+                None => {
+                    if check_stdin_cancel() {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        let _ = stdout_handle.join();
+                        let _ = stderr_handle.join();
+                        return Err(CANCELLED.into());
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+            }
+        };
+
+        let stdout_bytes = stdout_handle.join().unwrap_or_default();
+        let stderr_bytes = stderr_handle.join().unwrap_or_default();
+        let stdout = String::from_utf8_lossy(&stdout_bytes);
+        let stderr = String::from_utf8_lossy(&stderr_bytes);
+
+        if !status.success() {
             return Err(format!("claude command failed: {}", stderr).into());
         }
 
@@ -144,6 +206,37 @@ impl AiSession {
         };
         Ok(ai_response)
     }
+}
+
+/// stdinからCtrl+C (0x03) が入力されているかノンブロッキングでチェック
+#[cfg(unix)]
+fn check_stdin_cancel() -> bool {
+    use std::os::unix::io::AsRawFd;
+    let fd = std::io::stdin().as_raw_fd();
+    let mut found = false;
+    loop {
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ret = unsafe { libc::poll(&mut pfd, 1, 0) };
+        if ret <= 0 || (pfd.revents & libc::POLLIN) == 0 {
+            break;
+        }
+        let mut buf = [0u8; 1];
+        match std::io::stdin().read(&mut buf) {
+            Ok(1) if buf[0] == 0x03 => found = true,
+            Ok(1) => {} // Ctrl+C以外は破棄
+            _ => break,
+        }
+    }
+    found
+}
+
+#[cfg(not(unix))]
+fn check_stdin_cancel() -> bool {
+    false
 }
 
 /// stdout から最外のJSONオブジェクトを抽出する。

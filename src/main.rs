@@ -128,6 +128,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // ユーザ入力を読み取るスレッド（パススルーモード対応）
     let (prompt_tx, prompt_rx) = mpsc::channel::<ui::InputRequest>();
     let (input_tx, input_rx) = mpsc::channel::<ui::InputEvent>();
+    let input_bg = config.display.input_background.clone();
     thread::spawn(move || {
         loop {
             let request = match prompt_rx.recv() {
@@ -140,7 +141,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         print!("{}", prompt);
                         io::stdout().flush().ok();
                     }
-                    ui::passthrough_read(&input_tx);
+                    ui::passthrough_read(&input_tx, &input_bg);
                 }
                 ui::InputRequest::ReadLine(prompt) => {
                     if !prompt.is_empty() {
@@ -289,6 +290,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             last_pty_output = Instant::now();
                         }
                     },
+                    ui::UserInput::ClaudeHandover => {
+                        if ai_session.session_id().is_some() {
+                            ui::restore_terminal_settings();
+                            let _ = ai_session.launch_interactive();
+                            ui::save_terminal_settings();
+                        } else {
+                            eprintln!("No Claude session to resume. Use @ai or ? first.");
+                        }
+                        pending_input = true;
+                        last_pty_output = Instant::now();
+                    }
                     ui::UserInput::AiAnalyze | ui::UserInput::AiPrompt(_) => {
                         let initial_prompt = match ui::parse_input(&line) {
                             ui::UserInput::AiAnalyze => {
@@ -306,9 +318,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         };
 
                         let context = ring_buffer.get_unsent();
-                        ui::print_ai_thinking(&config.display);
-
+                        let spinner = ui::Spinner::start(&config.display);
                         let mut ai_result = ai_session.send(&context, &initial_prompt);
+                        spinner.stop();
 
                         // AIとの対話ループ: コマンド実行→結果をAIに送信→分析→繰り返し
                         loop {
@@ -389,14 +401,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     // 実行結果をAIに送信して分析を継続
                                     let follow_up_context = ring_buffer.get_unsent();
                                     print!("\n");
-                                    ui::print_ai_thinking(&config.display);
+                                    let spinner = ui::Spinner::start(&config.display);
                                     ai_result = ai_session.send(
                                         &follow_up_context,
                                         "コマンドの実行結果です。分析してください。追加の操作が必要であれば提案してください。",
                                     );
+                                    spinner.stop();
                                 }
                                 Err(e) => {
-                                    eprintln!("AI error: {}", e);
+                                    if e.to_string() == ai::CANCELLED {
+                                        eprintln!("^C");
+                                    } else {
+                                        eprintln!("AI error: {}", e);
+                                    }
                                     break;
                                 }
                             }
@@ -451,6 +468,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(mpsc::TryRecvError::Disconnected) => break,
         }
+    }
+
+    if let Some(sid) = ai_session.session_id() {
+        eprintln!("\nResume this session with:\n  claude --resume {}", sid);
     }
 
     Ok(())
