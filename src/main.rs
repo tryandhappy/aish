@@ -121,7 +121,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let aish_label = format!(
         "{}{}\x1b[0m ",
-        ui::build_color_start(&config.display.prompt_foreground, &config.display.prompt_background),
+        ui::build_color_start(&config.display.thinking_foreground, &config.display.thinking_background),
         config.display.prompt_label,
     );
 
@@ -129,6 +129,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (prompt_tx, prompt_rx) = mpsc::channel::<ui::InputRequest>();
     let (input_tx, input_rx) = mpsc::channel::<ui::InputEvent>();
     let input_bg = config.display.input_background.clone();
+    let input_aish_label = aish_label.clone();
     thread::spawn(move || {
         loop {
             let request = match prompt_rx.recv() {
@@ -141,7 +142,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         print!("{}", prompt);
                         io::stdout().flush().ok();
                     }
-                    ui::passthrough_read(&input_tx, &input_bg);
+                    ui::passthrough_read(&input_tx, &input_bg, &input_aish_label);
                 }
                 ui::InputRequest::ReadLine(prompt) => {
                     if !prompt.is_empty() {
@@ -164,8 +165,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut pending_input = true; // 入力スレッド起動待ち
     let mut input_idle = true;
     let mut last_pty_output = Instant::now();
-    let mut last_line: Vec<u8> = Vec::new();
-    let mut aish_drawn = false; // [aish]が現在の行に描画済みか
     let mut last_ctrl_c_count: u32 = 0;
     let mut last_ctrl_c_time = Instant::now();
     let mut ctrl_c_hint_until: Option<Instant> = None;
@@ -197,53 +196,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         // PTY出力をチェック
         while let Ok(data) = pty_rx.try_recv() {
-            io::stdout().write_all(&data)?;
-            io::stdout().flush()?;
+            if !ui::minibuffer_active() {
+                io::stdout().write_all(&data)?;
+                io::stdout().flush()?;
+            }
             ring_buffer.append(&data);
             last_pty_output = Instant::now();
-            for &b in &data {
-                if b == b'\n' || b == b'\r' {
-                    last_line.clear();
-                    aish_drawn = false;
-                } else {
-                    last_line.push(b);
-                }
-            }
         }
 
         // PTY出力が落ち着いたら入力スレッドを起動
         if pending_input && input_idle && last_pty_output.elapsed() > Duration::from_millis(50) {
-            let hint = if ctrl_c_hint_until.is_some() {
-                "\x1b[33m(Ctrl+C to exit)\x1b[0m "
-            } else {
-                ""
-            };
             let request = if mode.accepts_shell_command() {
                 ui::InputRequest::Passthrough(String::new())
             } else {
+                let hint = if ctrl_c_hint_until.is_some() {
+                    "\x1b[33m(Ctrl+C to exit)\x1b[0m "
+                } else {
+                    ""
+                };
                 ui::InputRequest::ReadLine(format!("{}{}", aish_label, hint))
             };
             let _ = prompt_tx.send(request);
             pending_input = false;
             input_idle = false;
-        }
-
-        // [aish]ラベル描画（入力スレッドとは独立）
-        // PTY出力が落ち着き、プロンプトらしい行で、まだ描画していなければ描画
-        if !aish_drawn
-            && mode.accepts_shell_command()
-            && last_pty_output.elapsed() > Duration::from_millis(50)
-            && ui::looks_like_prompt(&last_line)
-        {
-            let last_line_str = String::from_utf8_lossy(&last_line);
-            let hint = if ctrl_c_hint_until.is_some() {
-                "\x1b[33m(Ctrl+C to exit)\x1b[0m "
-            } else {
-                ""
-            };
-            print!("\r\x1b[2K{}{}{}", aish_label, last_line_str, hint);
-            io::stdout().flush().ok();
-            aish_drawn = true;
         }
 
         // PTYプロセスの終了チェック
@@ -301,21 +276,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         pending_input = true;
                         last_pty_output = Instant::now();
                     }
-                    ui::UserInput::AiAnalyze | ui::UserInput::AiPrompt(_) => {
-                        let initial_prompt = match ui::parse_input(&line) {
-                            ui::UserInput::AiAnalyze => {
-                                "表示されている内容を調べて、気になる点や問題点があれば解説してください。".to_string()
-                            }
-                            ui::UserInput::AiPrompt(p) => {
-                                if p.is_empty() {
-                                    pending_input = true;
-                                    last_pty_output = Instant::now();
-                                    continue;
-                                }
-                                p
-                            }
-                            _ => unreachable!(),
-                        };
+                    ui::UserInput::AiPrompt(p) => {
+                        if p.is_empty() {
+                            pending_input = true;
+                            last_pty_output = Instant::now();
+                            continue;
+                        }
+                        let initial_prompt = p;
 
                         let context = ring_buffer.get_unsent();
                         let spinner = ui::Spinner::start(&config.display);
@@ -366,13 +333,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                             io::stdout().write_all(&data)?;
                                             io::stdout().flush()?;
                                             ring_buffer.append(&data);
-                                            for &b in &data {
-                                                if b == b'\n' || b == b'\r' {
-                                                    last_line.clear();
-                                                } else {
-                                                    last_line.push(b);
-                                                }
-                                            }
                                         }
                                     }
 
@@ -384,13 +344,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                             io::stdout().write_all(&data)?;
                                             io::stdout().flush()?;
                                             ring_buffer.append(&data);
-                                            for &b in &data {
-                                                if b == b'\n' || b == b'\r' {
-                                                    last_line.clear();
-                                                } else {
-                                                    last_line.push(b);
-                                                }
-                                            }
                                             got_data = true;
                                         }
                                         if !got_data {
@@ -440,14 +393,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     io::stdout().flush()?;
                                 }
                                 ring_buffer.append(&data);
-                                for &b in &data {
-                                    if b == b'\n' || b == b'\r' {
-                                        last_line.clear();
-                                        aish_drawn = false;
-                                    } else {
-                                        last_line.push(b);
-                                    }
-                                }
                             }
                         }
                         input_idle = true;

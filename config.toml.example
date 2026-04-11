@@ -5,19 +5,19 @@
 system_prompt = "あなたはLinuxサーバ管理の専門家です。SSHセッションの内容を把握しています。"
 
 # Display settings
-# Colors: "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"
-#         or 256-color number "0"-"255"
+# Colors: ANSI escape sequences (use \u001B for ESC in TOML)
+#         e.g. "\u001B[36m" (cyan fg), "\u001B[43m" (yellow bg), "\u001B[38;5;208m" (256-color fg)
 #         or "" (empty) for terminal default
 [display]
 prompt_label = "[aish]"
-prompt_foreground = "cyan"
+prompt_foreground = "\u001B[36m"
 prompt_background = ""
 thinking_message = "Thinking..."
-thinking_foreground = "208"
+thinking_foreground = "\u001B[38;5;208m"
 thinking_background = ""
 ai_foreground = ""
-ai_background = "238"
-input_background = "yellow"
+ai_background = "\u001B[48;5;238m"
+input_background = "\u001B[43m"
 
 # Host-specific settings
 # - patterns: OR match (any pattern matches), glob wildcards supported

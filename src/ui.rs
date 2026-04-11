@@ -15,6 +15,7 @@ pub enum InputEvent {
 }
 
 static CTRL_C_COUNT: AtomicU32 = AtomicU32::new(0);
+static MINIBUFFER_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 pub fn record_ctrl_c() {
     CTRL_C_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -22,6 +23,23 @@ pub fn record_ctrl_c() {
 
 pub fn ctrl_c_count() -> u32 {
     CTRL_C_COUNT.load(Ordering::Relaxed)
+}
+
+pub fn minibuffer_active() -> bool {
+    MINIBUFFER_ACTIVE.load(Ordering::Relaxed)
+}
+
+pub fn terminal_size() -> (u16, u16) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let fd = io::stdout().as_raw_fd();
+        let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+        if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0 && ws.ws_row > 0 {
+            return (ws.ws_row, ws.ws_col);
+        }
+    }
+    (24, 80)
 }
 
 pub enum InputRequest {
@@ -63,53 +81,9 @@ pub fn restore_terminal_settings() {
 
 #[cfg(not(unix))]
 pub fn restore_terminal_settings() {}
-fn color_to_fg(color: &str) -> String {
-    if color.is_empty() {
-        return String::new();
-    }
-    match color {
-        "black" => "\x1b[30m".to_string(),
-        "red" => "\x1b[31m".to_string(),
-        "green" => "\x1b[32m".to_string(),
-        "yellow" => "\x1b[33m".to_string(),
-        "blue" => "\x1b[34m".to_string(),
-        "magenta" => "\x1b[35m".to_string(),
-        "cyan" => "\x1b[36m".to_string(),
-        "white" => "\x1b[37m".to_string(),
-        n => n
-            .parse::<u8>()
-            .ok()
-            .map(|num| format!("\x1b[38;5;{}m", num))
-            .unwrap_or_default(),
-    }
-}
-
-fn color_to_bg(color: &str) -> String {
-    if color.is_empty() {
-        return String::new();
-    }
-    match color {
-        "black" => "\x1b[40m".to_string(),
-        "red" => "\x1b[41m".to_string(),
-        "green" => "\x1b[42m".to_string(),
-        "yellow" => "\x1b[43m".to_string(),
-        "blue" => "\x1b[44m".to_string(),
-        "magenta" => "\x1b[45m".to_string(),
-        "cyan" => "\x1b[46m".to_string(),
-        "white" => "\x1b[47m".to_string(),
-        n => n
-            .parse::<u8>()
-            .ok()
-            .map(|num| format!("\x1b[48;5;{}m", num))
-            .unwrap_or_default(),
-    }
-}
-
 pub fn build_color_start(fg: &str, bg: &str) -> String {
-    let fg_code = color_to_fg(fg);
-    let bg_code = color_to_bg(bg);
     let erase = if bg.is_empty() { "" } else { "\x1b[K" };
-    format!("{}{}{}", fg_code, bg_code, erase)
+    format!("{}{}{}", fg, bg, erase)
 }
 
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -187,23 +161,9 @@ pub fn print_confirm_prompt(commands: &[String], display: &DisplayConfig) {
         return;
     }
     print_ai_commands(commands, display);
-    let bg = color_to_bg(&display.input_background);
+    let bg = &display.input_background;
     print!("{}Execute? (Y/n) \x1b[0m ", bg);
     io::stdout().flush().ok();
-}
-
-/// last_lineがシェルプロンプトらしいかを判定する。
-pub fn looks_like_prompt(last_line: &[u8]) -> bool {
-    let stripped = strip_ansi_escapes::strip(last_line);
-    let s = String::from_utf8_lossy(&stripped);
-    let trimmed = s.trim_end();
-    if trimmed.is_empty() {
-        return false;
-    }
-    trimmed.ends_with('$')
-        || trimmed.ends_with('#')
-        || trimmed.ends_with('%')
-        || trimmed.ends_with('>')
 }
 
 pub fn parse_confirm(input: &str) -> bool {
@@ -213,19 +173,12 @@ pub fn parse_confirm(input: &str) -> bool {
 
 pub enum UserInput {
     AiPrompt(String),
-    AiAnalyze,
     ClaudeHandover,
     ShellCommand(String),
     Exit,
 }
 
-const AI_ANALYZE_MARKER: &str = "\x1f";
-
 pub fn parse_input(input: &str) -> UserInput {
-    if input == AI_ANALYZE_MARKER {
-        return UserInput::AiAnalyze;
-    }
-
     let trimmed = input.trim();
 
     if trimmed.eq_ignore_ascii_case("exit") {
@@ -294,7 +247,12 @@ fn termios_get(fd: i32) -> Option<libc::termios> {
 
 #[cfg(unix)]
 fn read_line_raw_loop() -> Option<String> {
-    let mut line = String::new();
+    read_line_raw_loop_from(String::new(), false)
+}
+
+#[cfg(unix)]
+fn read_line_raw_loop_from(initial: String, minibuffer: bool) -> Option<String> {
+    let mut line = initial;
     let mut stdout = io::stdout();
     let mut stdin = io::stdin();
     let mut buf = [0u8; 4];
@@ -319,9 +277,10 @@ fn read_line_raw_loop() -> Option<String> {
 
         match b {
             b'\n' | b'\r' => {
-                // Enter
-                let _ = stdout.write_all(b"\x1b[0m\n");
-                let _ = stdout.flush();
+                if !minibuffer {
+                    let _ = stdout.write_all(b"\x1b[0m\n");
+                    let _ = stdout.flush();
+                }
                 break;
             }
             0x7f | 0x08 => {
@@ -337,6 +296,9 @@ fn read_line_raw_loop() -> Option<String> {
             }
             0x03 => {
                 // Ctrl-C
+                if minibuffer {
+                    return None;
+                }
                 record_ctrl_c();
                 let _ = stdout.write_all(b"^C\n");
                 let _ = stdout.flush();
@@ -375,12 +337,6 @@ fn read_line_raw_loop() -> Option<String> {
                     let _ = stdout.write_all(b"\x08 \x08");
                 }
                 let _ = stdout.flush();
-            }
-            0x1f => {
-                // Ctrl+? : AI分析
-                let _ = stdout.write_all(b"\n");
-                let _ = stdout.flush();
-                return Some("\x1f".to_string());
             }
             0x1b => {
                 // ESCシーケンス（矢印キー等）を読み飛ばす
@@ -424,16 +380,16 @@ fn read_line_raw_loop() -> Option<String> {
     Some(line)
 }
 
-/// パススルーモードで入力を読む。AIプレフィックス検出付き。
-/// キー入力はPTYに直送され、@aiや?が検出された場合はAI入力モードに切り替わる。
-pub fn passthrough_read(tx: &Sender<InputEvent>, input_bg: &str) {
+/// パススルーモードで入力を読む。Ctrl+/でミニバッファを開く。
+/// それ以外のキー入力はPTYに直送される。
+pub fn passthrough_read(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &str) {
     #[cfg(unix)]
     {
-        passthrough_read_unix(tx, input_bg);
+        passthrough_read_unix(tx, input_bg, aish_label);
     }
     #[cfg(not(unix))]
     {
-        let _ = input_bg;
+        let _ = (input_bg, aish_label);
         match read_line_cooked() {
             Some(line) => {
                 let _ = tx.send(InputEvent::Line(line));
@@ -444,29 +400,62 @@ pub fn passthrough_read(tx: &Sender<InputEvent>, input_bg: &str) {
 }
 
 #[cfg(unix)]
-fn passthrough_read_unix(tx: &Sender<InputEvent>, input_bg: &str) {
+fn passthrough_read_unix(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &str) {
     // rawモードはセッション全体で維持されているため、ここでは設定・復元しない
-    passthrough_read_raw(tx, input_bg);
+    passthrough_read_raw(tx, input_bg, aish_label);
     let _ = tx.send(InputEvent::PassthroughEnded);
 }
 
+/// ミニバッファをターミナル最下行に表示し、ユーザ入力を受け付ける。
+/// 入力確定後にカーソルを復元し、InputEventを送信する。
 #[cfg(unix)]
-fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str) {
+fn show_minibuffer(
+    stdout: &mut io::Stdout,
+    tx: &Sender<InputEvent>,
+    input_bg: &str,
+    aish_label: &str,
+    cancel_shell: bool,
+) {
+    let (rows, _) = terminal_size();
+    MINIBUFFER_ACTIVE.store(true, Ordering::Relaxed);
+
+    // カーソル保存、最下行に移動、[aish]ラベル + 入力エリア描画
+    let _ = write!(stdout, "\x1b7\x1b[{};1H\x1b[2K{}{}\x1b[K", rows, aish_label, input_bg);
+    let _ = stdout.flush();
+
+    let result = read_line_raw_loop_from(String::new(), true);
+
+    // クリーンアップ: 最下行消去、カーソル復元
+    let (rows, _) = terminal_size(); // リサイズ対応で再取得
+    let _ = write!(stdout, "\x1b[0m\x1b[{};1H\x1b[2K\x1b8", rows);
+    let _ = stdout.flush();
+    MINIBUFFER_ACTIVE.store(false, Ordering::Relaxed);
+
+    match result {
+        Some(text) if text.trim().is_empty() => {
+            // 空Enter → 何もしない
+        }
+        Some(text) => {
+            // AIプロンプト
+            if cancel_shell {
+                let _ = tx.send(InputEvent::PtyData(vec![0x03]));
+            }
+            let _ = tx.send(InputEvent::Line(format!("? {}", text)));
+        }
+        None => {
+            // キャンセル (Ctrl+C) — 何も送信しない
+        }
+    }
+}
+
+/// パススルーモードのrawキー入力処理。
+/// Ctrl+/ でミニバッファを開き、それ以外はPTYに直送する。
+#[cfg(unix)]
+fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &str) {
     let mut stdin = io::stdin();
     let mut stdout = io::stdout();
-    let mut detect_buf: Vec<u8> = Vec::new();
     let mut buf = [0u8; 1];
-
-    #[derive(PartialEq)]
-    enum State {
-        LineStart,
-        DetectQuestion,
-        DetectAt,
-        DetectAtA,
-        DetectAtAi,
-        Passthrough,
-    }
-    let mut state = State::LineStart;
+    let mut at_line_start = true;
 
     loop {
         match stdin.read(&mut buf) {
@@ -476,38 +465,27 @@ fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str) {
         }
         let b = buf[0];
 
-        match state {
-            State::LineStart => match b {
-                b'?' => {
-                    let bg = color_to_bg(input_bg);
-                    let _ = write!(stdout, "{}?", bg);
-                    let _ = stdout.flush();
-                    state = State::DetectQuestion;
-                }
-                b'@' => {
-                    detect_buf.clear();
-                    detect_buf.push(b);
-                    state = State::DetectAt;
-                }
-                0x1f => {
-                    let _ = stdout.write_all(b"\n");
-                    let _ = stdout.flush();
-                    let _ = tx.send(InputEvent::Line("\x1f".to_string()));
-                    return;
-                }
-                0x03 => {
-                    let _ = tx.send(InputEvent::PtyData(vec![b]));
-                    return;
-                }
-                b'\r' | b'\n' => {
-                    let _ = tx.send(InputEvent::PtyData(vec![b]));
-                    return;
-                }
-                0x1b => {
-                    // ESCシーケンス(フォーカスイベント等)を読み飛ばし、LineStartを維持
+        match b {
+            0x1f => {
+                // Ctrl+/ → ミニバッファを開く
+                show_minibuffer(&mut stdout, tx, input_bg, aish_label, !at_line_start);
+                return;
+            }
+            0x03 => {
+                // Ctrl+C: PTYに送信して戻る
+                let _ = tx.send(InputEvent::PtyData(vec![b]));
+                return;
+            }
+            b'\r' | b'\n' => {
+                let _ = tx.send(InputEvent::PtyData(vec![b]));
+                return;
+            }
+            0x1b => {
+                // ESCシーケンス
+                if at_line_start {
+                    // 行頭ではESCシーケンスを読み飛ばす(フォーカスイベント等)
                     let mut seq = [0u8; 1];
                     if stdin.read(&mut seq).is_ok() && seq[0] == b'[' {
-                        // CSIシーケンス: 終端文字(0x40-0x7E)まで読み飛ばす
                         loop {
                             match stdin.read(&mut seq) {
                                 Ok(1) if seq[0] >= 0x40 && seq[0] <= 0x7E => break,
@@ -516,172 +494,49 @@ fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str) {
                             }
                         }
                     }
-                }
-                _ if b < 0x20 || b == 0x7f => {
-                    // 制御文字は無視してLineStartを維持
-                }
-                _ => {
+                } else {
+                    // 入力中はPTYに転送
                     let _ = tx.send(InputEvent::PtyData(vec![b]));
-                    state = State::Passthrough;
-                }
-            },
-            State::DetectQuestion => match b {
-                0x7f | 0x08 => {
-                    // BS: 背景色リセットしてから?を消し、LineStartに戻る
-                    let _ = stdout.write_all(b"\x1b[0m\x08 \x08");
-                    let _ = stdout.flush();
-                    state = State::LineStart;
-                }
-                0x03 => {
-                    // Ctrl-C
-                    let _ = stdout.write_all(b"\x1b[0m");
-                    let _ = stdout.flush();
-                    let _ = tx.send(InputEvent::PtyData(vec![b]));
-                    return;
-                }
-                b'\r' | b'\n' => {
-                    // ?だけでEnter → 空のAIプロンプト
-                    let _ = stdout.write_all(b"\x1b[0m\n");
-                    let _ = stdout.flush();
-                    let _ = tx.send(InputEvent::Line("?".to_string()));
-                    return;
-                }
-                _ => {
-                    // ?の後に文字入力 → read_line_raw_loopに移行
-                    // 入力された文字をstdinに戻せないので、手動で処理
-                    let first_char = if b >= 0x20 {
-                        let byte_len = utf8_char_len(b);
-                        if byte_len > 1 {
-                            let mut mb_buf = [0u8; 4];
-                            mb_buf[0] = b;
-                            let mut read_so_far = 1;
-                            while read_so_far < byte_len {
-                                match stdin.read(&mut mb_buf[read_so_far..byte_len]) {
-                                    Ok(n) if n > 0 => read_so_far += n,
+                    let mut seq = [0u8; 1];
+                    if stdin.read(&mut seq).is_ok() {
+                        let _ = tx.send(InputEvent::PtyData(vec![seq[0]]));
+                        if seq[0] == b'[' {
+                            loop {
+                                match stdin.read(&mut seq) {
+                                    Ok(1) => {
+                                        let _ = tx.send(InputEvent::PtyData(vec![seq[0]]));
+                                        if seq[0] >= 0x40 && seq[0] <= 0x7E {
+                                            break;
+                                        }
+                                    }
                                     _ => break,
                                 }
                             }
-                            if read_so_far == byte_len {
-                                if let Ok(s) = std::str::from_utf8(&mb_buf[..byte_len]) {
-                                    let _ = stdout.write_all(&mb_buf[..byte_len]);
-                                    let _ = stdout.flush();
-                                    s.to_string()
-                                } else {
-                                    String::new()
-                                }
-                            } else {
-                                String::new()
-                            }
-                        } else {
-                            let _ = stdout.write_all(&[b]);
-                            let _ = stdout.flush();
-                            String::from(b as char)
                         }
-                    } else {
-                        String::new()
-                    };
-                    let rest = read_line_raw_loop().unwrap_or_default();
-                    let _ = stdout.write_all(b"\x1b[0m");
-                    let _ = stdout.flush();
-                    let _ = tx.send(InputEvent::Line(format!("?{}{}", first_char, rest)));
-                    return;
+                    }
                 }
-            },
-            State::DetectAt => match b {
-                b'a' | b'A' => {
-                    detect_buf.push(b);
-                    state = State::DetectAtA;
-                }
-                0x7f | 0x08 => {
-                    detect_buf.clear();
-                    state = State::LineStart;
-                }
-                0x03 => {
-                    detect_buf.clear();
+            }
+            _ if at_line_start && (b < 0x20 || b == 0x7f) => {
+                // 行頭の制御文字は無視
+            }
+            _ => {
+                // 通常文字(ASCII or UTF-8マルチバイト)をPTYに転送
+                let byte_len = utf8_char_len(b);
+                if byte_len > 1 {
+                    let mut mb_buf = [0u8; 4];
+                    mb_buf[0] = b;
+                    let mut read_so_far = 1;
+                    while read_so_far < byte_len {
+                        match stdin.read(&mut mb_buf[read_so_far..byte_len]) {
+                            Ok(n) if n > 0 => read_so_far += n,
+                            _ => break,
+                        }
+                    }
+                    let _ = tx.send(InputEvent::PtyData(mb_buf[..read_so_far].to_vec()));
+                } else {
                     let _ = tx.send(InputEvent::PtyData(vec![b]));
-                    return;
                 }
-                b'\r' | b'\n' => {
-                    detect_buf.push(b);
-                    let _ = tx.send(InputEvent::PtyData(detect_buf.clone()));
-                    detect_buf.clear();
-                    return;
-                }
-                _ => {
-                    detect_buf.push(b);
-                    let _ = tx.send(InputEvent::PtyData(detect_buf.clone()));
-                    detect_buf.clear();
-                    state = State::Passthrough;
-                }
-            },
-            State::DetectAtA => match b {
-                b'i' | b'I' => {
-                    detect_buf.push(b);
-                    state = State::DetectAtAi;
-                }
-                0x7f | 0x08 => {
-                    detect_buf.pop();
-                    state = State::DetectAt;
-                }
-                0x03 => {
-                    detect_buf.clear();
-                    let _ = tx.send(InputEvent::PtyData(vec![b]));
-                    return;
-                }
-                b'\r' | b'\n' => {
-                    detect_buf.push(b);
-                    let _ = tx.send(InputEvent::PtyData(detect_buf.clone()));
-                    detect_buf.clear();
-                    return;
-                }
-                _ => {
-                    detect_buf.push(b);
-                    let _ = tx.send(InputEvent::PtyData(detect_buf.clone()));
-                    detect_buf.clear();
-                    state = State::Passthrough;
-                }
-            },
-            State::DetectAtAi => match b {
-                b' ' | b'\t' => {
-                    let _ = stdout.write_all(b"@ai ");
-                    let _ = stdout.flush();
-                    let rest = read_line_raw_loop().unwrap_or_default();
-                    let _ = tx.send(InputEvent::Line(format!("@ai {}", rest)));
-                    return;
-                }
-                b'\r' | b'\n' => {
-                    let _ = stdout.write_all(b"@ai\n");
-                    let _ = stdout.flush();
-                    let _ = tx.send(InputEvent::Line("@ai".to_string()));
-                    return;
-                }
-                0x7f | 0x08 => {
-                    detect_buf.pop();
-                    state = State::DetectAtA;
-                }
-                0x03 => {
-                    detect_buf.clear();
-                    let _ = tx.send(InputEvent::PtyData(vec![b]));
-                    return;
-                }
-                _ => {
-                    detect_buf.push(b);
-                    let _ = tx.send(InputEvent::PtyData(detect_buf.clone()));
-                    detect_buf.clear();
-                    state = State::Passthrough;
-                }
-            },
-            State::Passthrough => {
-                if b == 0x1f {
-                    let _ = stdout.write_all(b"\n");
-                    let _ = stdout.flush();
-                    let _ = tx.send(InputEvent::Line("\x1f".to_string()));
-                    return;
-                }
-                let _ = tx.send(InputEvent::PtyData(vec![b]));
-                if b == b'\r' || b == b'\n' {
-                    return;
-                }
+                at_line_start = false;
             }
         }
     }

@@ -3,7 +3,10 @@
     "rust-analyzer-lsp@claude-plugins-official": true
   },
   "model": "opus",
-  "effort": "high",
+  "effort": "auto",
+  "permissions": {
+    "acceptEdits": "auto"
+  },
   "allowedTools": [
     "Bash(npm run build)",
     "Bash(npm test)",
@@ -11,5 +14,8 @@
     "Bash(ls *)",
     "Bash(cat *)",
     "Bash(cargo *)"
-  ]
+  ],
+  "env": {
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1"
+  }
 }

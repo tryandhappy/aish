@@ -58,7 +58,7 @@ fn default_prompt_label() -> String {
 }
 
 fn default_prompt_foreground() -> String {
-    "cyan".to_string()
+    "\x1b[36m".to_string()
 }
 
 fn default_thinking_message() -> String {
@@ -66,15 +66,15 @@ fn default_thinking_message() -> String {
 }
 
 fn default_thinking_foreground() -> String {
-    "208".to_string()
+    "\x1b[38;5;208m".to_string()
 }
 
 fn default_ai_background() -> String {
-    "238".to_string()
+    "\x1b[48;5;238m".to_string()
 }
 
 fn default_input_background() -> String {
-    "yellow".to_string()
+    "\x1b[43m".to_string()
 }
 
 impl Config {
