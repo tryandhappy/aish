@@ -24,12 +24,14 @@ sudo chmod 755 /usr/bin/aish
 ### Update
 
 ```bash
-aish --update
+sudo aish --update
 ```
 
 ### Usage
 
 ```bash
+claude login
+
 aish                    # Local shell
 aish user@example.com   # SSH (same arguments as ssh)
 ```
@@ -72,12 +74,14 @@ sudo chmod 755 /usr/bin/aish
 ### アップデート
 
 ```bash
-aish --update
+sudo aish --update
 ```
 
 ### 使い方
 
 ```bash
+claude login
+
 aish                    # ローカルシェル
 aish user@example.com   # SSH接続 (sshと同じ引数)
 ```
