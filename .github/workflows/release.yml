@@ -58,6 +58,13 @@ jobs:
       - name: Build
         run: cross build --release --target ${{ matrix.target }}
 
+      - name: Install packaging tools
+        run: cargo install cargo-deb cargo-generate-rpm
+
+      - name: Copy raw binary
+        run: |
+          cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "${BINARY_NAME}-${{ matrix.target }}"
+
       - name: Package archive
         run: |
           ARCHIVE="${BINARY_NAME}-${{ steps.version.outputs.tag }}-${{ matrix.target }}"
@@ -68,13 +75,22 @@ jobs:
           tar czf "${ARCHIVE}.tar.gz" "$ARCHIVE"
           sha256sum "${ARCHIVE}.tar.gz" > "${ARCHIVE}.tar.gz.sha256"
 
+      - name: Build deb package
+        run: cargo deb --no-build --target ${{ matrix.target }}
+
+      - name: Build rpm package
+        run: cargo generate-rpm --target ${{ matrix.target }}
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.BINARY_NAME }}-${{ matrix.target }}
           path: |
+            ${{ env.BINARY_NAME }}-${{ matrix.target }}
             ${{ env.BINARY_NAME }}-*.tar.gz
             ${{ env.BINARY_NAME }}-*.tar.gz.sha256
+            target/${{ matrix.target }}/debian/*.deb
+            target/${{ matrix.target }}/generate-rpm/*.rpm
           retention-days: 1
 
   release:
@@ -99,7 +115,8 @@ jobs:
       - name: Flatten artifact structure
         run: |
           mkdir -p dist
-          find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec mv {} dist/ \;
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' -o -name '*.deb' -o -name '*.rpm' \) -exec mv {} dist/ \;
+          find artifacts -type f -name 'aish-*-unknown-linux-musl' -exec mv {} dist/ \;
           ls -la dist/
 
       - name: Create Release

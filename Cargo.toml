@@ -1,8 +1,20 @@
 [package]
 name = "aish"
-version = "0.1.0"
+version = "0.1.5"
 edition = "2021"
 description = "CLI SSH + AI (Claude Code)"
+
+[package.metadata.deb]
+maintainer = "tryandhappy"
+section = "utils"
+assets = [
+    ["target/release/aish", "usr/bin/", "755"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/aish", dest = "/usr/bin/aish", mode = "0755" },
+]
 
 [dependencies]
 portable-pty = "0.8"

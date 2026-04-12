@@ -4,6 +4,7 @@ mod mode;
 mod pty_handler;
 mod ring_buffer;
 mod ui;
+mod update;
 
 use mode::Mode;
 use std::io::{self, Read, Write};
@@ -16,8 +17,23 @@ struct AishArgs {
     ssh_args: Vec<String>,
 }
 
-fn parse_args() -> AishArgs {
+enum CliAction {
+    Run(AishArgs),
+    Update,
+    Version,
+}
+
+fn parse_args() -> CliAction {
     let args: Vec<String> = std::env::args().skip(1).collect();
+
+    for arg in &args {
+        match arg.as_str() {
+            "--update" => return CliAction::Update,
+            "--version" | "-V" => return CliAction::Version,
+            _ => {}
+        }
+    }
+
     let mut config_path = None;
     let mut ssh_args = Vec::new();
     let mut i = 0;
@@ -42,10 +58,10 @@ fn parse_args() -> AishArgs {
         i += 1;
     }
 
-    AishArgs {
+    CliAction::Run(AishArgs {
         config_path,
         ssh_args,
-    }
+    })
 }
 
 #[cfg(unix)]
@@ -53,7 +69,7 @@ extern "C" fn sigint_handler(_sig: libc::c_int) {
     ui::record_ctrl_c();
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
+fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     ui::save_terminal_settings();
 
     #[cfg(unix)]
@@ -67,7 +83,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
-    let args = parse_args();
     let config = config::Config::load(args.config_path.as_deref());
 
     let mut mode = if args.ssh_args.is_empty() {
@@ -423,13 +438,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() {
-    let result = run();
-    // ターミナルタイトルを復元
-    print!("\x1b]2;\x07");
-    io::stdout().flush().ok();
-    ui::restore_terminal_settings();
-    if let Err(e) = result {
-        eprintln!("Error: {}", e);
-        std::process::exit(1);
+    match parse_args() {
+        CliAction::Version => {
+            println!("aish {}", env!("CARGO_PKG_VERSION"));
+        }
+        CliAction::Update => {
+            if let Err(e) = update::run_update() {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        CliAction::Run(args) => {
+            let result = run(args);
+            // ターミナルタイトルを復元
+            print!("\x1b]2;\x07");
+            io::stdout().flush().ok();
+            ui::restore_terminal_settings();
+            if let Err(e) = result {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
     }
 }
