@@ -530,8 +530,10 @@ fn show_minibuffer(
 /// Ctrl+/ でaishプロンプトを開き、それ以外はPTYに直送する。
 #[cfg(unix)]
 fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &str) {
-    use std::os::unix::io::AsRawFd;
-    let mut stdin = io::stdin();
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+    // io::stdin()はBufReaderを内包しており、poll()と併用するとデータ喪失する。
+    // ManuallyDropでfd 0を直接読み取り、BufReaderをバイパスする。
+    let mut stdin = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
     let mut stdout = io::stdout();
     let mut buf = [0u8; 1];
     let mut at_line_start = true;

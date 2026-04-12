@@ -93,7 +93,7 @@ fn default_shell_prefix_color() -> String {
 }
 
 fn default_header_color() -> String {
-    "\x1b[38;5;245m".to_string()
+    "\x1b[38;5;208m".to_string()
 }
 
 fn default_prompt_label() -> String {

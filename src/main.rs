@@ -157,6 +157,12 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
         ui::build_color_start(&config.display.prompt_color),
         config.display.prompt_label,
     );
+    // ReadLine用ラベル（行末クリアなし — 入力エリアに背景色を漏らさない）
+    let aish_label_readline = format!(
+        "{}{}\x1b[0m ",
+        config.display.prompt_color,
+        config.display.prompt_label,
+    );
 
     // ユーザ入力を読み取るスレッド（パススルーモード対応）
     let (prompt_tx, prompt_rx) = mpsc::channel::<ui::InputRequest>();
@@ -200,9 +206,6 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut prompt_command_set = false;
     let mut prompt_setup_suppress = false;
     let mut prompt_setup_buf: Vec<u8> = Vec::new();
-    // Local: すぐにセットアップ可能。Remote: パスワード認証を考慮し最初のEnter後にセットアップ
-    let mut user_entered = mode == Mode::Local;
-
     // PROMPT_COMMANDセットアップ用コマンドを事前構築（設定ファイルの色・ラベルを使用）
     let ps1_color = ansi_to_ps1_escape(&config.display.shell_prefix_color);
     let ps1_reset = if ps1_color.is_empty() { "" } else { "\\[\\e[0m\\]" };
@@ -255,7 +258,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // PROMPT_COMMANDセットアップ: [aish]プレフィックスをPS1に追加
-        if !prompt_command_set && user_entered && mode.accepts_shell_command()
+        if !prompt_command_set && mode.accepts_shell_command()
             && pending_input && input_idle
             && last_pty_output.elapsed() > Duration::from_millis(50)
         {
@@ -294,7 +297,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     ""
                 };
-                ui::InputRequest::ReadLine(format!("{}{}", aish_label, hint))
+                ui::InputRequest::ReadLine(format!("{}{}", aish_label_readline, hint))
             };
             let _ = prompt_tx.send(request);
             pending_input = false;
@@ -323,9 +326,6 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
             Ok(ui::InputEvent::PtyData(data)) => {
                 if mode.accepts_shell_command() {
                     let _ = pty.write(&data);
-                }
-                if !user_entered && data.iter().any(|&b| b == b'\r' || b == b'\n') {
-                    user_entered = true;
                 }
                 continue;
             }

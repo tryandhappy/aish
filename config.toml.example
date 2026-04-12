@@ -15,7 +15,7 @@ language = "Japanese"
 [display]
 shell_prefix_label = "[aish]"                                  # default: "[aish]" — PS1 shell prompt prefix
 shell_prefix_color = "\u001B[38;5;216m"                        # default: "\u001B[38;5;216m" (light orange)
-header_color = "\u001B[38;5;245m"                              # default: "\u001B[38;5;245m" (gray) — startup banner
+header_color = "\u001B[38;5;208m"                              # default: "\u001B[38;5;208m" (orange) — startup banner
 prompt_label = "[aish]"                                        # default: "[aish]" — aish prompt (Ctrl+/) label
 prompt_color = "\u001B[38;5;208;48;2;50;35;20m"                # default: orange text, dark brown bg
 thinking_message = "Thinking..."                               # default: "Thinking..."
