@@ -54,8 +54,10 @@ pub fn run_update() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Download to temp file
-    let tmp_output = Command::new("mktemp").output()?;
-    let tmpfile = String::from_utf8(tmp_output.stdout)?.trim().to_string();
+    let tmpfile = std::env::temp_dir()
+        .join(format!("aish-update-{}", std::process::id()))
+        .to_string_lossy()
+        .to_string();
 
     let dl_status = Command::new("curl")
         .args(["-fSL", "-o", &tmpfile, &download_url])
@@ -71,12 +73,13 @@ pub fn run_update() -> Result<(), Box<dyn std::error::Error>> {
     println!("Installing to {} ...", exe_path_str);
 
     // Set executable permission
-    let chmod = Command::new("chmod")
-        .args(["755", &tmpfile])
-        .status()?;
-    if !chmod.success() {
-        let _ = std::fs::remove_file(&tmpfile);
-        return Err("Failed to set permissions".into());
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmpfile, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&tmpfile);
+                format!("Failed to set permissions: {}", e)
+            })?;
     }
 
     // Replace current binary

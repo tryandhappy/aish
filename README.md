@@ -2,79 +2,57 @@
 
 **AI-assisted SSH shell** — Ask Claude Code for help right inside your SSH session.
 
+`aish` は AI + SSH です。 `ssh` の代わりに使えるCLIです。
+SSHしながら、困ったときは `Ctrl+/` で Claude Code に質問できます。
+AIは画面の内容を見ているので、エラーやログを貼り付ける必要はありません。
+コマンド実行時は必ず確認が入るので安心です。
+
 ![aish screenshot](docs/images/sample1.png)
 
-[English](#english) | [日本語](#日本語)
+### デモ動画
 
----
-
-## English
-
-`aish` is a drop-in replacement for `ssh`. Work on the remote server as usual, and when you need help, press `Ctrl+/` to ask Claude Code. The AI can see what's on your screen, so you don't have to copy-paste errors or logs. If it suggests a command, you confirm before it runs.
-
-### Prerequisites
-
-- [Claude Code](https://claude.ai/install.sh) (`curl -fsSL https://claude.ai/install.sh | bash`)
-
-### Install
-
-```bash
-sudo curl -fsSL -o /usr/bin/aish https://github.com/tryandhappy/aish/releases/latest/download/aish-$(uname -m)-unknown-linux-musl
-sudo chmod 755 /usr/bin/aish
-```
-
-### Update
-
-```bash
-sudo aish --update
-```
-
-### Usage
-
-```bash
-claude login
-
-aish                    # Local shell
-aish user@example.com   # SSH (same arguments as ssh)
-```
-
-| Input | Action |
-|-------|--------|
-| `Ctrl+/` | Ask the AI about the current screen |
-| Everything else | Runs as a normal shell command |
-| `exit` | Quit |
-
-### Demo
-
-**SSH mode**
-
+**SSHモード**
 https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-ssh1.mp4
 
-**Local mode**
-
+**ローカルモード**
 https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
 
-### Features
 
-- Works like a normal shell (tab completion, vim, arrow keys, etc.)
-- The AI sees your screen automatically — no copy-paste needed
-- Suggested commands require your confirmation before running
-- Conversations keep context across multiple questions
 
-### Community
 
-Bug reports, feedback, and questions are welcome on Discord:
-https://discord.gg/nj3xz6RBQC
-
----
-
-## 日本語
-
-`aish` は `ssh` の代わりに使えるCLIです。リモートサーバをいつも通り操作しながら、困ったときは `Ctrl+/` で Claude Code に質問できます。AIは画面の内容を見ているので、エラーやログを貼り付ける必要はありません。コマンドを提案された場合は確認してから実行されます。
 
 ### 前提条件
 
-- [Claude Code](https://claude.ai/install.sh) (`curl -fsSL https://claude.ai/install.sh | bash`)
+#### 対応OS
+
+- Linux (テストしているのは Ubuntu 24.04)
+- Windows WSL2 (テストしているのは Ubuntu 24.04)
+
+#### 必要なコマンド (v0.1.13)
+
+- [Claude Code CLI](https://code.claude.com/docs/ja/overview) 
+- OpenSSH (リモートSSH)
+- bash (ローカルシェル)
+- curl (--update)
+
+
+
+#### 対応AI
+
+- Claude Code CLI (API, Pro?, Max?, Team?, Enterprise?) ※Freeは未対応
+
+将来は他のAIにも対応予定です。例えばCodex。
+対応してほしいAIがあれば一番下のコミュニティからお気軽にご連絡を。
+
+
+
+### Claude Code CLI のライセンスについて
+
+2026年4月4日にAnthropicは、Claude サブスクリプションプラン (Pro, Max, Team, Enterprise) に対し、サードパティ製自動ツールでの利用を禁止しました。
+これは主に、OpenClaw、OpenCode、Cline、Roo Code等による高付加が問題になったためです。
+`aish`は人間がプロンプトを入力するため、自動ではないと思っておりますが、心配な方はClaude APIプランをご検討ください。
+
+
 
 ### インストール
 
@@ -83,11 +61,15 @@ sudo curl -fsSL -o /usr/bin/aish https://github.com/tryandhappy/aish/releases/la
 sudo chmod 755 /usr/bin/aish
 ```
 
+
+
 ### アップデート
 
 ```bash
 sudo aish --update
 ```
+
+
 
 ### 使い方
 
@@ -100,21 +82,19 @@ aish user@example.com   # SSH接続 (sshと同じ引数)
 
 | 入力 | 動作 |
 |------|------|
-| `Ctrl+/` | 画面の内容をAIに分析してもらう |
-| それ以外 | 通常のシェルコマンドとして実行 |
+| `Ctrl+/` | AIプロンプト入力 |
 | `exit` | 終了 |
 
-### デモ
 
-**SSHモード**
-
-https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-ssh1.mp4
-
-**ローカルモード**
-
-https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
 
 ### コミュニティ
 
-バグ報告・ご意見・ご相談はDiscordで受け付けています:
+バグ報告・ご意見・ご相談はDiscordまたはXで受け付けています。
+お気軽にご相談ください。皆様の話がアイディアの元になり大変貴重です。
+(返事が遅くなったらごめんなさい。)
+
+Discord
 https://discord.gg/nj3xz6RBQC
+
+X
+https://x.com/tryandhappy
