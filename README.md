@@ -2,6 +2,8 @@
 
 **AI-assisted SSH shell** — Ask Claude Code for help right inside your SSH session.
 
+![aish screenshot](docs/images/sample1.png)
+
 [English](#english) | [日本語](#日本語)
 
 ---
