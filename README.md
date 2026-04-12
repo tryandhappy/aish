@@ -1,4 +1,4 @@
-# aish
+# aish (AI + SSH)
 
 **AI-assisted SSH shell** — SSHセッションの中からそのまま Claude Code に相談できるCLI。
 
@@ -28,7 +28,6 @@ Once you see the `[aish]` prompt:
 
 | Input | What happens |
 |-------|--------------|
-| `? <question>` | Ask the AI |
 | `Ctrl+/` | Let the AI analyze the current screen |
 | Anything else | Runs as a normal shell command |
 | `exit` | Quit |
@@ -39,14 +38,6 @@ Once you see the `[aish]` prompt:
 - The AI sees your screen automatically — no copy-paste needed
 - Suggested commands always need your confirmation before running
 - Conversations keep their context across multiple questions
-
-### License
-
-- This software is provided free of charge.
-- Redistribution of this software is prohibited.
-- Commercial use is permitted.
-- Reverse engineering, including decompilation and disassembly, is prohibited.
-- This software is provided "AS IS", without warranty of any kind.
 
 ---
 
@@ -70,22 +61,8 @@ aish user@example.com
 
 | 入力 | 動作 |
 |------|------|
-| `? <質問>` | AIに質問する |
 | `Ctrl+/` | 画面の内容をAIに分析してもらう |
 | それ以外 | 普通のシェルコマンドとして実行 |
 | `exit` | 終了 |
 
-### 機能
 
-- 普通のシェルと同じように使える (タブ補完、vim、矢印キーなど)
-- AIが画面を自動で把握する — コピペ不要
-- 提案されたコマンドは必ず確認してから実行
-- 会話の文脈が維持されるので、続けて質問できる
-
-### ライセンス
-
-- 本ソフトウェアは無料で使用できます。
-- 本ソフトウェアの再配布は禁止されています。
-- 商用利用は許可されています。
-- リバースエンジニアリング（逆コンパイル、逆アセンブル等）は禁止されています。
-- 本ソフトウェアは現状有姿（AS IS）で提供され、いかなる保証もありません。
