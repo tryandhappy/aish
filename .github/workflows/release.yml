@@ -13,8 +13,6 @@ on:
 
 env:
   BINARY_NAME: aish
-  # 配布先リポジトリ (owner/name 形式)
-  RELEASE_REPO: tryandhappy/aish
 
 jobs:
   build:
@@ -77,7 +75,7 @@ jobs:
           retention-days: 1
 
   release:
-    name: Publish to public repo
+    name: Publish Release
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -101,11 +99,9 @@ jobs:
           find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec mv {} dist/ \;
           ls -la dist/
 
-      - name: Create Release on public repo
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          repository: ${{ env.RELEASE_REPO }}
-          token: ${{ secrets.RELEASE_TOKEN }}
           tag_name: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.tag }}
           files: dist/*
