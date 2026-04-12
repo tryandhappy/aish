@@ -65,16 +65,32 @@ pub fn run_update() -> Result<(), Box<dyn std::error::Error>> {
         return Err("Failed to download binary".into());
     }
 
-    // Install with sudo
-    println!("Installing to /usr/bin/aish (sudo may prompt for password)");
-    let install = Command::new("sudo")
-        .args(["install", "-m", "755", &tmpfile, "/usr/bin/aish"])
+    // Install to current executable path
+    let exe_path = std::env::current_exe()?;
+    let exe_path_str = exe_path.to_string_lossy();
+    println!("Installing to {} ...", exe_path_str);
+
+    // Set executable permission
+    let chmod = Command::new("chmod")
+        .args(["755", &tmpfile])
         .status()?;
+    if !chmod.success() {
+        let _ = std::fs::remove_file(&tmpfile);
+        return Err("Failed to set permissions".into());
+    }
 
-    let _ = std::fs::remove_file(&tmpfile);
+    // Replace current binary
+    let result = std::fs::rename(&tmpfile, &exe_path)
+        .or_else(|_| {
+            // rename may fail across filesystems, try copy
+            let copy_result = std::fs::copy(&tmpfile, &exe_path).map(|_| ());
+            let _ = std::fs::remove_file(&tmpfile);
+            copy_result
+        });
 
-    if !install.success() {
-        return Err("Failed to install binary".into());
+    if let Err(e) = result {
+        let _ = std::fs::remove_file(&tmpfile);
+        return Err(format!("Failed to install binary: {}", e).into());
     }
 
     println!("Updated to v{}", latest);

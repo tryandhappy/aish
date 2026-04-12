@@ -307,6 +307,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                 Mode::Remote => {
                     eprintln!("\nSSH session ended.");
                     mode = Mode::RemoteEnded;
+                    ui::request_passthrough_exit();
                     pending_input = true;
                     last_pty_output = Instant::now();
                 }
@@ -337,6 +338,129 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
             Ok(ui::InputEvent::CtrlCExit) => break,
+            Ok(ui::InputEvent::AiPrompt(prompt)) => {
+                input_idle = true;
+                if prompt.is_empty() {
+                    pending_input = true;
+                    last_pty_output = Instant::now();
+                    continue;
+                }
+                let context = ring_buffer.get_unsent();
+                let spinner = ui::Spinner::start(&config.display);
+                let mut ai_result = ai_session.send(&context, &prompt);
+                spinner.stop();
+
+                // AIとの対話ループ: コマンド実行→結果をAIに送信→分析→繰り返し
+                loop {
+                    match ai_result {
+                        Ok(response) => {
+                            ring_buffer.mark_sent();
+                            ui::print_ai_message(&response.message, &config.display);
+
+                            // コマンド提案がない場合は対話終了
+                            if response.commands.is_empty() {
+                                break;
+                            }
+
+                            if !mode.accepts_shell_command() {
+                                ui::print_ai_message(
+                                    "(Commands cannot be executed in current mode)",
+                                    &config.display,
+                                );
+                                break;
+                            }
+
+                            ui::print_confirm_prompt(&response.commands, &config.display);
+                            let _ = prompt_tx.send(ui::InputRequest::ReadLine(String::new()));
+                            let confirmed = loop {
+                                match input_rx.recv() {
+                                    Ok(ui::InputEvent::Line(line)) => break ui::parse_confirm(&line),
+                                    Ok(ui::InputEvent::PtyData(_))
+                                    | Ok(ui::InputEvent::PassthroughEnded) => continue,
+                                    Ok(ui::InputEvent::AiPrompt(_)) => continue,
+                                    Ok(ui::InputEvent::CtrlCExit) => break false,
+                                    Err(_) => break false,
+                                }
+                            };
+
+                            if !confirmed {
+                                break;
+                            }
+
+                            // コマンド実行
+                            for cmd in &response.commands {
+                                pty.write(format!("{}\n", cmd).as_bytes())?;
+                                thread::sleep(Duration::from_millis(500));
+                                while let Ok(data) = pty_rx.try_recv() {
+                                    io::stdout().write_all(&data)?;
+                                    io::stdout().flush()?;
+                                    ring_buffer.append(&data);
+                                }
+                            }
+
+                            // 出力が落ち着くまで待機
+                            loop {
+                                thread::sleep(Duration::from_millis(500));
+                                let mut got_data = false;
+                                while let Ok(data) = pty_rx.try_recv() {
+                                    io::stdout().write_all(&data)?;
+                                    io::stdout().flush()?;
+                                    ring_buffer.append(&data);
+                                    got_data = true;
+                                }
+                                if !got_data {
+                                    break;
+                                }
+                            }
+
+                            // 実行結果をAIに送信して分析を継続
+                            let follow_up_context = ring_buffer.get_unsent();
+                            print!("\n");
+                            let spinner = ui::Spinner::start(&config.display);
+                            ai_result = ai_session.send(
+                                &follow_up_context,
+                                "コマンドの実行結果です。分析してください。追加の操作が必要であれば提案してください。",
+                            );
+                            spinner.stop();
+                        }
+                        Err(e) => {
+                            if e.to_string() == ai::CANCELLED {
+                                eprintln!("^C");
+                            } else {
+                                eprintln!("AI error: {}", e);
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                // AI対話終了後、シェルのプロンプトを再表示させる
+                if mode.accepts_shell_command() {
+                    pty.write(b"\n")?;
+                    thread::sleep(Duration::from_millis(200));
+                    let mut first = true;
+                    while let Ok(data) = pty_rx.try_recv() {
+                        let output = if first {
+                            first = false;
+                            // 先頭の改行を除去してプロンプトだけ表示
+                            let trimmed = data.iter()
+                                .position(|&b| b != b'\r' && b != b'\n')
+                                .unwrap_or(data.len());
+                            &data[trimmed..]
+                        } else {
+                            &data
+                        };
+                        if !output.is_empty() {
+                            io::stdout().write_all(output)?;
+                            io::stdout().flush()?;
+                        }
+                        ring_buffer.append(&data);
+                    }
+                }
+                input_idle = true;
+                pending_input = true;
+                last_pty_output = Instant::now();
+            }
             Ok(ui::InputEvent::Line(line)) => {
                 input_idle = true;
                 match ui::parse_input(&line) {
@@ -348,146 +472,47 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                             last_pty_output = Instant::now();
                         }
                     },
-                    ui::UserInput::ClaudeHandover => {
-                        if ai_session.session_id().is_some() {
-                            ui::restore_terminal_settings();
-                            let _ = ai_session.launch_interactive();
-                            ui::save_terminal_settings();
-                        } else {
-                            eprintln!("No Claude session to resume. Use @ai or ? first.");
-                        }
-                        pending_input = true;
-                        last_pty_output = Instant::now();
-                    }
-                    ui::UserInput::AiPrompt(p) => {
-                        if p.is_empty() {
-                            pending_input = true;
-                            last_pty_output = Instant::now();
-                            continue;
-                        }
-                        let initial_prompt = p;
-
-                        let context = ring_buffer.get_unsent();
-                        let spinner = ui::Spinner::start(&config.display);
-                        let mut ai_result = ai_session.send(&context, &initial_prompt);
-                        spinner.stop();
-
-                        // AIとの対話ループ: コマンド実行→結果をAIに送信→分析→繰り返し
-                        loop {
-                            match ai_result {
-                                Ok(response) => {
-                                    ring_buffer.mark_sent();
-                                    ui::print_ai_message(&response.message, &config.display);
-
-                                    // コマンド提案がない場合は対話終了
-                                    if response.commands.is_empty() {
-                                        break;
-                                    }
-
-                                    if !mode.accepts_shell_command() {
-                                        ui::print_ai_message(
-                                            "(Commands cannot be executed in current mode)",
-                                            &config.display,
-                                        );
-                                        break;
-                                    }
-
-                                    ui::print_confirm_prompt(&response.commands, &config.display);
-                                    let _ = prompt_tx.send(ui::InputRequest::ReadLine(String::new()));
-                                    let confirmed = loop {
-                                        match input_rx.recv() {
-                                            Ok(ui::InputEvent::Line(line)) => break ui::parse_confirm(&line),
-                                            Ok(ui::InputEvent::PtyData(_))
-                                            | Ok(ui::InputEvent::PassthroughEnded) => continue,
-                                            Ok(ui::InputEvent::CtrlCExit) => break false,
-                                            Err(_) => break false,
-                                        }
-                                    };
-
-                                    if !confirmed {
-                                        break;
-                                    }
-
-                                    // コマンド実行
-                                    for cmd in &response.commands {
-                                        pty.write(format!("{}\n", cmd).as_bytes())?;
-                                        thread::sleep(Duration::from_millis(500));
-                                        while let Ok(data) = pty_rx.try_recv() {
-                                            io::stdout().write_all(&data)?;
-                                            io::stdout().flush()?;
-                                            ring_buffer.append(&data);
-                                        }
-                                    }
-
-                                    // 出力が落ち着くまで待機
-                                    loop {
-                                        thread::sleep(Duration::from_millis(500));
-                                        let mut got_data = false;
-                                        while let Ok(data) = pty_rx.try_recv() {
-                                            io::stdout().write_all(&data)?;
-                                            io::stdout().flush()?;
-                                            ring_buffer.append(&data);
-                                            got_data = true;
-                                        }
-                                        if !got_data {
-                                            break;
-                                        }
-                                    }
-
-                                    // 実行結果をAIに送信して分析を継続
-                                    let follow_up_context = ring_buffer.get_unsent();
-                                    print!("\n");
-                                    let spinner = ui::Spinner::start(&config.display);
-                                    ai_result = ai_session.send(
-                                        &follow_up_context,
-                                        "コマンドの実行結果です。分析してください。追加の操作が必要であれば提案してください。",
-                                    );
-                                    spinner.stop();
-                                }
-                                Err(e) => {
-                                    if e.to_string() == ai::CANCELLED {
-                                        eprintln!("^C");
-                                    } else {
-                                        eprintln!("AI error: {}", e);
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-
-                        // AI対話終了後、シェルのプロンプトを再表示させる
-                        if mode.accepts_shell_command() {
-                            pty.write(b"\n")?;
-                            thread::sleep(Duration::from_millis(200));
-                            let mut first = true;
-                            while let Ok(data) = pty_rx.try_recv() {
-                                let output = if first {
-                                    first = false;
-                                    // 先頭の改行を除去してプロンプトだけ表示
-                                    let trimmed = data.iter()
-                                        .position(|&b| b != b'\r' && b != b'\n')
-                                        .unwrap_or(data.len());
-                                    &data[trimmed..]
-                                } else {
-                                    &data
-                                };
-                                if !output.is_empty() {
-                                    io::stdout().write_all(output)?;
-                                    io::stdout().flush()?;
-                                }
-                                ring_buffer.append(&data);
-                            }
-                        }
-                        input_idle = true;
-                        pending_input = true;
-                        last_pty_output = Instant::now();
-                    }
                     ui::UserInput::ShellCommand(cmd) => {
                         if mode.accepts_shell_command() {
                             pty.write(format!("{}\n", cmd).as_bytes())?;
+                            pending_input = true;
+                            last_pty_output = Instant::now();
+                        } else if mode == Mode::RemoteEnded {
+                            // RemoteEndedモードでは通常入力をAIプロンプトとして扱う
+                            let trimmed = cmd.trim();
+                            if trimmed.is_empty() {
+                                pending_input = true;
+                                last_pty_output = Instant::now();
+                            } else {
+                                let context = ring_buffer.get_unsent();
+                                let spinner = ui::Spinner::start(&config.display);
+                                let ai_result = ai_session.send(&context, trimmed);
+                                spinner.stop();
+
+                                match ai_result {
+                                    Ok(response) => {
+                                        ring_buffer.mark_sent();
+                                        ui::print_ai_message(&response.message, &config.display);
+                                        if !response.commands.is_empty() {
+                                            ui::print_ai_message(
+                                                "(Commands cannot be executed in current mode)",
+                                                &config.display,
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        if e.to_string() == ai::CANCELLED {
+                                            eprintln!("^C");
+                                        } else {
+                                            eprintln!("AI error: {}", e);
+                                        }
+                                    }
+                                }
+                                input_idle = true;
+                                pending_input = true;
+                                last_pty_output = Instant::now();
+                            }
                         }
-                        pending_input = true;
-                        last_pty_output = Instant::now();
                     }
                 }
             }

@@ -56,18 +56,6 @@ impl AiSession {
         self.session_id.as_deref()
     }
 
-    /// Claude Codeをインタラクティブモードで起動し、セッションを引き継ぐ
-    pub fn launch_interactive(&self) -> Result<std::process::ExitStatus, Box<dyn std::error::Error>> {
-        let sid = self.session_id.as_ref().ok_or("No session ID")?;
-        let status = Command::new("claude")
-            .args(["--resume", sid])
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status()?;
-        Ok(status)
-    }
-
     pub fn send(
         &mut self,
         terminal_context: &str,

@@ -15,6 +15,7 @@ fn prompt_history() -> &'static Mutex<Vec<String>> {
 pub enum InputEvent {
     PtyData(Vec<u8>),
     Line(String),
+    AiPrompt(String),
     PassthroughEnded,
     #[allow(dead_code)]
     CtrlCExit,
@@ -22,6 +23,7 @@ pub enum InputEvent {
 
 static CTRL_C_COUNT: AtomicU32 = AtomicU32::new(0);
 static MINIBUFFER_ACTIVE: AtomicBool = AtomicBool::new(false);
+static PASSTHROUGH_EXIT: AtomicBool = AtomicBool::new(false);
 static SIGWINCH_RECEIVED: AtomicBool = AtomicBool::new(false);
 
 pub fn record_ctrl_c() {
@@ -34,6 +36,10 @@ pub fn ctrl_c_count() -> u32 {
 
 pub fn minibuffer_active() -> bool {
     MINIBUFFER_ACTIVE.load(Ordering::Relaxed)
+}
+
+pub fn request_passthrough_exit() {
+    PASSTHROUGH_EXIT.store(true, Ordering::Relaxed);
 }
 
 pub fn record_sigwinch() {
@@ -189,8 +195,6 @@ pub fn parse_confirm(input: &str) -> bool {
 }
 
 pub enum UserInput {
-    AiPrompt(String),
-    ClaudeHandover,
     ShellCommand(String),
     Exit,
 }
@@ -200,18 +204,6 @@ pub fn parse_input(input: &str) -> UserInput {
 
     if trimmed.eq_ignore_ascii_case("exit") {
         return UserInput::Exit;
-    }
-
-    if let Some(prompt) = trimmed.strip_prefix("@ai") {
-        return UserInput::AiPrompt(prompt.trim().to_string());
-    }
-
-    if let Some(prompt) = trimmed.strip_prefix('?') {
-        let prompt = prompt.trim();
-        if prompt.eq_ignore_ascii_case("claude") {
-            return UserInput::ClaudeHandover;
-        }
-        return UserInput::AiPrompt(prompt.to_string());
     }
 
     UserInput::ShellCommand(input.to_string())
@@ -523,7 +515,7 @@ fn show_minibuffer(
             if cancel_shell {
                 let _ = tx.send(InputEvent::PtyData(vec![0x03]));
             }
-            let _ = tx.send(InputEvent::Line(format!("? {}", text)));
+            let _ = tx.send(InputEvent::AiPrompt(text));
         }
         None => {
             // キャンセル (ESC/Ctrl+C/Ctrl+//exit) — 行をクリアしてシェルプロンプト再表示
@@ -538,12 +530,24 @@ fn show_minibuffer(
 /// Ctrl+/ でaishプロンプトを開き、それ以外はPTYに直送する。
 #[cfg(unix)]
 fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &str) {
+    use std::os::unix::io::AsRawFd;
     let mut stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut buf = [0u8; 1];
     let mut at_line_start = true;
+    let fd = stdin.as_raw_fd();
+    PASSTHROUGH_EXIT.store(false, Ordering::Relaxed);
 
     loop {
+        // poll()でフラグチェックの機会を作る（100ms間隔）
+        let mut pollfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        let ready = unsafe { libc::poll(&mut pollfd, 1, 100) };
+        if PASSTHROUGH_EXIT.load(Ordering::Relaxed) {
+            return;
+        }
+        if ready <= 0 {
+            continue;
+        }
         match stdin.read(&mut buf) {
             Ok(0) => return,
             Ok(_) => {}
