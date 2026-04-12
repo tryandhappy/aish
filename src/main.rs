@@ -69,12 +69,28 @@ extern "C" fn sigint_handler(_sig: libc::c_int) {
     ui::record_ctrl_c();
 }
 
+#[cfg(unix)]
+extern "C" fn sigwinch_handler(_sig: libc::c_int) {
+    ui::record_sigwinch();
+}
+
+/// ANSIエスケープシーケンスをbash PS1用エスケープに変換
+/// 例: "\x1b[36m" → "\\[\\e[36m\\]"
+fn ansi_to_ps1_escape(ansi: &str) -> String {
+    if ansi.is_empty() {
+        return String::new();
+    }
+    let inner = ansi.replace('\x1b', "\\e");
+    format!("\\[{}\\]", inner)
+}
+
 fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     ui::save_terminal_settings();
 
     #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGINT, sigint_handler as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGWINCH, sigwinch_handler as *const () as libc::sighandler_t);
     }
 
     if !ai::check_claude_installed() {
@@ -85,6 +101,8 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     let config = config::Config::load(args.config_path.as_deref());
 
+    let (term_rows, term_cols) = ui::terminal_size();
+
     let mut mode = if args.ssh_args.is_empty() {
         Mode::Local
     } else {
@@ -92,13 +110,13 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut pty = if mode == Mode::Local {
-        pty_handler::PtyHandler::spawn_local_shell()?
+        pty_handler::PtyHandler::spawn_local_shell(term_rows, term_cols)?
     } else {
-        pty_handler::PtyHandler::spawn_ssh(&args.ssh_args)?
+        pty_handler::PtyHandler::spawn_ssh(&args.ssh_args, term_rows, term_cols)?
     };
 
     let mut ring_buffer = ring_buffer::RingBuffer::new();
-    let mut ai_session = ai::AiSession::new(&config.system_prompt);
+    let mut ai_session = ai::AiSession::new(&config.system_prompt, &config.language, &config.log);
 
     // PTY出力を読み取るスレッド
     let (pty_tx, pty_rx) = mpsc::channel::<Vec<u8>>();
@@ -127,23 +145,23 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     // ターミナルタイトルにaishラベルを設定
     let title = if args.ssh_args.is_empty() {
-        config.display.prompt_label.clone()
+        config.display.shell_prefix_label.clone()
     } else {
-        format!("{} {}", config.display.prompt_label, args.ssh_args.join(" "))
+        format!("{} {}", config.display.shell_prefix_label, args.ssh_args.join(" "))
     };
     print!("\x1b]2;{}\x07", title);
     io::stdout().flush().ok();
 
     let aish_label = format!(
         "{}{}\x1b[0m ",
-        ui::build_color_start(&config.display.thinking_foreground, &config.display.thinking_background),
+        ui::build_color_start(&config.display.prompt_color),
         config.display.prompt_label,
     );
 
     // ユーザ入力を読み取るスレッド（パススルーモード対応）
     let (prompt_tx, prompt_rx) = mpsc::channel::<ui::InputRequest>();
     let (input_tx, input_rx) = mpsc::channel::<ui::InputEvent>();
-    let input_bg = config.display.input_background.clone();
+    let input_bg = config.display.input_color.clone();
     let input_aish_label = aish_label.clone();
     thread::spawn(move || {
         loop {
@@ -164,13 +182,9 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                         print!("{}", prompt);
                         io::stdout().flush().ok();
                     }
-                    match ui::read_line() {
-                        Some(line) => {
-                            if input_tx.send(ui::InputEvent::Line(line)).is_err() {
-                                break;
-                            }
-                        }
-                        None => break,
+                    let line = ui::read_line().unwrap_or_else(|| "n".to_string());
+                    if input_tx.send(ui::InputEvent::Line(line)).is_err() {
+                        break;
                     }
                 }
             }
@@ -183,9 +197,28 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut last_ctrl_c_count: u32 = 0;
     let mut last_ctrl_c_time = Instant::now();
     let mut ctrl_c_hint_until: Option<Instant> = None;
+    let mut prompt_command_set = false;
+    let mut prompt_setup_suppress = false;
+    let mut prompt_setup_buf: Vec<u8> = Vec::new();
+    // Local: すぐにセットアップ可能。Remote: パスワード認証を考慮し最初のEnter後にセットアップ
+    let mut user_entered = mode == Mode::Local;
+
+    // PROMPT_COMMANDセットアップ用コマンドを事前構築（設定ファイルの色・ラベルを使用）
+    let ps1_color = ansi_to_ps1_escape(&config.display.shell_prefix_color);
+    let ps1_reset = if ps1_color.is_empty() { "" } else { "\\[\\e[0m\\]" };
+    let prompt_setup_cmd = format!(
+        " __ap=\"$PS1\";__ac=\"$PROMPT_COMMAND\";PROMPT_COMMAND='PS1=\"{}{}{} $__ap\";eval \"$__ac\"';trap 'PS1=\"$__ap\";PROMPT_COMMAND=\"$__ac\"' EXIT\n",
+        ps1_color, config.display.shell_prefix_label, ps1_reset
+    );
 
     // メインループ
     loop {
+        // 端末リサイズ検出
+        if ui::check_and_clear_sigwinch() {
+            let (new_rows, new_cols) = ui::terminal_size();
+            let _ = pty.resize(new_rows, new_cols);
+        }
+
         // Ctrl+C連打チェック
         let cc = ui::ctrl_c_count();
         if cc > last_ctrl_c_count {
@@ -211,11 +244,43 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
 
         // PTY出力をチェック
         while let Ok(data) = pty_rx.try_recv() {
-            if !ui::minibuffer_active() {
+            if prompt_setup_suppress {
+                prompt_setup_buf.extend_from_slice(&data);
+            } else if !ui::minibuffer_active() {
                 io::stdout().write_all(&data)?;
                 io::stdout().flush()?;
             }
             ring_buffer.append(&data);
+            last_pty_output = Instant::now();
+        }
+
+        // PROMPT_COMMANDセットアップ: [aish]プレフィックスをPS1に追加
+        if !prompt_command_set && user_entered && mode.accepts_shell_command()
+            && pending_input && input_idle
+            && last_pty_output.elapsed() > Duration::from_millis(50)
+        {
+            prompt_setup_suppress = true;
+            let _ = pty.write(prompt_setup_cmd.as_bytes());
+            prompt_command_set = true;
+            last_pty_output = Instant::now();
+            continue;
+        }
+
+        // セットアップ出力の抑制終了→バナー表示＋新しいプロンプト表示
+        if prompt_setup_suppress && last_pty_output.elapsed() > Duration::from_millis(50) {
+            prompt_setup_suppress = false;
+            // 起動バナー
+            eprint!("\r\x1b[2K{}aish v{} | Ctrl+/ for AI\x1b[0m\r\n",
+                config.display.header_color, env!("CARGO_PKG_VERSION"));
+            // 抑制した出力の最後の行（新しいプロンプト）を表示
+            if let Some(pos) = prompt_setup_buf.iter().rposition(|&b| b == b'\n') {
+                let prompt_line = &prompt_setup_buf[pos + 1..];
+                if !prompt_line.is_empty() {
+                    io::stdout().write_all(prompt_line)?;
+                    io::stdout().flush()?;
+                }
+            }
+            prompt_setup_buf.clear();
             last_pty_output = Instant::now();
         }
 
@@ -257,6 +322,9 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
             Ok(ui::InputEvent::PtyData(data)) => {
                 if mode.accepts_shell_command() {
                     let _ = pty.write(&data);
+                }
+                if !user_entered && data.iter().any(|&b| b == b'\r' || b == b'\n') {
+                    user_entered = true;
                 }
                 continue;
             }
@@ -430,8 +498,15 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // PROMPT_COMMANDの復元
+    if prompt_command_set {
+        let _ = pty.write(b" PS1=\"$__ap\";PROMPT_COMMAND=\"$__ac\";unset __ap __ac;trap - EXIT\n");
+        thread::sleep(Duration::from_millis(200));
+        while let Ok(_) = pty_rx.try_recv() {}
+    }
+
     if let Some(sid) = ai_session.session_id() {
-        eprintln!("\nResume this session with:\n  claude --resume {}", sid);
+        eprintln!("\nResume this session with:\nclaude --resume {}", sid);
     }
 
     Ok(())

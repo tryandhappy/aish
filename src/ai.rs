@@ -1,3 +1,4 @@
+use crate::config::LogConfig;
 use serde::Deserialize;
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -28,13 +29,26 @@ pub struct AiResponse {
 pub struct AiSession {
     session_id: Option<String>,
     system_prompt: String,
+    log_path: Option<String>,
 }
 
 impl AiSession {
-    pub fn new(system_prompt: &str) -> Self {
+    pub fn new(system_prompt: &str, language: &str, log_config: &LogConfig) -> Self {
+        let log_path = if log_config.enabled {
+            let path = expand_tilde(&log_config.path);
+            Some(path)
+        } else {
+            None
+        };
+        let system_prompt = if language.is_empty() {
+            system_prompt.to_string()
+        } else {
+            format!("{} Respond in {}.", system_prompt, language)
+        };
         Self {
             session_id: None,
-            system_prompt: system_prompt.to_string(),
+            system_prompt,
+            log_path,
         }
     }
 
@@ -68,42 +82,49 @@ impl AiSession {
             )
         };
 
-        let mut child = if let Some(ref sid) = self.session_id {
-            Command::new("claude")
-                .args([
-                    "-p",
-                    "--resume",
-                    sid,
-                    "--output-format",
-                    "json",
-                    "--json-schema",
-                    AI_RESPONSE_SCHEMA,
-                    &prompt,
-                ])
+        let (mut child, cmd_args) = if let Some(ref sid) = self.session_id {
+            let args = vec![
+                "-p".to_string(),
+                "--resume".to_string(),
+                sid.clone(),
+                "--output-format".to_string(),
+                "json".to_string(),
+                "--json-schema".to_string(),
+                AI_RESPONSE_SCHEMA.to_string(),
+                prompt.clone(),
+            ];
+            let c = Command::new("claude")
+                .args(&args)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
-                .spawn()?
+                .spawn()?;
+            (c, args)
         } else {
-            Command::new("claude")
-                .args([
-                    "-p",
-                    "--output-format",
-                    "json",
-                    "--disallowedTools",
-                    "Bash,Edit,Write,Read",
-                    "--append-system-prompt",
-                    &format!(
-                        "{} コマンドを提案してください。直接実行しないでください。コマンドは;で結合せず個別に提案してください。ただし&&や||による条件付き実行は1つのコマンドとして維持してください。",
-                        self.system_prompt
-                    ),
-                    "--json-schema",
-                    AI_RESPONSE_SCHEMA,
-                    &prompt,
-                ])
+            let system = format!(
+                "{} コマンドを提案してください。直接実行しないでください。コマンドは;で結合せず個別に提案してください。ただし&&や||による条件付き実行は1つのコマンドとして維持してください。",
+                self.system_prompt
+            );
+            let args = vec![
+                "-p".to_string(),
+                "--output-format".to_string(),
+                "json".to_string(),
+                "--disallowedTools".to_string(),
+                "Bash,Edit,Write,Read".to_string(),
+                "--append-system-prompt".to_string(),
+                system,
+                "--json-schema".to_string(),
+                AI_RESPONSE_SCHEMA.to_string(),
+                prompt.clone(),
+            ];
+            let c = Command::new("claude")
+                .args(&args)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
-                .spawn()?
+                .spawn()?;
+            (c, args)
         };
+
+        write_log(&self.log_path, &format!("claude {}", shell_join(&cmd_args)));
 
         // stdout/stderrを別スレッドで読み取り
         let child_stdout = child.stdout.take().unwrap();
@@ -144,6 +165,11 @@ impl AiSession {
         let stderr_bytes = stderr_handle.join().unwrap_or_default();
         let stdout = String::from_utf8_lossy(&stdout_bytes);
         let stderr = String::from_utf8_lossy(&stderr_bytes);
+
+        write_log(&self.log_path, stdout.trim());
+        if !stderr.trim().is_empty() {
+            write_log(&self.log_path, &format!("[stderr]\n{}", stderr.trim()));
+        }
 
         if !status.success() {
             return Err(format!("claude command failed: {}", stderr).into());
@@ -273,4 +299,90 @@ pub fn check_claude_installed() -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// ~をホームディレクトリに展開する
+fn expand_tilde(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest).to_string_lossy().to_string();
+        }
+    }
+    path.to_string()
+}
+
+/// ログエントリをファイルに追記する。log_pathがNoneなら何もしない。
+fn write_log(log_path: &Option<String>, entry: &str) {
+    let path = match log_path {
+        Some(p) => p,
+        None => return,
+    };
+    let path = std::path::Path::new(path);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let now = timestamp_local();
+        let _ = writeln!(file, "=== {} ===", now);
+        let _ = writeln!(file, "{}", entry);
+        let _ = writeln!(file);
+    }
+}
+
+/// ローカルタイムのタイムスタンプを返す (YYYY-MM-DD HH:MM:SS)
+fn timestamp_local() -> String {
+    use std::time::SystemTime;
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // ローカルTZオフセットを取得
+    let offset = unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        let t = now as libc::time_t;
+        libc::localtime_r(&t, &mut tm);
+        tm.tm_gmtoff
+    };
+    let local = now as i64 + offset;
+    let secs = local % 60;
+    let mins = (local / 60) % 60;
+    let hrs = (local / 3600) % 24;
+    // 日付計算（簡易: days since epoch → year/month/day）
+    let days = local / 86400;
+    let (y, m, d) = days_to_ymd(days);
+    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, m, d, hrs, mins, secs)
+}
+
+fn days_to_ymd(days: i64) -> (i64, i64, i64) {
+    // Algorithm from http://howardhinnant.github.io/date_algorithms.html
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
+/// 引数をシェル表示用に結合する（スペースを含む引数はクォート）
+fn shell_join(args: &[String]) -> String {
+    args.iter()
+        .map(|a| {
+            if a.contains(' ') || a.contains('"') || a.contains('\n') {
+                format!("'{}'", a.replace('\'', "'\\''"))
+            } else {
+                a.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
