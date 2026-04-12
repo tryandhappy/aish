@@ -42,6 +42,16 @@ aish user@example.com   # SSH (same arguments as ssh)
 | Everything else | Runs as a normal shell command |
 | `exit` | Quit |
 
+### Demo
+
+**SSH mode**
+
+https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-ssh1.mp4
+
+**Local mode**
+
+https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
+
 ### Features
 
 - Works like a normal shell (tab completion, vim, arrow keys, etc.)
@@ -91,6 +101,16 @@ aish user@example.com   # SSH接続 (sshと同じ引数)
 | `Ctrl+/` | 画面の内容をAIに分析してもらう |
 | それ以外 | 通常のシェルコマンドとして実行 |
 | `exit` | 終了 |
+
+### デモ
+
+**SSHモード**
+
+https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-ssh1.mp4
+
+**ローカルモード**
+
+https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
 
 ### コミュニティ
 
