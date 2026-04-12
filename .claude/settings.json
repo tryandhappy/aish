@@ -1,21 +1,41 @@
 {
-  "enabledPlugins": {
-    "rust-analyzer-lsp@claude-plugins-official": true
-  },
-  "model": "opus",
-  "effort": "auto",
   "permissions": {
     "acceptEdits": "auto"
   },
+  "model": "opus",
+  "statusLine": {
+    "type": "command",
+    "command": "bash ~/.claude/statusline.sh"
+  },
+  "enabledPlugins": {
+    "rust-analyzer-lsp@claude-plugins-official": true
+  },
+  "effort": "auto",
+  "defaultMode": "auto",
   "allowedTools": [
-    "Bash(npm run build)",
-    "Bash(npm test)",
-    "Bash(git log)",
+    "Search(*)",
+    "Read(*)",
     "Bash(ls *)",
     "Bash(cat *)",
-    "Bash(cargo *)"
-  ],
-  "env": {
-    "CLAUDE_CODE_ENABLE_TELEMETRY": "1"
-  }
+    "Bash(find *)",
+    "Bash(grep *)",
+    "Bash(git status *)",
+    "Bash(git log *)",
+    "Bash(git diff *)",
+    "Bash(git tag *)",
+    "Bash(git add *)",
+    "Bash(git commit *)",
+    "Bash(git push *)",
+    "Bash(git pull *)",
+    "Bash(gh list *)",
+    "Bash(gh release *)",
+    "Bash(gh run list *)",
+    "Bash(gh run view *)",
+    "Bash(gh run watch *)",
+    "Bash(gh run return *)",
+    "Bash(npm run build)",
+    "Bash(npm test)",
+    "Bash(cargo build *)",
+    "Bash(cargo run *)"
+  ]
 }
