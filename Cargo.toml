@@ -3,6 +3,7 @@ name = "aish"
 version = "0.1.6"
 edition = "2021"
 description = "CLI SSH + AI (Claude Code)"
+license = "MIT"
 
 [package.metadata.deb]
 maintainer = "tryandhappy"

@@ -76,7 +76,7 @@ jobs:
           sha256sum "${ARCHIVE}.tar.gz" > "${ARCHIVE}.tar.gz.sha256"
 
       - name: Build deb package
-        run: cargo deb --no-build --target ${{ matrix.target }}
+        run: cargo deb --no-build --no-strip --target ${{ matrix.target }}
 
       - name: Build rpm package
         run: cargo generate-rpm --target ${{ matrix.target }}
