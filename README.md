@@ -47,6 +47,11 @@ aish user@example.com   # SSH (same arguments as ssh)
 - Suggested commands require your confirmation before running
 - Conversations keep context across multiple questions
 
+### Community
+
+Bug reports, feedback, and questions are welcome on Discord:
+https://discord.gg/nj3xz6RBQC
+
 ---
 
 ## 日本語
@@ -82,3 +87,8 @@ aish user@example.com   # SSH接続 (sshと同じ引数)
 | `Ctrl+/` | 画面の内容をAIに分析してもらう |
 | それ以外 | 通常のシェルコマンドとして実行 |
 | `exit` | 終了 |
+
+### コミュニティ
+
+バグ報告・ご意見・ご相談はDiscordで受け付けています:
+https://discord.gg/nj3xz6RBQC
