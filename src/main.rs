@@ -74,16 +74,6 @@ extern "C" fn sigwinch_handler(_sig: libc::c_int) {
     ui::record_sigwinch();
 }
 
-/// ANSIエスケープシーケンスをbash PS1用エスケープに変換
-/// 例: "\x1b[36m" → "\\[\\e[36m\\]"
-fn ansi_to_ps1_escape(ansi: &str) -> String {
-    if ansi.is_empty() {
-        return String::new();
-    }
-    let inner = ansi.replace('\x1b', "\\e");
-    format!("\\[{}\\]", inner)
-}
-
 fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     ui::save_terminal_settings();
 
@@ -102,17 +92,18 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     let config = config::Config::load(args.config_path.as_deref());
 
     let (term_rows, term_cols) = ui::terminal_size();
+    let pty_rows = term_rows.saturating_sub(1).max(1);
 
-    let mut mode = if args.ssh_args.is_empty() {
+    let mode = if args.ssh_args.is_empty() {
         Mode::Local
     } else {
         Mode::Remote
     };
 
     let mut pty = if mode == Mode::Local {
-        pty_handler::PtyHandler::spawn_local_shell(term_rows, term_cols)?
+        pty_handler::PtyHandler::spawn_local_shell(pty_rows, term_cols)?
     } else {
-        pty_handler::PtyHandler::spawn_ssh(&args.ssh_args, term_rows, term_cols)?
+        pty_handler::PtyHandler::spawn_ssh(&args.ssh_args, pty_rows, term_cols)?
     };
 
     let mut ring_buffer = ring_buffer::RingBuffer::new();
@@ -151,6 +142,14 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     };
     print!("\x1b]2;{}\x07", title);
     io::stdout().flush().ok();
+
+    // ステータスバー: 最下行に [aish] ラベルを常時表示
+    let status_label = format!(
+        "aish v{} | Ctrl+/ for AI",
+        env!("CARGO_PKG_VERSION"),
+    );
+    let status_color = &config.display.header_color;
+    ui::setup_status_bar(term_rows, &status_label, status_color);
 
     let aish_label = format!(
         "{}{}\x1b[0m ",
@@ -200,26 +199,19 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut pending_input = true; // 入力スレッド起動待ち
     let mut input_idle = true;
     let mut last_pty_output = Instant::now();
+    let mut status_bar_needs_refresh = false;
     let mut last_ctrl_c_count: u32 = 0;
     let mut last_ctrl_c_time = Instant::now();
     let mut ctrl_c_hint_until: Option<Instant> = None;
-    let mut prompt_command_set = false;
-    let mut prompt_setup_suppress = false;
-    let mut prompt_setup_buf: Vec<u8> = Vec::new();
-    // PROMPT_COMMANDセットアップ用コマンドを事前構築（設定ファイルの色・ラベルを使用）
-    let ps1_color = ansi_to_ps1_escape(&config.display.shell_prefix_color);
-    let ps1_reset = if ps1_color.is_empty() { "" } else { "\\[\\e[0m\\]" };
-    let prompt_setup_cmd = format!(
-        " __ap=\"$PS1\";__ac=\"$PROMPT_COMMAND\";PROMPT_COMMAND='PS1=\"{}{}{} $__ap\";eval \"$__ac\"';trap 'PS1=\"$__ap\";PROMPT_COMMAND=\"$__ac\"' EXIT\n",
-        ps1_color, config.display.shell_prefix_label, ps1_reset
-    );
 
     // メインループ
     loop {
         // 端末リサイズ検出
         if ui::check_and_clear_sigwinch() {
             let (new_rows, new_cols) = ui::terminal_size();
-            let _ = pty.resize(new_rows, new_cols);
+            let new_pty_rows = new_rows.saturating_sub(1).max(1);
+            let _ = pty.resize(new_pty_rows, new_cols);
+            ui::resize_status_bar(new_rows);
         }
 
         // Ctrl+C連打チェック
@@ -247,44 +239,20 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
 
         // PTY出力をチェック
         while let Ok(data) = pty_rx.try_recv() {
-            if prompt_setup_suppress {
-                prompt_setup_buf.extend_from_slice(&data);
-            } else if !ui::minibuffer_active() {
+            if !ui::minibuffer_active() {
                 io::stdout().write_all(&data)?;
                 io::stdout().flush()?;
             }
             ring_buffer.append(&data);
             last_pty_output = Instant::now();
+            status_bar_needs_refresh = true;
         }
 
-        // PROMPT_COMMANDセットアップ: [aish]プレフィックスをPS1に追加
-        if !prompt_command_set && mode.accepts_shell_command()
-            && pending_input && input_idle
-            && last_pty_output.elapsed() > Duration::from_millis(50)
-        {
-            prompt_setup_suppress = true;
-            let _ = pty.write(prompt_setup_cmd.as_bytes());
-            prompt_command_set = true;
-            last_pty_output = Instant::now();
-            continue;
-        }
-
-        // セットアップ出力の抑制終了→バナー表示＋新しいプロンプト表示
-        if prompt_setup_suppress && last_pty_output.elapsed() > Duration::from_millis(50) {
-            prompt_setup_suppress = false;
-            // 起動バナー
-            eprint!("\r\x1b[2K{}aish v{} | Ctrl+/ for AI\x1b[0m\r\n",
-                config.display.header_color, env!("CARGO_PKG_VERSION"));
-            // 抑制した出力の最後の行（新しいプロンプト）を表示
-            if let Some(pos) = prompt_setup_buf.iter().rposition(|&b| b == b'\n') {
-                let prompt_line = &prompt_setup_buf[pos + 1..];
-                if !prompt_line.is_empty() {
-                    io::stdout().write_all(prompt_line)?;
-                    io::stdout().flush()?;
-                }
-            }
-            prompt_setup_buf.clear();
-            last_pty_output = Instant::now();
+        // PTY出力が落ち着いたらステータスバーとスクロール領域を復元
+        if status_bar_needs_refresh && last_pty_output.elapsed() > Duration::from_millis(50) {
+            let (rows, _cols) = ui::terminal_size();
+            ui::resize_status_bar(rows);
+            status_bar_needs_refresh = false;
         }
 
         // PTY出力が落ち着いたら入力スレッドを起動
@@ -306,19 +274,13 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
 
         // PTYプロセスの終了チェック
         if alive_rx.try_recv().is_ok() {
-            match mode {
-                Mode::Remote => {
-                    eprintln!("\nSSH session ended.");
-                    mode = Mode::RemoteEnded;
-                    ui::request_passthrough_exit();
-                    pending_input = true;
-                    last_pty_output = Instant::now();
-                }
-                Mode::Local => {
-                    break;
-                }
-                Mode::RemoteEnded => {}
-            }
+            // 残りのPTY出力（シェルのlogoutメッセージ等）をドレイン
+            thread::sleep(Duration::from_millis(50));
+            while let Ok(_) = pty_rx.try_recv() {}
+            // logoutメッセージ行を消去
+            print!("\x1b[A\x1b[2K\r");
+            io::stdout().flush().ok();
+            break;
         }
 
         // ユーザ入力をチェック
@@ -464,55 +426,15 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
             Ok(ui::InputEvent::Line(line)) => {
                 input_idle = true;
                 match ui::parse_input(&line) {
-                    ui::UserInput::Exit => match mode {
-                        Mode::Local | Mode::RemoteEnded => break,
-                        Mode::Remote => {
-                            pty.write(b"exit\n")?;
-                            pending_input = true;
-                            last_pty_output = Instant::now();
-                        }
-                    },
+                    ui::UserInput::Exit => {
+                        pty.write(b"exit\n")?;
+                        pending_input = true;
+                        last_pty_output = Instant::now();
+                    }
                     ui::UserInput::ShellCommand(cmd) => {
-                        if mode.accepts_shell_command() {
-                            pty.write(format!("{}\n", cmd).as_bytes())?;
-                            pending_input = true;
-                            last_pty_output = Instant::now();
-                        } else if mode == Mode::RemoteEnded {
-                            // RemoteEndedモードでは通常入力をAIプロンプトとして扱う
-                            let trimmed = cmd.trim();
-                            if trimmed.is_empty() {
-                                pending_input = true;
-                                last_pty_output = Instant::now();
-                            } else {
-                                let context = ring_buffer.get_unsent();
-                                let spinner = ui::Spinner::start(&config.display);
-                                let ai_result = ai_session.send(&context, trimmed);
-                                spinner.stop();
-
-                                match ai_result {
-                                    Ok(response) => {
-                                        ring_buffer.mark_sent();
-                                        ui::print_ai_message(&response.message, &config.display);
-                                        if !response.commands.is_empty() {
-                                            ui::print_ai_message(
-                                                "(Commands cannot be executed in current mode)",
-                                                &config.display,
-                                            );
-                                        }
-                                    }
-                                    Err(e) => {
-                                        if e.to_string() == ai::CANCELLED {
-                                            eprintln!("^C");
-                                        } else {
-                                            eprintln!("AI error: {}", e);
-                                        }
-                                    }
-                                }
-                                input_idle = true;
-                                pending_input = true;
-                                last_pty_output = Instant::now();
-                            }
-                        }
+                        pty.write(format!("{}\n", cmd).as_bytes())?;
+                        pending_input = true;
+                        last_pty_output = Instant::now();
                     }
                 }
             }
@@ -523,12 +445,9 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // PROMPT_COMMANDの復元
-    if prompt_command_set {
-        let _ = pty.write(b" PS1=\"$__ap\";PROMPT_COMMAND=\"$__ac\";unset __ap __ac;trap - EXIT\n");
-        thread::sleep(Duration::from_millis(200));
-        while let Ok(_) = pty_rx.try_recv() {}
-    }
+    // ステータスバー・スクロール領域をクリーンアップ
+    let (final_rows, _) = ui::terminal_size();
+    ui::cleanup_status_bar(final_rows);
 
     if let Some(sid) = ai_session.session_id() {
         eprintln!("\nResume this session with:\nclaude --resume {}", sid);

@@ -1,6 +1,6 @@
 use crate::config::DisplayConfig;
 use std::io::{self, Read, Write};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -25,6 +25,9 @@ static CTRL_C_COUNT: AtomicU32 = AtomicU32::new(0);
 static MINIBUFFER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static PASSTHROUGH_EXIT: AtomicBool = AtomicBool::new(false);
 static SIGWINCH_RECEIVED: AtomicBool = AtomicBool::new(false);
+static TERM_ROWS: AtomicU16 = AtomicU16::new(24);
+static STATUS_BAR_LABEL: OnceLock<String> = OnceLock::new();
+static STATUS_BAR_COLOR: OnceLock<String> = OnceLock::new();
 
 pub fn record_ctrl_c() {
     CTRL_C_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -38,16 +41,73 @@ pub fn minibuffer_active() -> bool {
     MINIBUFFER_ACTIVE.load(Ordering::Relaxed)
 }
 
-pub fn request_passthrough_exit() {
-    PASSTHROUGH_EXIT.store(true, Ordering::Relaxed);
-}
-
 pub fn record_sigwinch() {
     SIGWINCH_RECEIVED.store(true, Ordering::Relaxed);
 }
 
 pub fn check_and_clear_sigwinch() -> bool {
     SIGWINCH_RECEIVED.swap(false, Ordering::Relaxed)
+}
+
+/// 初回: 改行でステータスバー用の1行を確保してからスクロール領域を設定し描画する
+pub fn setup_status_bar(rows: u16, label: &str, color: &str) {
+    TERM_ROWS.store(rows, Ordering::Relaxed);
+    let _ = STATUS_BAR_LABEL.set(label.to_string());
+    let _ = STATUS_BAR_COLOR.set(color.to_string());
+    let mut stdout = io::stdout();
+    let scroll_bottom = rows.saturating_sub(1).max(1);
+    let _ = write!(stdout,
+        "\n\x1b[1;{}r\x1b[{};1H{}{}\x1b[K\x1b[0m\x1b[{};1H",
+        scroll_bottom, rows, color, label, scroll_bottom
+    );
+    let _ = stdout.flush();
+}
+
+/// リサイズ時: スクロール領域を再設定しステータスバーを再描画する（改行なし）
+pub fn resize_status_bar(rows: u16) {
+    TERM_ROWS.store(rows, Ordering::Relaxed);
+    let label = STATUS_BAR_LABEL.get().map(|s| s.as_str()).unwrap_or("");
+    let color = STATUS_BAR_COLOR.get().map(|s| s.as_str()).unwrap_or("");
+    let mut stdout = io::stdout();
+    let scroll_bottom = rows.saturating_sub(1).max(1);
+    let _ = write!(stdout,
+        "\x1b[1;{}r\x1b[{};1H{}{}\x1b[K\x1b[0m\x1b[{};1H",
+        scroll_bottom, rows, color, label, scroll_bottom
+    );
+    let _ = stdout.flush();
+}
+
+/// ステータスバーを再描画する（ラベル・色はstaticから取得、カーソル移動のみ）
+fn redraw_status_bar(stdout: &mut io::Stdout) {
+    let rows = TERM_ROWS.load(Ordering::Relaxed);
+    let label = STATUS_BAR_LABEL.get().map(|s| s.as_str()).unwrap_or("");
+    let color = STATUS_BAR_COLOR.get().map(|s| s.as_str()).unwrap_or("");
+    let _ = write!(stdout,
+        "\x1b[{};1H{}{}\x1b[K\x1b[0m",
+        rows, color, label
+    );
+    let _ = stdout.flush();
+}
+
+/// ステータスバー内容のみ再描画（DECSTBM変更なし、カーソル位置保全）
+pub fn refresh_status_bar() {
+    let rows = TERM_ROWS.load(Ordering::Relaxed);
+    let label = STATUS_BAR_LABEL.get().map(|s| s.as_str()).unwrap_or("");
+    let color = STATUS_BAR_COLOR.get().map(|s| s.as_str()).unwrap_or("");
+    let mut stdout = io::stdout();
+    let _ = write!(stdout,
+        "\x1b7\x1b[{};1H{}{}\x1b[K\x1b[0m\x1b8",
+        rows, color, label
+    );
+    let _ = stdout.flush();
+}
+
+/// スクロール領域をリセットしステータスバーをクリアする
+pub fn cleanup_status_bar(rows: u16) {
+    let mut stdout = io::stdout();
+    // スクロール領域リセット→ステータスバー行クリア
+    let _ = write!(stdout, "\x1b[r\x1b[{};1H\x1b[2K", rows);
+    let _ = stdout.flush();
 }
 
 pub fn terminal_size() -> (u16, u16) {
@@ -127,12 +187,19 @@ impl Spinner {
             let mut stdout = io::stdout();
             let mut i = 0;
             while running_clone.load(Ordering::Relaxed) {
-                let _ = write!(stdout, "\r{}{} {}\x1b[0m\x1b[K", color, SPINNER_FRAMES[i], message);
+                let rows = TERM_ROWS.load(Ordering::Relaxed);
+                let _ = write!(stdout,
+                    "\x1b7\x1b[{};1H{}{} {}\x1b[0m\x1b[K\x1b8",
+                    rows, color, SPINNER_FRAMES[i], message
+                );
                 let _ = stdout.flush();
                 i = (i + 1) % SPINNER_FRAMES.len();
                 std::thread::sleep(Duration::from_millis(80));
             }
-            let _ = write!(stdout, "\r\x1b[K");
+            // ステータスバーを元に戻す（カーソル位置を保全）
+            let _ = write!(stdout, "\x1b7");
+            redraw_status_bar(&mut stdout);
+            let _ = write!(stdout, "\x1b8");
             let _ = stdout.flush();
         });
 
@@ -471,9 +538,8 @@ fn passthrough_read_unix(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &s
     let _ = tx.send(InputEvent::PassthroughEnded);
 }
 
-/// aishプロンプトをターミナル最下行に表示し、ユーザ入力を受け付ける。
-/// aishプロンプトを現在のカーソル位置にインライン表示し、ユーザ入力を受け付ける。
-/// 入力確定後にInputEventを送信する。
+/// aishプロンプトをステータスバー行に表示し、ユーザ入力を受け付ける。
+/// 入力確定後にステータスバーを復元し、InputEventを送信する。
 #[cfg(unix)]
 fn show_minibuffer(
     stdout: &mut io::Stdout,
@@ -483,24 +549,27 @@ fn show_minibuffer(
     cancel_shell: bool,
 ) {
     MINIBUFFER_ACTIVE.store(true, Ordering::Relaxed);
+    let rows = TERM_ROWS.load(Ordering::Relaxed);
 
-    // 改行してaishプロンプトをインライン表示（\x1b[K で背景色を行末まで伸ばす）
-    let _ = write!(stdout, "\r\n{}{}\x1b[K", aish_label, input_bg);
+    // カーソル保存→ステータスバー行に移動→aishプロンプトを描画
+    let _ = write!(stdout, "\x1b7\x1b[{};1H{}{}\x1b[K", rows, aish_label, input_bg);
     let _ = stdout.flush();
 
     let result = read_line_raw_loop_from(String::new(), true);
 
-    // 入力行のリセット
+    // ステータスバーを復元→カーソル復元
     let _ = write!(stdout, "\x1b[0m");
+    redraw_status_bar(stdout);
+    let _ = write!(stdout, "\x1b8");
     let _ = stdout.flush();
     MINIBUFFER_ACTIVE.store(false, Ordering::Relaxed);
 
     match result {
         Some(text) if text.trim().is_empty() => {
-            // 空Enter → 行をクリアしてシェルプロンプト再表示
-            let _ = write!(stdout, "\r\x1b[2K");
-            let _ = stdout.flush();
-            let _ = tx.send(InputEvent::PtyData(vec![0x03]));
+            // 空Enter → 何もしない（ステータスバーは復元済み）
+            if cancel_shell {
+                let _ = tx.send(InputEvent::PtyData(vec![0x03]));
+            }
         }
         Some(text) => {
             // 履歴に追加（重複は追加しない）
@@ -509,8 +578,8 @@ fn show_minibuffer(
                     history.push(text.clone());
                 }
             }
-            // AIプロンプト — [aish] プロンプト を描画済みなので改行のみ
-            let _ = write!(stdout, "\r\n");
+            // スクロールエリアにプロンプト内容をエコー表示
+            let _ = write!(stdout, "\n{}{}\x1b[K\x1b[0m\n", aish_label, text);
             let _ = stdout.flush();
             if cancel_shell {
                 let _ = tx.send(InputEvent::PtyData(vec![0x03]));
@@ -518,10 +587,10 @@ fn show_minibuffer(
             let _ = tx.send(InputEvent::AiPrompt(text));
         }
         None => {
-            // キャンセル (ESC/Ctrl+C/Ctrl+//exit) — 行をクリアしてシェルプロンプト再表示
-            let _ = write!(stdout, "\r\x1b[2K");
-            let _ = stdout.flush();
-            let _ = tx.send(InputEvent::PtyData(vec![0x03]));
+            // キャンセル (ESC/Ctrl+C/Ctrl+//exit) — ステータスバーは復元済み
+            if cancel_shell {
+                let _ = tx.send(InputEvent::PtyData(vec![0x03]));
+            }
         }
     }
 }

@@ -43,8 +43,6 @@ fn default_log_path() -> String {
 pub struct DisplayConfig {
     #[serde(default = "default_shell_prefix_label")]
     pub shell_prefix_label: String,
-    #[serde(default = "default_shell_prefix_color")]
-    pub shell_prefix_color: String,
     #[serde(default = "default_header_color")]
     pub header_color: String,
     #[serde(default = "default_prompt_label")]
@@ -67,7 +65,6 @@ impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
             shell_prefix_label: default_shell_prefix_label(),
-            shell_prefix_color: default_shell_prefix_color(),
             header_color: default_header_color(),
             prompt_label: default_prompt_label(),
             prompt_color: default_prompt_color(),
@@ -86,10 +83,6 @@ fn default_system_prompt() -> String {
 
 fn default_shell_prefix_label() -> String {
     "[aish]".to_string()
-}
-
-fn default_shell_prefix_color() -> String {
-    "\x1b[38;5;216m".to_string()
 }
 
 fn default_header_color() -> String {

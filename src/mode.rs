@@ -2,21 +2,10 @@
 pub enum Mode {
     Local,
     Remote,
-    RemoteEnded,
 }
 
 impl Mode {
     pub fn accepts_shell_command(&self) -> bool {
-        matches!(self, Mode::Local | Mode::Remote)
-    }
-
-    #[allow(dead_code)]
-    pub fn accepts_ai_prompt(&self) -> bool {
-        true
-    }
-
-    #[allow(dead_code)]
-    pub fn accepts_exit(&self) -> bool {
         true
     }
 }
@@ -26,7 +15,6 @@ impl std::fmt::Display for Mode {
         match self {
             Mode::Local => write!(f, "local"),
             Mode::Remote => write!(f, "remote"),
-            Mode::RemoteEnded => write!(f, "remote-ended"),
         }
     }
 }
