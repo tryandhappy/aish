@@ -70,6 +70,16 @@ extern "C" fn sigwinch_handler(_sig: libc::c_int) {
     ui::record_sigwinch();
 }
 
+/// PTY 出力に alt screen 切替シーケンスが含まれているかをざっくり検出する。
+/// xterm 系: `\x1b[?1049h`、古い形式: `\x1b[?47h` / `\x1b[?1047h`。
+/// 全部の組み合わせを厳密に網羅するわけではないが、TUI コマンド (top/vim/less 等)
+/// の検出には十分。
+fn contains_alt_screen_enter(data: &[u8]) -> bool {
+    data.windows(8).any(|w| w == b"\x1b[?1049h")
+        || data.windows(8).any(|w| w == b"\x1b[?1047h")
+        || data.windows(6).any(|w| w == b"\x1b[?47h")
+}
+
 fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     ui::save_terminal_settings();
 
@@ -310,11 +320,6 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
 
                                 any_executed = true;
 
-                                // マーカーラッパで完了を厳密検出する。
-                                // ヒアドキュメント・末尾 & ・未閉じクォート等の場合は
-                                // 素のコマンドを送信し 500ms 無音ヒューリスティックにフォールバック。
-                                // マーカー方式時はラッパ自体が PTY echo として 1 行ぶん見えるのを
-                                // EchoSkipper で除去する。
                                 // ユーザが承認したコマンドをそのまま PTY に送る。ラップしない。
                                 pty.write(format!("{cmd}\n").as_bytes())?;
 
@@ -323,9 +328,11 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                 // - stdin → PTY 転送（パスワード入力・Ctrl+C 中断・対話応答）
                                 // - SIGWINCH 検知（リサイズ追従）
                                 // - 完了判定: PTY 出力末尾がプロンプト形 + 200ms 静音
+                                // - alt screen 利用検知: top/vim 等が DECSTBM を破壊することへの備え
                                 let quiet_threshold = Duration::from_millis(200);
                                 let mut sniffer = prompt_sniffer::PromptSniffer::new();
                                 let mut last_pty_activity = Instant::now();
+                                let mut alt_screen_used = false;
                                 loop {
                                     if ui::check_and_clear_sigwinch() {
                                         let (new_rows, new_cols) = ui::terminal_size();
@@ -340,6 +347,9 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                         io::stdout().flush()?;
                                         ring_buffer.append(&data);
                                         sniffer.feed(&data);
+                                        if !alt_screen_used && contains_alt_screen_enter(&data) {
+                                            alt_screen_used = true;
+                                        }
                                         got_pty = true;
                                     }
                                     if got_pty {
@@ -356,6 +366,17 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                         break;
                                     }
                                     thread::sleep(Duration::from_millis(20));
+                                }
+
+                                // TUI コマンド (top/vim/less 等) は DECSTBM や端末モードを
+                                // 上書きして抜けないことがあるので、aish のスクロール領域を
+                                // 再設定する。それでも cursor 位置が崩れたままなので、alt screen
+                                // を使った形跡がある場合は Ctrl+L (form feed) を PTY に送って
+                                // シェルにプロンプトを再描画させる。
+                                let (rows, _cols) = ui::terminal_size();
+                                ui::resize_status_bar(rows);
+                                if alt_screen_used {
+                                    pty.write(b"\x0c")?;
                                 }
 
                                 executed_summary.push(format!("`{cmd}`"));
