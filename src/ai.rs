@@ -47,7 +47,7 @@ impl AiSession {
         let system_prompt = if language.is_empty() {
             system_prompt.to_string()
         } else {
-            format!("{} Respond in {}.", system_prompt, language)
+            format!("{system_prompt} Respond in {language}.")
         };
         Self {
             session_id: None,
@@ -69,8 +69,7 @@ impl AiSession {
             user_prompt.to_string()
         } else {
             format!(
-                "```terminal\n{}\n```\n\n{}",
-                terminal_context, user_prompt
+                "```terminal\n{terminal_context}\n```\n\n{user_prompt}"
             )
         };
 
@@ -153,21 +152,21 @@ impl AiSession {
         }
 
         if !status.success() {
-            return Err(format!("claude command failed: {}", stderr).into());
+            return Err(format!("claude command failed: {stderr}").into());
         }
 
         let stdout_trimmed = stdout.trim();
         if stdout_trimmed.is_empty() {
-            return Err(format!("claude returned empty output. stderr: {}", stderr).into());
+            return Err(format!("claude returned empty output. stderr: {stderr}").into());
         }
 
         // claude CLIの出力にJSON以外のテキストが含まれる場合があるため、
         // JSON部分を抽出する
         let json_str = extract_json(stdout_trimmed)
-            .ok_or_else(|| format!("No JSON found in claude output: {}", stdout_trimmed))?;
+            .ok_or_else(|| format!("No JSON found in claude output: {stdout_trimmed}"))?;
 
         let claude_output: serde_json::Value = serde_json::from_str(json_str)
-            .map_err(|e| format!("Failed to parse claude output: {}\nRaw: {}", e, stdout_trimmed))?;
+            .map_err(|e| format!("Failed to parse claude output: {e}\nRaw: {stdout_trimmed}"))?;
 
         if let Some(sid) = claude_output["session_id"].as_str() {
             if self.session_id.is_none() {
@@ -195,8 +194,7 @@ impl AiSession {
                 let s = s.trim();
                 if s.is_empty() {
                     return Err(format!(
-                        "claude returned empty result.\nFull output: {}",
-                        stdout_trimmed
+                        "claude returned empty result.\nFull output: {stdout_trimmed}"
                     ).into());
                 }
                 serde_json::from_str::<AiResponse>(s).unwrap_or_else(|_| AiResponse {
@@ -206,8 +204,7 @@ impl AiSession {
             }
             _ => {
                 return Err(format!(
-                    "Unexpected result from claude.\nFull output: {}",
-                    stdout_trimmed
+                    "Unexpected result from claude.\nFull output: {stdout_trimmed}"
                 ).into());
             }
         };
@@ -309,8 +306,8 @@ fn write_log(log_path: &Option<String>, entry: &str) {
         .open(path)
     {
         let now = timestamp_local();
-        let _ = writeln!(file, "=== {} ===", now);
-        let _ = writeln!(file, "{}", entry);
+        let _ = writeln!(file, "=== {now} ===");
+        let _ = writeln!(file, "{entry}");
         let _ = writeln!(file);
     }
 }
@@ -336,7 +333,7 @@ fn timestamp_local() -> String {
     // 日付計算（簡易: days since epoch → year/month/day）
     let days = local / 86400;
     let (y, m, d) = days_to_ymd(days);
-    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, m, d, hrs, mins, secs)
+    format!("{y:04}-{m:02}-{d:02} {hrs:02}:{mins:02}:{secs:02}")
 }
 
 fn days_to_ymd(days: i64) -> (i64, i64, i64) {

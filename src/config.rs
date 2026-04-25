@@ -146,7 +146,7 @@ impl Config {
                         e
                     ));
                 }
-                eprintln!("Warning: Failed to read config file: {}", e);
+                eprintln!("Warning: Failed to read config file: {e}");
                 return Ok(Config::default());
             }
         };
@@ -161,7 +161,7 @@ impl Config {
                         e
                     ))
                 } else {
-                    eprintln!("Warning: Failed to parse config file: {}", e);
+                    eprintln!("Warning: Failed to parse config file: {e}");
                     Ok(Config::default())
                 }
             }

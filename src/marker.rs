@@ -26,8 +26,7 @@ pub fn wrap_command(cmd: &str) -> Option<(String, String)> {
     }
     let id = make_marker_id();
     let wrapped = format!(
-        "{{ {}; }}; printf '\\n__AISH_DONE_{}_%03d__\\n' \"$?\"\n",
-        cmd_clean, id
+        "{{ {cmd_clean}; }}; printf '\\n__AISH_DONE_{id}_%03d__\\n' \"$?\"\n"
     );
     Some((wrapped, id))
 }
@@ -38,7 +37,7 @@ fn make_marker_id() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
-    format!("{:08x}{:016x}", pid, nanos)
+    format!("{pid:08x}{nanos:016x}")
 }
 
 fn is_safe_for_marker(cmd: &str) -> bool {
@@ -94,7 +93,7 @@ pub struct MarkerScanner {
 
 impl MarkerScanner {
     pub fn new(id: &str) -> Self {
-        let pattern = format!("\n__AISH_DONE_{}_", id).into_bytes();
+        let pattern = format!("\n__AISH_DONE_{id}_").into_bytes();
         Self {
             pattern,
             pending: Vec::new(),

@@ -135,7 +135,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         format!("{} {}", config.display.shell_prefix_label, args.ssh_args.join(" "))
     };
-    print!("\x1b]2;{}\x07", title);
+    print!("\x1b]2;{title}\x07");
     io::stdout().flush().ok();
 
     // ステータスバー: 最下行に [aish] ラベルを常時表示
@@ -172,14 +172,14 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
             match request {
                 ui::InputRequest::Passthrough(prompt) => {
                     if !prompt.is_empty() {
-                        print!("{}", prompt);
+                        print!("{prompt}");
                         io::stdout().flush().ok();
                     }
                     ui::passthrough_read(&input_tx, &input_bg, &input_aish_label);
                 }
                 ui::InputRequest::ReadLine(prompt) => {
                     if !prompt.is_empty() {
-                        print!("{}", prompt);
+                        print!("{prompt}");
                         io::stdout().flush().ok();
                     }
                     let line = ui::read_line().unwrap_or_else(|| "n".to_string());
@@ -340,7 +340,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                     Some((wrapped, id)) => {
                                         (wrapped, Some(marker::MarkerScanner::new(&id)))
                                     }
-                                    None => (format!("{}\n", cmd), None),
+                                    None => (format!("{cmd}\n"), None),
                                 };
                                 pty.write(cmd_bytes.as_bytes())?;
 
@@ -395,8 +395,8 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                     .as_ref()
                                     .and_then(|s| s.exit_code())
                                 {
-                                    Some(rc) => format!("`{}` (exit {})", cmd, rc),
-                                    None => format!("`{}`", cmd),
+                                    Some(rc) => format!("`{cmd}` (exit {rc})"),
+                                    None => format!("`{cmd}`"),
                                 };
                                 executed_summary.push(summary);
                             }
@@ -407,7 +407,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
 
                             // 実行結果をAIに送信して分析を継続
                             let follow_up_context = ring_buffer.get_unsent();
-                            print!("\n");
+                            println!();
                             let spinner = ui::Spinner::start(&config.display);
                             let follow_up_text = format!(
                                 "実行したコマンド: {}。出力は terminal フェンスに含まれます。分析してください。追加の操作が必要であれば提案してください。",
@@ -420,7 +420,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                             if e.to_string() == ai::CANCELLED {
                                 eprintln!("^C");
                             } else {
-                                eprintln!("AI error: {}", e);
+                                eprintln!("AI error: {e}");
                             }
                             break;
                         }
@@ -463,7 +463,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                         last_pty_output = Instant::now();
                     }
                     ui::UserInput::ShellCommand(cmd) => {
-                        pty.write(format!("{}\n", cmd).as_bytes())?;
+                        pty.write(format!("{cmd}\n").as_bytes())?;
                         pending_input = true;
                         last_pty_output = Instant::now();
                     }
@@ -481,7 +481,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     ui::cleanup_status_bar(final_rows);
 
     if let Some(sid) = ai_session.session_id() {
-        eprintln!("\nResume this session with:\nclaude --resume {}", sid);
+        eprintln!("\nResume this session with:\nclaude --resume {sid}");
     }
 
     Ok(())
@@ -494,7 +494,7 @@ fn main() {
         }
         CliAction::Update => {
             if let Err(e) = update::run_update() {
-                eprintln!("Error: {}", e);
+                eprintln!("Error: {e}");
                 std::process::exit(1);
             }
         }
@@ -505,7 +505,7 @@ fn main() {
             io::stdout().flush().ok();
             ui::restore_terminal_settings();
             if let Err(e) = result {
-                eprintln!("Error: {}", e);
+                eprintln!("Error: {e}");
                 std::process::exit(1);
             }
         }

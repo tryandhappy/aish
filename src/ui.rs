@@ -81,8 +81,7 @@ pub fn setup_status_bar(rows: u16, label: &str, color: &str) {
     let mut stdout = io::stdout();
     let scroll_bottom = rows.saturating_sub(1).max(1);
     let _ = write!(stdout,
-        "\n\x1b[1;{}r\x1b[{};1H{}{}\x1b[K\x1b[0m\x1b[{};1H",
-        scroll_bottom, rows, color, label, scroll_bottom
+        "\n\x1b[1;{scroll_bottom}r\x1b[{rows};1H{color}{label}\x1b[K\x1b[0m\x1b[{scroll_bottom};1H"
     );
     let _ = stdout.flush();
 }
@@ -96,8 +95,7 @@ pub fn resize_status_bar(rows: u16) {
     let mut stdout = io::stdout();
     let scroll_bottom = rows.saturating_sub(1).max(1);
     let _ = write!(stdout,
-        "\x1b7\x1b[1;{}r\x1b[{};1H{}{}\x1b[K\x1b[0m\x1b8",
-        scroll_bottom, rows, color, label
+        "\x1b7\x1b[1;{scroll_bottom}r\x1b[{rows};1H{color}{label}\x1b[K\x1b[0m\x1b8"
     );
     let _ = stdout.flush();
 }
@@ -108,8 +106,7 @@ fn redraw_status_bar(stdout: &mut io::Stdout) {
     let label = STATUS_BAR_LABEL.get().map(|s| s.as_str()).unwrap_or("");
     let color = STATUS_BAR_COLOR.get().map(|s| s.as_str()).unwrap_or("");
     let _ = write!(stdout,
-        "\x1b[{};1H{}{}\x1b[K\x1b[0m",
-        rows, color, label
+        "\x1b[{rows};1H{color}{label}\x1b[K\x1b[0m"
     );
     let _ = stdout.flush();
 }
@@ -122,8 +119,7 @@ pub fn refresh_status_bar() {
     let color = STATUS_BAR_COLOR.get().map(|s| s.as_str()).unwrap_or("");
     let mut stdout = io::stdout();
     let _ = write!(stdout,
-        "\x1b7\x1b[{};1H{}{}\x1b[K\x1b[0m\x1b8",
-        rows, color, label
+        "\x1b7\x1b[{rows};1H{color}{label}\x1b[K\x1b[0m\x1b8"
     );
     let _ = stdout.flush();
 }
@@ -132,7 +128,7 @@ pub fn refresh_status_bar() {
 pub fn cleanup_status_bar(rows: u16) {
     let mut stdout = io::stdout();
     // スクロール領域リセット→ステータスバー行クリア
-    let _ = write!(stdout, "\x1b[r\x1b[{};1H\x1b[2K", rows);
+    let _ = write!(stdout, "\x1b[r\x1b[{rows};1H\x1b[2K");
     let _ = stdout.flush();
 }
 
@@ -192,7 +188,7 @@ pub fn build_color_start(color: &str) -> String {
     if color.is_empty() {
         return String::new();
     }
-    format!("{}\x1b[K", color)
+    format!("{color}\x1b[K")
 }
 
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -255,7 +251,7 @@ impl Drop for Spinner {
 pub fn print_ai_message(message: &str, display: &DisplayConfig) {
     let color = build_color_start(&display.ai_color);
     for line in message.lines() {
-        print!("{}{}\x1b[K\x1b[0m\n", color, line);
+        println!("{color}{line}\x1b[K\x1b[0m");
     }
     io::stdout().flush().ok();
 }
@@ -265,9 +261,9 @@ pub fn print_ai_commands(commands: &[String], display: &DisplayConfig) {
         return;
     }
     let color = build_color_start(&display.ai_color);
-    print!("{}Proposed commands:\x1b[K\x1b[0m\n", color);
+    println!("{color}Proposed commands:\x1b[K\x1b[0m");
     for (i, cmd) in commands.iter().enumerate() {
-        print!("{}  {}: {}\x1b[K\x1b[0m\n", color, i + 1, cmd);
+        println!("{}  {}: {}\x1b[K\x1b[0m", color, i + 1, cmd);
     }
     io::stdout().flush().ok();
 }
@@ -280,8 +276,7 @@ pub fn print_single_confirm_prompt(
 ) {
     let color = &display.confirm_color;
     print!(
-        "{}Execute [{}/{}]: {} (Y/n)\x1b[0m ",
-        color, index, total, cmd
+        "{color}Execute [{index}/{total}]: {cmd} (Y/n)\x1b[0m "
     );
     io::stdout().flush().ok();
 }
@@ -433,7 +428,7 @@ fn read_line_raw_loop_from(initial: String, minibuffer: bool) -> Option<String> 
             }
             0x15 => {
                 // Ctrl-U: 行全体を削除
-                let total_width: usize = line.chars().map(|c| char_width(c)).sum();
+                let total_width: usize = line.chars().map(char_width).sum();
                 for _ in 0..total_width {
                     let _ = stdout.write_all(b"\x08 \x08");
                 }
@@ -462,7 +457,7 @@ fn read_line_raw_loop_from(initial: String, minibuffer: bool) -> Option<String> 
             0x1b => {
                 // ESC: 後続バイトがあればエスケープシーケンス（矢印キー等）、なければ単独ESC
                 use std::os::unix::io::AsRawFd;
-                let fd = (&*stdin).as_raw_fd();
+                let fd = (*stdin).as_raw_fd();
                 let mut pollfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
                 let ready = unsafe { libc::poll(&mut pollfd, 1, 50) };
                 if ready > 0 {
@@ -485,7 +480,7 @@ fn read_line_raw_loop_from(initial: String, minibuffer: bool) -> Option<String> 
                                 }
                                 hist_idx = new_idx;
                                 // 現在行をクリア
-                                let old_width: usize = line.chars().map(|c| char_width(c)).sum();
+                                let old_width: usize = line.chars().map(char_width).sum();
                                 for _ in 0..old_width {
                                     let _ = stdout.write_all(b"\x08 \x08");
                                 }
@@ -677,11 +672,11 @@ fn redraw_minibuffer(
             let clear_from = term_rows - *rows_used + 1;
             let clear_to = term_rows - new_rows_used;
             for r in clear_from..=clear_to {
-                let _ = write!(stdout, "\x1b[{};1H\x1b[2K", r);
+                let _ = write!(stdout, "\x1b[{r};1H\x1b[2K");
             }
         }
         let scroll_bottom = term_rows.saturating_sub(new_rows_used).max(1);
-        let _ = write!(stdout, "\x1b[1;{}r", scroll_bottom);
+        let _ = write!(stdout, "\x1b[1;{scroll_bottom}r");
         *rows_used = new_rows_used;
     }
 
@@ -691,16 +686,16 @@ fn redraw_minibuffer(
         let vi = scroll_top + disp;
         let row = start_row + disp as u16;
         let (s, e, is_first_line) = vlines[vi];
-        let _ = write!(stdout, "\x1b[{};1H\x1b[0m\x1b[2K", row);
+        let _ = write!(stdout, "\x1b[{row};1H\x1b[0m\x1b[2K");
         if is_first_line {
-            let _ = write!(stdout, "{}", label);
+            let _ = write!(stdout, "{label}");
         } else {
             // 継続行はラベル幅ぶん空白でインデント
             for _ in 0..indent_width {
                 let _ = stdout.write_all(b" ");
             }
         }
-        let _ = write!(stdout, "{}", input_bg);
+        let _ = write!(stdout, "{input_bg}");
         let line_str: String = chars[s..e].iter().collect();
         let _ = stdout.write_all(line_str.as_bytes());
         let _ = write!(stdout, "\x1b[K");
@@ -714,7 +709,7 @@ fn redraw_minibuffer(
         indent_width
     };
     let cursor_col = prefix_w + cvcol + 1;
-    let _ = write!(stdout, "\x1b[{};{}H", cursor_row, cursor_col);
+    let _ = write!(stdout, "\x1b[{cursor_row};{cursor_col}H");
     let _ = stdout.flush();
 }
 
@@ -796,9 +791,7 @@ fn read_minibuffer_line(
             0x01 => cursor_pos = 0,
             0x05 => cursor_pos = chars.len(),
             0x02 => {
-                if cursor_pos > 0 {
-                    cursor_pos -= 1;
-                }
+                cursor_pos = cursor_pos.saturating_sub(1);
             }
             0x06 => {
                 if cursor_pos < chars.len() {
@@ -824,7 +817,7 @@ fn read_minibuffer_line(
                 cursor_pos = end;
             }
             0x1b => {
-                let fd = (&*stdin).as_raw_fd();
+                let fd = (*stdin).as_raw_fd();
                 let mut pollfd = libc::pollfd {
                     fd,
                     events: libc::POLLIN,
@@ -870,9 +863,7 @@ fn read_minibuffer_line(
                         } else {
                             match (params.as_slice(), final_byte) {
                                 (b"", b'D') => {
-                                    if cursor_pos > 0 {
-                                        cursor_pos -= 1;
-                                    }
+                                    cursor_pos = cursor_pos.saturating_sub(1);
                                 }
                                 (b"", b'C') => {
                                     if cursor_pos < chars.len() {
@@ -979,12 +970,12 @@ fn show_minibuffer(
 
     // DECSTBM を元に戻す (1..rows-1)、ミニバッファが使用した追加行をクリア
     let scroll_bottom = rows.saturating_sub(1).max(1);
-    let _ = write!(stdout, "\x1b[0m\x1b[1;{}r", scroll_bottom);
+    let _ = write!(stdout, "\x1b[0m\x1b[1;{scroll_bottom}r");
     if rows_used > 1 {
         let clear_from = rows - rows_used + 1;
         let clear_to = rows - 1;
         for r in clear_from..=clear_to {
-            let _ = write!(stdout, "\x1b[{};1H\x1b[2K", r);
+            let _ = write!(stdout, "\x1b[{r};1H\x1b[2K");
         }
     }
     // ステータスバーを復元→カーソル復元
@@ -1003,20 +994,20 @@ fn show_minibuffer(
         Some(text) => {
             // 履歴に追加（重複は追加しない）
             if let Ok(mut history) = prompt_history().lock() {
-                if history.last().map_or(true, |last| last != &text) {
+                if history.last() != Some(&text) {
                     history.push(text.clone());
                 }
             }
             // スクロールエリアにプロンプト内容をエコー表示
             // 複数行入力は各論理行の先頭に [aish] ラベルを付ける
-            let _ = write!(stdout, "\n");
+            let _ = writeln!(stdout);
             for (i, line) in text.split('\n').enumerate() {
                 if i > 0 {
-                    let _ = write!(stdout, "\n");
+                    let _ = writeln!(stdout);
                 }
-                let _ = write!(stdout, "{}{}\x1b[K\x1b[0m", aish_label, line);
+                let _ = write!(stdout, "{aish_label}{line}\x1b[K\x1b[0m");
             }
-            let _ = write!(stdout, "\n");
+            let _ = writeln!(stdout);
             let _ = stdout.flush();
             if cancel_shell {
                 let _ = tx.send(InputEvent::PtyData(vec![0x03]));
@@ -1070,7 +1061,7 @@ fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &st
             0x1b => {
                 // ESC: 後続バイトをpollで時間制限つきに読み取る。
                 // 単独ESCのときは50ms待って後続が無ければESC単体としてPTYに転送する。
-                let fd = (&*stdin).as_raw_fd();
+                let fd = (*stdin).as_raw_fd();
                 let mut pollfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
                 let ready = unsafe { libc::poll(&mut pollfd, 1, 50) };
                 let mut seq_bytes = vec![0x1b_u8];
