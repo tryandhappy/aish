@@ -308,7 +308,9 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
             let (rows, _cols) = ui::terminal_size();
             if tui_recovery_pending {
                 debug_log("[main loop] running tui recovery");
-                io::stdout().write_all(b"\x1b[r\x1b[1;1H\x1b[J")?;
+                // DECSTR (soft reset) で origin mode・DECSTBM・各種 DEC モードを
+                // デフォルトに戻す + cursor home + 画面クリア
+                io::stdout().write_all(b"\x1b[!p\x1b[1;1H\x1b[2J")?;
                 io::stdout().flush()?;
                 ui::resize_status_bar(rows);
                 pty.write(b"\n")?;
@@ -488,7 +490,9 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                 ));
                                 if tui_detected {
                                     debug_log("starting recovery sequence");
-                                    io::stdout().write_all(b"\x1b[r\x1b[1;1H\x1b[J")?;
+                                    // DECSTR (soft reset) で origin mode・DECSTBM・各種
+                                    // DEC モードをデフォルトに戻す + cursor home + 画面クリア
+                                    io::stdout().write_all(b"\x1b[!p\x1b[1;1H\x1b[2J")?;
                                     io::stdout().flush()?;
                                     ui::resize_status_bar(rows);
                                     pty.write(b"\n")?;

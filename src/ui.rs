@@ -86,6 +86,11 @@ pub fn setup_status_bar(rows: u16, label: &str, color: &str) {
 
 /// リサイズ時: スクロール領域を再設定しステータスバーを再描画する（改行なし）。
 /// シェル側のカーソル位置を壊さないよう save/restore で囲む。
+///
+/// `\x1b[?6l` で **origin mode を off** にしてからカーソル位置指定する点が重要。
+/// 直前に動いた TUI コマンド (top 等) が origin mode を有効化したまま抜けた場合、
+/// `\x1b[<rows>;1H` が DECSTBM 内の相対座標と解釈されて status bar の描画位置が
+/// 1 行ズレる事故を防ぐ。
 pub fn resize_status_bar(rows: u16) {
     TERM_ROWS.store(rows, Ordering::Relaxed);
     let label = STATUS_BAR_LABEL.get().map(|s| s.as_str()).unwrap_or("");
@@ -93,7 +98,7 @@ pub fn resize_status_bar(rows: u16) {
     let mut stdout = io::stdout();
     let scroll_bottom = rows.saturating_sub(1).max(1);
     let _ = write!(stdout,
-        "\x1b7\x1b[1;{scroll_bottom}r\x1b[{rows};1H{color}{label}\x1b[K\x1b[0m\x1b8"
+        "\x1b7\x1b[?6l\x1b[1;{scroll_bottom}r\x1b[{rows};1H{color}{label}\x1b[K\x1b[0m\x1b8"
     );
     let _ = stdout.flush();
 }
