@@ -70,6 +70,45 @@ extern "C" fn sigwinch_handler(_sig: libc::c_int) {
     ui::record_sigwinch();
 }
 
+/// 環境変数 AISH_DEBUG=1 のときだけ /tmp/aish-debug.log にデバッグメモを書く。
+/// 平時は no-op (ファイル open すらしない)。
+fn debug_log(msg: &str) {
+    if std::env::var("AISH_DEBUG").ok().as_deref() != Some("1") {
+        return;
+    }
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/aish-debug.log")
+    {
+        let _ = writeln!(f, "[{}] {}", std::process::id(), msg);
+    }
+}
+
+/// バイト列をデバッグ用にエスケープ表記で文字列化する（先頭 N バイト）。
+fn debug_bytes(data: &[u8], max: usize) -> String {
+    let n = data.len().min(max);
+    let mut s = String::with_capacity(n * 4);
+    for &b in &data[..n] {
+        match b {
+            0x1b => s.push_str("\\e"),
+            0x0a => s.push_str("\\n"),
+            0x0d => s.push_str("\\r"),
+            0x09 => s.push_str("\\t"),
+            0x07 => s.push_str("\\a"),
+            0x08 => s.push_str("\\b"),
+            0x0c => s.push_str("\\f"),
+            0x20..=0x7e => s.push(b as char),
+            _ => s.push_str(&format!("\\x{:02x}", b)),
+        }
+    }
+    if data.len() > max {
+        s.push_str(&format!(" ... (+{} more bytes)", data.len() - max));
+    }
+    s
+}
+
 /// PTY 出力に TUI コマンドが端末状態を変更した形跡があるかを検出する。
 /// 検出すべき変化:
 /// - alt screen 出入り (`\x1b[?1049h/l`、`\x1b[?1047h/l`、`\x1b[?47h/l`)
@@ -355,6 +394,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
 
                                 // ユーザが承認したコマンドをそのまま PTY に送る。ラップしない。
                                 pty.write(format!("{cmd}\n").as_bytes())?;
+                                debug_log(&format!("=== exec start: {cmd}"));
 
                                 // コマンド実行完了待ち（passive 検出）。
                                 // - PTY 出力をドレインして画面 / リングバッファ / sniffer へ
@@ -366,6 +406,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                 let mut sniffer = prompt_sniffer::PromptSniffer::new();
                                 let mut last_pty_activity = Instant::now();
                                 let mut tui_detected = false;
+                                let mut chunk_count = 0usize;
                                 loop {
                                     if ui::check_and_clear_sigwinch() {
                                         let (new_rows, new_cols) = ui::terminal_size();
@@ -376,12 +417,22 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                     let mut got_pty = false;
                                     while let Ok(data) = pty_rx.try_recv() {
+                                        chunk_count += 1;
+                                        if chunk_count <= 3 {
+                                            debug_log(&format!(
+                                                "pty chunk #{} ({} bytes): {}",
+                                                chunk_count,
+                                                data.len(),
+                                                debug_bytes(&data, 200)
+                                            ));
+                                        }
                                         io::stdout().write_all(&data)?;
                                         io::stdout().flush()?;
                                         ring_buffer.append(&data);
                                         sniffer.feed(&data);
                                         if !tui_detected && contains_tui_signature(&data) {
                                             tui_detected = true;
+                                            debug_log("tui_detected = true");
                                         }
                                         got_pty = true;
                                     }
@@ -412,17 +463,28 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                 //   6. その応答を即座に drain して画面に反映
                                 // alt screen を使わない通常コマンドでは何もしない。
                                 let (rows, _cols) = ui::terminal_size();
+                                debug_log(&format!(
+                                    "exec end: tui_detected={}, chunks={}",
+                                    tui_detected, chunk_count
+                                ));
                                 if tui_detected {
+                                    debug_log("starting recovery sequence");
                                     io::stdout().write_all(b"\x1b[r\x1b[1;1H\x1b[J")?;
                                     io::stdout().flush()?;
                                     ui::resize_status_bar(rows);
                                     pty.write(b"\n")?;
                                     thread::sleep(Duration::from_millis(200));
+                                    let mut recovery_bytes = 0usize;
                                     while let Ok(data) = pty_rx.try_recv() {
+                                        recovery_bytes += data.len();
                                         io::stdout().write_all(&data)?;
                                         ring_buffer.append(&data);
                                     }
                                     io::stdout().flush()?;
+                                    debug_log(&format!(
+                                        "recovery drain: {} bytes",
+                                        recovery_bytes
+                                    ));
                                 } else {
                                     ui::resize_status_bar(rows);
                                 }
