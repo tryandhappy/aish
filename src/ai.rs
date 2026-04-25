@@ -374,3 +374,56 @@ fn shell_join(args: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_json_pure() {
+        assert_eq!(extract_json(r#"{"a":1}"#), Some(r#"{"a":1}"#));
+    }
+
+    #[test]
+    fn extract_json_with_prefix_and_suffix() {
+        let s = "noise before {\"a\":1} noise after";
+        assert_eq!(extract_json(s), Some(r#"{"a":1}"#));
+    }
+
+    #[test]
+    fn extract_json_nested_object() {
+        let s = r#"{"a":{"b":[1,2]},"c":"d"}"#;
+        assert_eq!(extract_json(s), Some(s));
+    }
+
+    #[test]
+    fn extract_json_brace_inside_string() {
+        // 文字列内の { } を depth に算入してはいけない。
+        let s = r#"{"msg":"open { close }"}"#;
+        assert_eq!(extract_json(s), Some(s));
+    }
+
+    #[test]
+    fn extract_json_escaped_quote() {
+        // 文字列内のエスケープ済み " を文字列終端と誤認しない。
+        let s = r#"{"msg":"say \"hi\" {"}"#;
+        assert_eq!(extract_json(s), Some(s));
+    }
+
+    #[test]
+    fn extract_json_returns_none_when_unbalanced() {
+        assert_eq!(extract_json(r#"{"a":1"#), None);
+    }
+
+    #[test]
+    fn extract_json_returns_none_when_no_brace() {
+        assert_eq!(extract_json("plain text"), None);
+    }
+
+    #[test]
+    fn extract_json_picks_first_balanced_object() {
+        // 複数の独立オブジェクトが並んでいた場合、最初のバランス済みを返す。
+        let s = r#"{"a":1}{"b":2}"#;
+        assert_eq!(extract_json(s), Some(r#"{"a":1}"#));
+    }
+}

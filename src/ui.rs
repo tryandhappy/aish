@@ -23,7 +23,6 @@ pub enum InputEvent {
 
 static CTRL_C_COUNT: AtomicU32 = AtomicU32::new(0);
 static MINIBUFFER_ACTIVE: AtomicBool = AtomicBool::new(false);
-static PASSTHROUGH_EXIT: AtomicBool = AtomicBool::new(false);
 static SIGWINCH_RECEIVED: AtomicBool = AtomicBool::new(false);
 static TERM_ROWS: AtomicU16 = AtomicU16::new(24);
 static STATUS_BAR_LABEL: OnceLock<String> = OnceLock::new();
@@ -1011,26 +1010,15 @@ fn show_minibuffer(
 /// Ctrl+/ でaishプロンプトを開き、それ以外はPTYに直送する。
 #[cfg(unix)]
 fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &str) {
-    use std::os::unix::io::{AsRawFd, FromRawFd};
+    use std::os::unix::io::FromRawFd;
     // io::stdin()はBufReaderを内包しており、poll()と併用するとデータ喪失する。
     // ManuallyDropでfd 0を直接読み取り、BufReaderをバイパスする。
     let mut stdin = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
     let mut stdout = io::stdout();
     let mut buf = [0u8; 1];
     let mut at_line_start = true;
-    let fd = stdin.as_raw_fd();
-    PASSTHROUGH_EXIT.store(false, Ordering::Relaxed);
 
     loop {
-        // poll()でフラグチェックの機会を作る（100ms間隔）
-        let mut pollfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-        let ready = unsafe { libc::poll(&mut pollfd, 1, 100) };
-        if PASSTHROUGH_EXIT.load(Ordering::Relaxed) {
-            return;
-        }
-        if ready <= 0 {
-            continue;
-        }
         match stdin.read(&mut buf) {
             Ok(0) => return,
             Ok(_) => {}
