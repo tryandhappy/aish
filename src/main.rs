@@ -303,24 +303,18 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // PTY出力が落ち着いたらステータスバーとスクロール領域を復元
+        // PTY出力が落ち着いたらステータスバーとスクロール領域を復元。
+        // resize_status_bar が内部で `\x1b[?6l` を出して origin mode を確実に
+        // off にしているので、TUI コマンドが残した DEC モードもこの呼び出しで
+        // 元に戻る。追加の reset / 画面クリア / シェルへの \n 送信は副作用が
+        // 大きすぎたので削除した（カーソル位置が強制リセットされる問題があった）。
         if status_bar_needs_refresh && last_pty_output.elapsed() > Duration::from_millis(50) {
             let (rows, _cols) = ui::terminal_size();
             if tui_recovery_pending {
-                debug_log("[main loop] running tui recovery");
-                // DECSTR (soft reset) で origin mode・DECSTBM・各種 DEC モードを
-                // デフォルトに戻す + cursor home + 画面クリア
-                // DECSTR (soft reset) でモード一括リセット → cursor を可視化 →
-// cursor home → 画面クリア。DECSTR は副作用で cursor を不可視に
-// するので \x1b[?25h で戻す。
-io::stdout().write_all(b"\x1b[!p\x1b[?25h\x1b[1;1H\x1b[2J")?;
-                io::stdout().flush()?;
-                ui::resize_status_bar(rows);
-                pty.write(b"\n")?;
+                debug_log("[main loop] tui recovery (resize_status_bar only)");
                 tui_recovery_pending = false;
-            } else {
-                ui::resize_status_bar(rows);
             }
+            ui::resize_status_bar(rows);
             status_bar_needs_refresh = false;
         }
 
@@ -476,47 +470,15 @@ io::stdout().write_all(b"\x1b[!p\x1b[?25h\x1b[1;1H\x1b[2J")?;
                                     thread::sleep(Duration::from_millis(20));
                                 }
 
-                                // TUI コマンド (top/vim/less 等) が alt screen を使った場合、
-                                // DECSTBM や cursor 位置が壊れた状態で抜けてくるので復旧させる。
-                                // 復旧手順:
-                                //   1. \x1b[r で DECSTBM をリセット
-                                //   2. \x1b[1;1H で cursor を画面上部に強制移動（壊れた位置から脱出）
-                                //   3. \x1b[J で cursor 以降をクリア（残骸除去）
-                                //   4. resize_status_bar で aish の DECSTBM + status bar を再設定
-                                //   5. \n を PTY に送って shell に新しいプロンプトを出させる
-                                //   6. その応答を即座に drain して画面に反映
-                                // alt screen を使わない通常コマンドでは何もしない。
+                                // 完了後 status bar を再描画する。resize_status_bar が
+                                // origin mode を off にしてくれるので、TUI コマンドが
+                                // 残した DEC モードの影響もここでリセットされる。
                                 let (rows, _cols) = ui::terminal_size();
                                 debug_log(&format!(
                                     "exec end: tui_detected={}, chunks={}",
                                     tui_detected, chunk_count
                                 ));
-                                if tui_detected {
-                                    debug_log("starting recovery sequence");
-                                    // DECSTR (soft reset) で origin mode・DECSTBM・各種
-                                    // DEC モードをデフォルトに戻す + cursor home + 画面クリア
-                                    // DECSTR (soft reset) でモード一括リセット → cursor を可視化 →
-// cursor home → 画面クリア。DECSTR は副作用で cursor を不可視に
-// するので \x1b[?25h で戻す。
-io::stdout().write_all(b"\x1b[!p\x1b[?25h\x1b[1;1H\x1b[2J")?;
-                                    io::stdout().flush()?;
-                                    ui::resize_status_bar(rows);
-                                    pty.write(b"\n")?;
-                                    thread::sleep(Duration::from_millis(200));
-                                    let mut recovery_bytes = 0usize;
-                                    while let Ok(data) = pty_rx.try_recv() {
-                                        recovery_bytes += data.len();
-                                        io::stdout().write_all(&data)?;
-                                        ring_buffer.append(&data);
-                                    }
-                                    io::stdout().flush()?;
-                                    debug_log(&format!(
-                                        "recovery drain: {} bytes",
-                                        recovery_bytes
-                                    ));
-                                } else {
-                                    ui::resize_status_bar(rows);
-                                }
+                                ui::resize_status_bar(rows);
 
                                 executed_summary.push(format!("`{cmd}`"));
                             }
