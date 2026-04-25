@@ -1,7 +1,9 @@
 mod ai;
 mod config;
+#[allow(dead_code)]
 mod marker;
 mod mode;
+mod prompt_sniffer;
 mod pty_handler;
 mod ring_buffer;
 mod ui;
@@ -315,29 +317,16 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                 // 素のコマンドを送信し 500ms 無音ヒューリスティックにフォールバック。
                                 // マーカー方式時はラッパ自体が PTY echo として 1 行ぶん見えるのを
                                 // EchoSkipper で除去する。
-                                let (cmd_bytes, mut scanner, mut echo_skipper) =
-                                    match marker::wrap_command(cmd) {
-                                        Some((wrapped, id)) => {
-                                            let nl_count = wrapped
-                                                .bytes()
-                                                .filter(|&b| b == b'\n')
-                                                .count();
-                                            (
-                                                wrapped,
-                                                Some(marker::MarkerScanner::new(&id)),
-                                                Some(marker::EchoSkipper::new(nl_count)),
-                                            )
-                                        }
-                                        None => (format!("{cmd}\n"), None, None),
-                                    };
-                                pty.write(cmd_bytes.as_bytes())?;
+                                // ユーザが承認したコマンドをそのまま PTY に送る。ラップしない。
+                                pty.write(format!("{cmd}\n").as_bytes())?;
 
-                                // コマンド実行完了待ち。
-                                // - PTY 出力をドレイン（マーカースキャナ通過後、画面・リングバッファへ）
+                                // コマンド実行完了待ち（passive 検出）。
+                                // - PTY 出力をドレインして画面 / リングバッファ / sniffer へ
                                 // - stdin → PTY 転送（パスワード入力・Ctrl+C 中断・対話応答）
                                 // - SIGWINCH 検知（リサイズ追従）
-                                // - 完了判定: マーカー検出 / フォールバックは 500ms 無音
-                                let quiet_threshold = Duration::from_millis(500);
+                                // - 完了判定: PTY 出力末尾がプロンプト形 + 200ms 静音
+                                let quiet_threshold = Duration::from_millis(200);
+                                let mut sniffer = prompt_sniffer::PromptSniffer::new();
                                 let mut last_pty_activity = Instant::now();
                                 loop {
                                     if ui::check_and_clear_sigwinch() {
@@ -349,25 +338,10 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                     let mut got_pty = false;
                                     while let Ok(data) = pty_rx.try_recv() {
-                                        // EchoSkipper でラッパ echo 行を除去 → MarkerScanner で
-                                        // 完了マーカー行を検出・除去
-                                        let after_echo = if let Some(es) =
-                                            echo_skipper.as_mut()
-                                        {
-                                            es.feed(&data)
-                                        } else {
-                                            data
-                                        };
-                                        let to_emit = if let Some(s) = scanner.as_mut() {
-                                            s.feed(&after_echo)
-                                        } else {
-                                            after_echo
-                                        };
-                                        if !to_emit.is_empty() {
-                                            io::stdout().write_all(&to_emit)?;
-                                            io::stdout().flush()?;
-                                            ring_buffer.append(&to_emit);
-                                        }
+                                        io::stdout().write_all(&data)?;
+                                        io::stdout().flush()?;
+                                        ring_buffer.append(&data);
+                                        sniffer.feed(&data);
                                         got_pty = true;
                                     }
                                     if got_pty {
@@ -377,25 +351,16 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                     if !stdin_bytes.is_empty() {
                                         pty.write(&stdin_bytes)?;
                                     }
-                                    if let Some(s) = scanner.as_ref() {
-                                        if s.marker_found() {
-                                            break;
-                                        }
-                                    } else if last_pty_activity.elapsed() >= quiet_threshold {
+                                    if last_pty_activity.elapsed() >= quiet_threshold
+                                        && sniffer.matches_prompt()
+                                    {
+                                        sniffer.record_match();
                                         break;
                                     }
                                     thread::sleep(Duration::from_millis(20));
                                 }
 
-                                // 実行サマリを記録（exit code 取れれば付ける）
-                                let summary = match scanner
-                                    .as_ref()
-                                    .and_then(|s| s.exit_code())
-                                {
-                                    Some(rc) => format!("`{cmd}` (exit {rc})"),
-                                    None => format!("`{cmd}`"),
-                                };
-                                executed_summary.push(summary);
+                                executed_summary.push(format!("`{cmd}`"));
                             }
 
                             if !any_executed {
