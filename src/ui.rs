@@ -90,6 +90,7 @@ fn redraw_status_bar(stdout: &mut io::Stdout) {
 }
 
 /// ステータスバー内容のみ再描画（DECSTBM変更なし、カーソル位置保全）
+#[allow(dead_code)]
 pub fn refresh_status_bar() {
     let rows = TERM_ROWS.load(Ordering::Relaxed);
     let label = STATUS_BAR_LABEL.get().map(|s| s.as_str()).unwrap_or("");
@@ -1010,7 +1011,7 @@ fn show_minibuffer(
 /// Ctrl+/ でaishプロンプトを開き、それ以外はPTYに直送する。
 #[cfg(unix)]
 fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &str) {
-    use std::os::unix::io::FromRawFd;
+    use std::os::unix::io::{AsRawFd, FromRawFd};
     // io::stdin()はBufReaderを内包しており、poll()と併用するとデータ喪失する。
     // ManuallyDropでfd 0を直接読み取り、BufReaderをバイパスする。
     let mut stdin = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
@@ -1042,22 +1043,28 @@ fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &st
                 at_line_start = true;
             }
             0x1b => {
-                // ESCシーケンスを読み取る
+                // ESC: 後続バイトをpollで時間制限つきに読み取る。
+                // 単独ESCのときは50ms待って後続が無ければESC単体としてPTYに転送する。
+                let fd = (&*stdin).as_raw_fd();
+                let mut pollfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+                let ready = unsafe { libc::poll(&mut pollfd, 1, 50) };
                 let mut seq_bytes = vec![0x1b_u8];
-                let mut seq = [0u8; 1];
-                if stdin.read(&mut seq).is_ok() {
-                    seq_bytes.push(seq[0]);
-                    if seq[0] == b'[' {
-                        // CSIシーケンス: 終端文字(0x40-0x7E)まで読む
-                        loop {
-                            match stdin.read(&mut seq) {
-                                Ok(1) => {
-                                    seq_bytes.push(seq[0]);
-                                    if seq[0] >= 0x40 && seq[0] <= 0x7E {
-                                        break;
+                if ready > 0 {
+                    let mut seq = [0u8; 1];
+                    if stdin.read(&mut seq).is_ok() {
+                        seq_bytes.push(seq[0]);
+                        if seq[0] == b'[' {
+                            // CSIシーケンス: 終端文字(0x40-0x7E)まで読む
+                            loop {
+                                match stdin.read(&mut seq) {
+                                    Ok(1) => {
+                                        seq_bytes.push(seq[0]);
+                                        if seq[0] >= 0x40 && seq[0] <= 0x7E {
+                                            break;
+                                        }
                                     }
+                                    _ => break,
                                 }
-                                _ => break,
                             }
                         }
                     }

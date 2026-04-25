@@ -114,31 +114,57 @@ fn default_confirm_color() -> String {
 }
 
 impl Config {
-    pub fn load(config_path: Option<&str>) -> Self {
-        let path = match config_path {
-            Some(p) => PathBuf::from(p),
+    /// 設定をロードする。
+    /// `config_path` が `Some` (ユーザが `--aish-config` で明示) の場合、
+    /// ファイル不在・読み取り失敗・パース失敗はエラーとして返す。
+    /// `None` (デフォルトパス) の場合は読み取り/パース失敗時に警告を出して既定値で続行する。
+    pub fn load(config_path: Option<&str>) -> Result<Self, String> {
+        let (path, explicit) = match config_path {
+            Some(p) => (PathBuf::from(p), true),
             None => {
                 let mut p = dirs::home_dir().unwrap_or_default();
                 p.push(".aish");
                 p.push("config.toml");
-                p
+                (p, false)
             }
         };
 
-        if path.exists() {
-            match fs::read_to_string(&path) {
-                Ok(content) => match toml::from_str(&content) {
-                    Ok(config) => return config,
-                    Err(e) => {
-                        eprintln!("Warning: Failed to parse config file: {}", e);
-                    }
-                },
-                Err(e) => {
-                    eprintln!("Warning: Failed to read config file: {}", e);
+        if !path.exists() {
+            if explicit {
+                return Err(format!("Config file not found: {}", path.display()));
+            }
+            return Ok(Config::default());
+        }
+
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                if explicit {
+                    return Err(format!(
+                        "Failed to read config file {}: {}",
+                        path.display(),
+                        e
+                    ));
+                }
+                eprintln!("Warning: Failed to read config file: {}", e);
+                return Ok(Config::default());
+            }
+        };
+
+        match toml::from_str(&content) {
+            Ok(config) => Ok(config),
+            Err(e) => {
+                if explicit {
+                    Err(format!(
+                        "Failed to parse config file {}: {}",
+                        path.display(),
+                        e
+                    ))
+                } else {
+                    eprintln!("Warning: Failed to parse config file: {}", e);
+                    Ok(Config::default())
                 }
             }
         }
-
-        Config::default()
     }
 }

@@ -89,7 +89,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
-    let config = config::Config::load(args.config_path.as_deref());
+    let config = config::Config::load(args.config_path.as_deref())?;
 
     let (term_rows, term_cols) = ui::terminal_size();
     let pty_rows = term_rows.saturating_sub(1).max(1);
@@ -274,11 +274,14 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
 
         // PTYプロセスの終了チェック
         if alive_rx.try_recv().is_ok() {
-            // 残りのPTY出力（シェルのlogoutメッセージ等）をドレイン
+            // 残りのPTY出力（logoutメッセージ等）を表示してから終了する
             thread::sleep(Duration::from_millis(50));
-            while let Ok(_) = pty_rx.try_recv() {}
-            // logoutメッセージ行を消去
-            print!("\x1b[A\x1b[2K\r");
+            while let Ok(data) = pty_rx.try_recv() {
+                if !ui::minibuffer_active() {
+                    io::stdout().write_all(&data)?;
+                }
+                ring_buffer.append(&data);
+            }
             io::stdout().flush().ok();
             break;
         }
