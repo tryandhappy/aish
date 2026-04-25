@@ -368,16 +368,26 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                     thread::sleep(Duration::from_millis(20));
                                 }
 
-                                // TUI コマンド (top/vim/less 等) は DECSTBM や端末モードを
-                                // 上書きして抜けないことがあるので、aish のスクロール領域を
-                                // 再設定する。それでも cursor 位置が崩れたままなので、alt screen
-                                // を使った形跡がある場合は Ctrl+L (form feed) を PTY に送って
-                                // シェルにプロンプトを再描画させる。
+                                // TUI コマンド (top/vim/less 等) が alt screen を使った場合、
+                                // DECSTBM や cursor 位置が壊れた状態で抜けてくるので復旧させる:
+                                //   1. Ctrl+L (form feed) を PTY に送る → シェルが
+                                //      \x1b[H\x1b[2J + プロンプト再描画 を返す
+                                //   2. その応答を即座に drain して画面を更新（AI follow-up の
+                                //      数秒間滞留させない）
+                                //   3. status bar を再描画して DECSTBM を aish 設定に戻す
+                                // alt screen を使わない通常コマンドでは何もしない。
                                 let (rows, _cols) = ui::terminal_size();
-                                ui::resize_status_bar(rows);
                                 if alt_screen_used {
                                     pty.write(b"\x0c")?;
+                                    // shell が Ctrl+L を処理して応答を返すまでの猶予
+                                    thread::sleep(Duration::from_millis(80));
+                                    while let Ok(data) = pty_rx.try_recv() {
+                                        io::stdout().write_all(&data)?;
+                                        ring_buffer.append(&data);
+                                    }
+                                    io::stdout().flush()?;
                                 }
+                                ui::resize_status_bar(rows);
 
                                 executed_summary.push(format!("`{cmd}`"));
                             }
