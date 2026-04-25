@@ -18,6 +18,10 @@ const AI_RESPONSE_SCHEMA: &str = r#"{
   "required": ["message", "commands"]
 }"#;
 
+/// claude CLI 呼び出し時に常に拒否するツール群。
+/// aish は提案ベースで動くので、AI が直接実行・編集するツールは無効化する。
+const DISALLOWED_TOOLS: &str = "Bash,Edit,Write,Read";
+
 pub const CANCELLED: &str = "Cancelled";
 
 #[derive(Debug, Deserialize)]
@@ -70,49 +74,38 @@ impl AiSession {
             )
         };
 
-        let (mut child, cmd_args) = if let Some(ref sid) = self.session_id {
-            let args = vec![
-                "-p".to_string(),
-                "--resume".to_string(),
-                sid.clone(),
-                "--output-format".to_string(),
-                "json".to_string(),
-                "--json-schema".to_string(),
-                AI_RESPONSE_SCHEMA.to_string(),
-                prompt.clone(),
-            ];
-            let c = Command::new("claude")
-                .args(&args)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()?;
-            (c, args)
+        // 共通フラグ + 初回 vs resume の差分を組み立てる。
+        // 安全制約 (--disallowedTools) と出力形式は毎回明示する。
+        // --append-system-prompt は append 動作のため初回のみ（resume でも付けると二重に追加される）。
+        let mut args: Vec<String> = vec!["-p".to_string()];
+
+        if let Some(ref sid) = self.session_id {
+            args.push("--resume".to_string());
+            args.push(sid.clone());
         } else {
             let system = format!(
                 "{} コマンドを提案してください。直接実行しないでください。1度のレスポンスで提案するコマンドは1つだけにしてください。複数のステップが必要な場合は、実行結果を確認してから次のコマンドを提案してください。&&や||による条件付き実行は1つのコマンドとして維持してください。",
                 self.system_prompt
             );
-            let args = vec![
-                "-p".to_string(),
-                "--output-format".to_string(),
-                "json".to_string(),
-                "--disallowedTools".to_string(),
-                "Bash,Edit,Write,Read".to_string(),
-                "--append-system-prompt".to_string(),
-                system,
-                "--json-schema".to_string(),
-                AI_RESPONSE_SCHEMA.to_string(),
-                prompt.clone(),
-            ];
-            let c = Command::new("claude")
-                .args(&args)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()?;
-            (c, args)
-        };
+            args.push("--append-system-prompt".to_string());
+            args.push(system);
+        }
 
-        write_log(&self.log_path, &format!("claude {}", shell_join(&cmd_args)));
+        args.push("--output-format".to_string());
+        args.push("json".to_string());
+        args.push("--disallowedTools".to_string());
+        args.push(DISALLOWED_TOOLS.to_string());
+        args.push("--json-schema".to_string());
+        args.push(AI_RESPONSE_SCHEMA.to_string());
+        args.push(prompt);
+
+        let mut child = Command::new("claude")
+            .args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+
+        write_log(&self.log_path, &format!("claude {}", shell_join(&args)));
 
         // stdout/stderrを別スレッドで読み取り
         let child_stdout = child.stdout.take().unwrap();

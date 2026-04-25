@@ -163,19 +163,25 @@ Enter / Ctrl+C / 文字入力などいずれの場合も `passthrough_read_raw` 
 
 ### 6.2 初回リクエスト
 ```
-claude -p --output-format json \
-  --disallowedTools "Bash,Edit,Write,Read" \
+claude -p \
   --append-system-prompt "{system_prompt} コマンドを提案してください。直接実行しないでください。1度のレスポンスで提案するコマンドは1つだけにしてください。複数のステップが必要な場合は、実行結果を確認してから次のコマンドを提案してください。&&や||による条件付き実行は1つのコマンドとして維持してください。" \
+  --output-format json \
+  --disallowedTools "Bash,Edit,Write,Read" \
   --json-schema <AI_RESPONSE_SCHEMA> \
   "<prompt>"
 ```
 
 ### 6.3 2回目以降
 ```
-claude -p --resume <session_id> --output-format json --json-schema <AI_RESPONSE_SCHEMA> "<prompt>"
+claude -p --resume <session_id> \
+  --output-format json \
+  --disallowedTools "Bash,Edit,Write,Read" \
+  --json-schema <AI_RESPONSE_SCHEMA> \
+  "<prompt>"
 ```
 
 `session_id` はClaude CLIのJSON出力 `session_id` フィールドから取得、以降保持。
+`--disallowedTools` は安全制約として毎回明示。`--append-system-prompt` は append 動作のため初回のみ付与する（resume では既存セッションのシステムプロンプトを再利用）。
 
 ### 6.4 JSON Schema
 ```json
