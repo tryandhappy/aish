@@ -22,7 +22,7 @@ CLI SSH + AI (Claude Code) ツール。クライアント側のClaude Codeから
 | `main.rs` | メインループ。PTY読み取りスレッド、ユーザ入力スレッド、イベントループの3構成 |
 | `ui.rs` | ターミナル制御。rawモード（セッション全体で維持）、ライン編集、パススルー、ANSI色、ステータスバー、ミニバッファ |
 | `ai.rs` | Claude Code CLI連携。JSON Schema構造化レスポンス、セッション維持 (`--resume`)、ログ出力 |
-| `config.rs` | TOML設定ロード。`[[hosts]]` パターンマッチは未実装 |
+| `config.rs` | TOML設定ロード |
 | `pty_handler.rs` | portable-pty によるSSH / ローカルシェル起動。実端末サイズで起動し SIGWINCH で追従 |
 | `update.rs` | セルフアップデート (`--update`)。GitHub Releases APIから最新バイナリをダウンロード |
 | `ring_buffer.rs` | 1MBリングバッファ。ANSIエスケープ除去、差分送信 (`mark_sent` / `get_unsent`) |
@@ -333,9 +333,6 @@ TOML形式。未指定フィールドはデフォルト値。
 | `enabled` | `false` | ログ出力有効化 |
 | `path` | `~/.aish/logs/claude-code.log` | ログファイルパス（`~/` はホーム展開） |
 
-### 11.4 `[[hosts]]`（未実装）
-- `patterns`（glob配列）と `system_prompt` を持つホスト別設定。現時点ではパースされるが使われない。
-
 ---
 
 ## 12. セルフアップデート (`--update`)
@@ -368,6 +365,5 @@ TOML形式。未指定フィールドはデフォルト値。
 ## 14. 既知の制約
 
 - **Shift+Enterによる改行**: kitty keyboard protocol (`\x1b[>1u`) を有効化しないと届かない。有効化するとEnter/Esc/BSなど他のキーも別形式になり、既存ハンドラと不整合が起きる。ターミナル横断で安定動作しないため**非対応**。改行は `Alt+Enter` を使う。
-- **`[[hosts]]` パターンマッチ**: 未実装。グローバル `system_prompt` のみ有効。
 - **Windows**: `pty_handler` は portable-pty で対応しているが、`save_terminal_settings` 等のUI部はUnix限定。Windowsビルドは `read_line_cooked` フォールバックのみ。
 - **リングバッファのUTF-8境界**: `String::from_utf8_lossy` でマルチバイトが切れていたら置換文字になる。

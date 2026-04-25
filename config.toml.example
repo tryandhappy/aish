@@ -28,23 +28,3 @@ confirm_color = "\u001B[38;5;228;48;5;239m"                    # default: pale y
 [log]
 enabled = false                                                # default: false
 path = "~/.aish/logs/claude-code.log"                          # default: "~/.aish/logs/claude-code.log"
-
-# Host-specific settings (not yet implemented)
-# - patterns: OR match (any pattern matches), glob wildcards supported
-# - First match wins (evaluated top to bottom)
-# - Falls back to global system_prompt if no match
-
-# Web servers
-[[hosts]]
-patterns = ["web*.example.com", "nginx.example.com", "apache.example.com"]
-system_prompt = "あなたはWebサーバの専門家です。"
-
-# DB servers
-[[hosts]]
-patterns = ["db*.example.com", "postgres-*"]
-system_prompt = "あなたはデータベース管理の専門家です。"
-
-# Bastion host
-[[hosts]]
-patterns = ["bastion.example.com"]
-system_prompt = "あなたは踏み台サーバの管理者です。"
