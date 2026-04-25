@@ -100,9 +100,11 @@ CLI SSH + AI (Claude Code) ツール。クライアント側のClaude Codeから
 - 空Enter / `y` / `yes` （大小文字無視）を承認とみなす。それ以外は拒否してそのコマンドはスキップ、次のコマンドの確認へ進む。
 
 ### 4.7 Ctrl+Cヒント
-- ReadLineモードで Ctrl+C 検知時、`(Ctrl+C to exit)` を2秒間プロンプト前に表示。
-- Ctrl+Cを2秒以内に連打、または2回連続で検知した場合に aish を終了。
-- パススルーモードでは Ctrl+C はそのままPTYへ送られる（シェル側で処理される）ため、aishに SIGINT として届かない。従って **Ctrl+C連打による終了はReadLineモードでのみ有効**。
+- ReadLineモード（AI確認プロンプト等）で Ctrl+C 検知時、`(Ctrl+C to exit)` を2秒間プロンプト前に表示。
+- Ctrl+C を 2秒以内に連打した場合は aish を終了。
+- 連打検知は `record_ctrl_c()` 内で `CTRL_C_LAST_MS` と現在時刻を比較して行い、観測されると `CTRL_C_EXIT_REQUESTED` がセットされる。メインループおよび AI 確認ループで毎回このフラグをチェックして break する。
+- パススルーモードの Ctrl+C はそのまま PTY へ送られる（シェル側で処理される）ため、aish のカウンタには加算されない。従って **Ctrl+C 連打による終了は ReadLine モードでのみ有効**。
+- rawモードでは ISIG が無効化されているため、キーボード Ctrl+C は SIGINT を発行しない。read_line / read_minibuffer 側で `0x03` を受けた時に `record_ctrl_c()` を直接呼んでカウンタを進める（minibuffer の Ctrl+C はキャンセルのみで連打集計には加算しない）。
 
 ---
 
@@ -147,7 +149,7 @@ Enter / Ctrl+C / 文字入力などいずれの場合も `passthrough_read_raw` 
 ### 5.4 シグナル
 | シグナル | ハンドラ | 動作 |
 |---|---|---|
-| `SIGINT` | `sigint_handler` | `CTRL_C_COUNT` をインクリメント |
+| `SIGINT` | `sigint_handler` | `record_ctrl_c()` を呼ぶ（時刻記録 + 2秒以内なら `CTRL_C_EXIT_REQUESTED` セット） |
 | `SIGWINCH` | `sigwinch_handler` | `SIGWINCH_RECEIVED` をセット |
 
 メインループ側で非同期に消費する。
@@ -266,9 +268,9 @@ claude -p --resume <session_id> --output-format json --json-schema <AI_RESPONSE_
 | `pending_input` | 入力リクエストを次の安定点で送るべきか |
 | `input_idle` | 入力スレッドが `prompt_rx.recv()` で待機中か（キュー重複防止） |
 | `MINIBUFFER_ACTIVE` | ミニバッファ表示中（PTY出力の画面描画を抑制） |
-| `PASSTHROUGH_EXIT` | パススルー読み取りを外部から強制終了するフラグ（定義のみ・現状は未使用） |
 | `SIGWINCH_RECEIVED` | 端末リサイズ要求 |
-| `CTRL_C_COUNT` | SIGINT受信数（連打判定用） |
+| `CTRL_C_LAST_MS` | 直近 Ctrl+C のミリ秒タイムスタンプ（連打検知・ヒント表示判定用） |
+| `CTRL_C_EXIT_REQUESTED` | 2秒以内の連打が観測されたかどうか（終了要求） |
 | `TERM_ROWS` | 現在の端末高さキャッシュ（ステータスバー・スピナー用） |
 
 ### 備考

@@ -200,41 +200,21 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut input_idle = true;
     let mut last_pty_output = Instant::now();
     let mut status_bar_needs_refresh = false;
-    let mut last_ctrl_c_count: u32 = 0;
-    let mut last_ctrl_c_time = Instant::now();
-    let mut ctrl_c_hint_until: Option<Instant> = None;
 
     // メインループ
     loop {
+        // Ctrl+C 連打検知（ui::record_ctrl_c() 内で 2秒以内の連打が観測されると true になる）
+        if ui::ctrl_c_exit_requested() {
+            eprintln!();
+            break;
+        }
+
         // 端末リサイズ検出
         if ui::check_and_clear_sigwinch() {
             let (new_rows, new_cols) = ui::terminal_size();
             let new_pty_rows = new_rows.saturating_sub(1).max(1);
             let _ = pty.resize(new_pty_rows, new_cols);
             ui::resize_status_bar(new_rows);
-        }
-
-        // Ctrl+C連打チェック
-        let cc = ui::ctrl_c_count();
-        if cc > last_ctrl_c_count {
-            let now = Instant::now();
-            if cc - last_ctrl_c_count >= 2
-                || (last_ctrl_c_count > 0
-                    && now.duration_since(last_ctrl_c_time) < Duration::from_secs(2))
-            {
-                eprintln!();
-                break;
-            }
-            last_ctrl_c_count = cc;
-            last_ctrl_c_time = now;
-            ctrl_c_hint_until = Some(now + Duration::from_secs(2));
-        }
-
-        // Ctrl+Cヒントの期限切れチェック
-        if let Some(deadline) = ctrl_c_hint_until {
-            if Instant::now() >= deadline {
-                ctrl_c_hint_until = None;
-            }
         }
 
         // PTY出力をチェック
@@ -260,7 +240,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
             let request = if mode.accepts_shell_command() {
                 ui::InputRequest::Passthrough(String::new())
             } else {
-                let hint = if ctrl_c_hint_until.is_some() {
+                let hint = if ui::ctrl_c_hint_active() {
                     "\x1b[33m(Ctrl+C to exit)\x1b[0m "
                 } else {
                     ""
@@ -341,6 +321,13 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                             let total = response.commands.len();
                             let mut any_executed = false;
                             for (i, cmd) in response.commands.iter().enumerate() {
+                                if ui::ctrl_c_exit_requested() {
+                                    break;
+                                }
+                                if ui::ctrl_c_hint_active() {
+                                    print!("\x1b[33m(Ctrl+C to exit)\x1b[0m ");
+                                    io::stdout().flush().ok();
+                                }
                                 ui::print_single_confirm_prompt(
                                     cmd,
                                     i + 1,
@@ -361,6 +348,10 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                         Err(_) => break false,
                                     }
                                 };
+
+                                if ui::ctrl_c_exit_requested() {
+                                    break;
+                                }
 
                                 if !confirmed {
                                     continue;
@@ -383,6 +374,10 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                         break;
                                     }
                                 }
+                            }
+
+                            if ui::ctrl_c_exit_requested() {
+                                break;
                             }
 
                             if !any_executed {
