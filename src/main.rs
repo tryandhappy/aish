@@ -1,5 +1,6 @@
 mod ai;
 mod config;
+mod marker;
 mod mode;
 mod pty_handler;
 mod ring_buffer;
@@ -303,6 +304,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                             // コマンドを1つずつ確認＋実行
                             let total = response.commands.len();
                             let mut any_executed = false;
+                            let mut executed_summary: Vec<String> = Vec::new();
                             for (i, cmd) in response.commands.iter().enumerate() {
                                 ui::print_single_confirm_prompt(
                                     cmd,
@@ -330,13 +332,23 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                 }
 
                                 any_executed = true;
-                                pty.write(format!("{}\n", cmd).as_bytes())?;
+
+                                // マーカーラッパで完了を厳密検出する。
+                                // ヒアドキュメント・末尾 & ・未閉じクォート等の場合は
+                                // 素のコマンドを送信し 500ms 無音ヒューリスティックにフォールバック。
+                                let (cmd_bytes, mut scanner) = match marker::wrap_command(cmd) {
+                                    Some((wrapped, id)) => {
+                                        (wrapped, Some(marker::MarkerScanner::new(&id)))
+                                    }
+                                    None => (format!("{}\n", cmd), None),
+                                };
+                                pty.write(cmd_bytes.as_bytes())?;
 
                                 // コマンド実行完了待ち。
-                                // - PTY 出力をドレインして画面・リングバッファへ
-                                // - stdin → PTY 転送（パスワード入力・Ctrl+C 中断・対話への応答）
+                                // - PTY 出力をドレイン（マーカースキャナ通過後、画面・リングバッファへ）
+                                // - stdin → PTY 転送（パスワード入力・Ctrl+C 中断・対話応答）
                                 // - SIGWINCH 検知（リサイズ追従）
-                                // - PTY 出力が 500ms 無音になったら完了とみなす
+                                // - 完了判定: マーカー検出 / フォールバックは 500ms 無音
                                 let quiet_threshold = Duration::from_millis(500);
                                 let mut last_pty_activity = Instant::now();
                                 loop {
@@ -349,9 +361,16 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                     let mut got_pty = false;
                                     while let Ok(data) = pty_rx.try_recv() {
-                                        io::stdout().write_all(&data)?;
-                                        io::stdout().flush()?;
-                                        ring_buffer.append(&data);
+                                        let to_emit = if let Some(s) = scanner.as_mut() {
+                                            s.feed(&data)
+                                        } else {
+                                            data
+                                        };
+                                        if !to_emit.is_empty() {
+                                            io::stdout().write_all(&to_emit)?;
+                                            io::stdout().flush()?;
+                                            ring_buffer.append(&to_emit);
+                                        }
                                         got_pty = true;
                                     }
                                     if got_pty {
@@ -361,11 +380,25 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                     if !stdin_bytes.is_empty() {
                                         pty.write(&stdin_bytes)?;
                                     }
-                                    if last_pty_activity.elapsed() >= quiet_threshold {
+                                    if let Some(s) = scanner.as_ref() {
+                                        if s.marker_found() {
+                                            break;
+                                        }
+                                    } else if last_pty_activity.elapsed() >= quiet_threshold {
                                         break;
                                     }
                                     thread::sleep(Duration::from_millis(20));
                                 }
+
+                                // 実行サマリを記録（exit code 取れれば付ける）
+                                let summary = match scanner
+                                    .as_ref()
+                                    .and_then(|s| s.exit_code())
+                                {
+                                    Some(rc) => format!("`{}` (exit {})", cmd, rc),
+                                    None => format!("`{}`", cmd),
+                                };
+                                executed_summary.push(summary);
                             }
 
                             if !any_executed {
@@ -376,10 +409,11 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                             let follow_up_context = ring_buffer.get_unsent();
                             print!("\n");
                             let spinner = ui::Spinner::start(&config.display);
-                            ai_result = ai_session.send(
-                                &follow_up_context,
-                                "コマンドの実行結果です。分析してください。追加の操作が必要であれば提案してください。",
+                            let follow_up_text = format!(
+                                "実行したコマンド: {}。出力は terminal フェンスに含まれます。分析してください。追加の操作が必要であれば提案してください。",
+                                executed_summary.join(", ")
                             );
+                            ai_result = ai_session.send(&follow_up_context, &follow_up_text);
                             spinner.stop();
                         }
                         Err(e) => {
