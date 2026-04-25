@@ -271,6 +271,9 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut input_idle = true;
     let mut last_pty_output = Instant::now();
     let mut status_bar_needs_refresh = false;
+    // passthrough モードで TUI コマンド (top/vim/less 等) が走った形跡。
+    // 検出されると次の status bar 再描画タイミングで重い復旧を実行する。
+    let mut tui_recovery_pending = false;
 
     // メインループ
     loop {
@@ -291,12 +294,28 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
             ring_buffer.append(&data);
             last_pty_output = Instant::now();
             status_bar_needs_refresh = true;
+            if !tui_recovery_pending && contains_tui_signature(&data) {
+                tui_recovery_pending = true;
+                debug_log(&format!(
+                    "[main loop] tui_signature detected: {}",
+                    debug_bytes(&data, 200)
+                ));
+            }
         }
 
         // PTY出力が落ち着いたらステータスバーとスクロール領域を復元
         if status_bar_needs_refresh && last_pty_output.elapsed() > Duration::from_millis(50) {
             let (rows, _cols) = ui::terminal_size();
-            ui::resize_status_bar(rows);
+            if tui_recovery_pending {
+                debug_log("[main loop] running tui recovery");
+                io::stdout().write_all(b"\x1b[r\x1b[1;1H\x1b[J")?;
+                io::stdout().flush()?;
+                ui::resize_status_bar(rows);
+                pty.write(b"\n")?;
+                tui_recovery_pending = false;
+            } else {
+                ui::resize_status_bar(rows);
+            }
             status_bar_needs_refresh = false;
         }
 
