@@ -312,7 +312,13 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                 debug_log("[main loop] tui recovery: DECOM + clear + new prompt");
                 // 1. \x1b[?6l: DECOM reset (origin mode off; cursor が (1, 1) に飛ぶ副作用あり)
                 // 2. \x1b[2J: 画面クリア (TUI コマンドの残骸を消す)
-                io::stdout().write_all(b"\x1b[?6l\x1b[2J")?;
+                // 確実な順序で復旧:
+//   \x1b[r:    DECSTBM を全画面にリセット
+//   \x1b[?6l:  DECOM (origin mode) off
+//   \x1b[1;1H: cursor を (1, 1) に明示移動（terminal が \x1b[?6l の副作用で
+//              cursor を動かさない実装でも安全)
+//   \x1b[2J:   画面クリア
+io::stdout().write_all(b"\x1b[r\x1b[?6l\x1b[1;1H\x1b[2J")?;
                 io::stdout().flush()?;
                 // 3. shell に \n を送って fresh prompt を引き出す。
                 //    応答 (\r\n + PS1) は次回イテレーションで drain され、
@@ -486,7 +492,13 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                 ));
                                 if tui_detected {
                                     debug_log("[wait loop] tui recovery: DECOM + clear + new prompt");
-                                    io::stdout().write_all(b"\x1b[?6l\x1b[2J")?;
+                                    // 確実な順序で復旧:
+//   \x1b[r:    DECSTBM を全画面にリセット
+//   \x1b[?6l:  DECOM (origin mode) off
+//   \x1b[1;1H: cursor を (1, 1) に明示移動（terminal が \x1b[?6l の副作用で
+//              cursor を動かさない実装でも安全)
+//   \x1b[2J:   画面クリア
+io::stdout().write_all(b"\x1b[r\x1b[?6l\x1b[1;1H\x1b[2J")?;
                                     io::stdout().flush()?;
                                     pty.write(b"\n")?;
                                     thread::sleep(Duration::from_millis(100));
