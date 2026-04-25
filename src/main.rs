@@ -304,25 +304,30 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // PTY出力が落ち着いたらステータスバーとスクロール領域を復元。
-        // TUI コマンド (top 等) が抜けたあとは、save/restore に依存しない
-        // 専用の描画関数で安全に復旧する（cursor を scroll 領域末端に明示配置）。
+        // TUI コマンド (top 等) 終了後は shell に Ctrl+L を送って画面クリア +
+        // プロンプト再描画を **shell 自身に** 任せる方式に切替。
+        // aish 側で escape を組み立てるよりも端末固有のクセに強い。
         if status_bar_needs_refresh && last_pty_output.elapsed() > Duration::from_millis(50) {
             let (rows, _cols) = ui::terminal_size();
             if tui_recovery_pending {
-                debug_log("[main loop] tui recovery: full reset + safe redraw");
-                // \x1b[r: DECSTBM 全画面に / \x1b[?6l: DECOM off / \x1b[2J: 画面クリア
-                io::stdout().write_all(b"\x1b[r\x1b[?6l\x1b[2J")?;
+                debug_log("[main loop] tui recovery: Ctrl+L to shell");
+                // \x1b[r で DECSTBM を全画面にリセット (TUI が変更してた可能性)
+                io::stdout().write_all(b"\x1b[r")?;
                 io::stdout().flush()?;
-                // status bar を描画して cursor を (rows-1, 1) に明示配置
-                ui::redraw_status_bar_after_tui(rows);
-                // shell に \n を送って fresh prompt を引き出す。
-                // cursor が (rows-1, 1) にあるので prompt は row 23 で着地し、
-                // row 24 の status bar と衝突しない。
-                pty.write(b"\n")?;
+                // shell に Ctrl+L (form feed, 0x0c) を送って readline の
+                // clear-screen を起動。shell は terminfo `clear` (typically
+                // \x1b[H\x1b[2J) を出してから PS1 を再描画する。
+                pty.write(b"\x0c")?;
+                // shell の応答が PTY に来るまで待って drain
+                thread::sleep(Duration::from_millis(200));
+                while let Ok(data) = pty_rx.try_recv() {
+                    io::stdout().write_all(&data)?;
+                    ring_buffer.append(&data);
+                }
+                io::stdout().flush()?;
                 tui_recovery_pending = false;
-            } else {
-                ui::resize_status_bar(rows);
             }
+            ui::resize_status_bar(rows);
             status_bar_needs_refresh = false;
         }
 
@@ -487,22 +492,18 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                     tui_detected, chunk_count
                                 ));
                                 if tui_detected {
-                                    debug_log("[wait loop] tui recovery: full reset + safe redraw");
-                                    // \x1b[r + \x1b[?6l + \x1b[2J で端末状態リセット
-                                    io::stdout().write_all(b"\x1b[r\x1b[?6l\x1b[2J")?;
+                                    debug_log("[wait loop] tui recovery: Ctrl+L to shell");
+                                    io::stdout().write_all(b"\x1b[r")?;
                                     io::stdout().flush()?;
-                                    // status bar 描画 → cursor を (rows-1, 1) に明示配置
-                                    ui::redraw_status_bar_after_tui(rows);
-                                    pty.write(b"\n")?;
-                                    thread::sleep(Duration::from_millis(100));
+                                    pty.write(b"\x0c")?;
+                                    thread::sleep(Duration::from_millis(200));
                                     while let Ok(data) = pty_rx.try_recv() {
                                         io::stdout().write_all(&data)?;
                                         ring_buffer.append(&data);
                                     }
                                     io::stdout().flush()?;
-                                } else {
-                                    ui::resize_status_bar(rows);
                                 }
+                                ui::resize_status_bar(rows);
 
                                 executed_summary.push(format!("`{cmd}`"));
                             }

@@ -128,28 +128,6 @@ pub fn refresh_status_bar() {
     let _ = stdout.flush();
 }
 
-/// TUI コマンド (top 等) の終了直後の復旧専用に呼ぶ status bar 描画。
-/// 通常の `resize_status_bar` は `\x1b7`/`\x1b8` で cursor を save/restore する
-/// が、TUI 直後はその時点の cursor が壊れた位置 (row 24) になっていることが
-/// あり、save/restore で誤った位置を「正しい復元先」として固定してしまう。
-///
-/// この関数は save/restore を使わず、status bar を描いたあとカーソルを
-/// 明示的に scroll 領域末端 (row=rows-1) の col 1 に置く。続けて shell に
-/// `\n` を送って fresh prompt を引き出すと、prompt が row 23 で着地し、
-/// row 24 の status bar と衝突しない。
-pub fn redraw_status_bar_after_tui(rows: u16) {
-    TERM_ROWS.store(rows, Ordering::Relaxed);
-    let label = STATUS_BAR_LABEL.get().map(|s| s.as_str()).unwrap_or("");
-    let color = STATUS_BAR_COLOR.get().map(|s| s.as_str()).unwrap_or("");
-    let mut stdout = io::stdout();
-    let scroll_bottom = rows.saturating_sub(1).max(1);
-    let _ = write!(
-        stdout,
-        "\x1b[1;{scroll_bottom}r\x1b[{rows};1H{color}{label}\x1b[K\x1b[0m\x1b[{scroll_bottom};1H"
-    );
-    let _ = stdout.flush();
-}
-
 /// スクロール領域をリセットしステータスバーをクリアする
 pub fn cleanup_status_bar(rows: u16) {
     let mut stdout = io::stdout();
