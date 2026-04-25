@@ -336,12 +336,23 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                 // マーカーラッパで完了を厳密検出する。
                                 // ヒアドキュメント・末尾 & ・未閉じクォート等の場合は
                                 // 素のコマンドを送信し 500ms 無音ヒューリスティックにフォールバック。
-                                let (cmd_bytes, mut scanner) = match marker::wrap_command(cmd) {
-                                    Some((wrapped, id)) => {
-                                        (wrapped, Some(marker::MarkerScanner::new(&id)))
-                                    }
-                                    None => (format!("{cmd}\n"), None),
-                                };
+                                // マーカー方式時はラッパ自体が PTY echo として 1 行ぶん見えるのを
+                                // EchoSkipper で除去する。
+                                let (cmd_bytes, mut scanner, mut echo_skipper) =
+                                    match marker::wrap_command(cmd) {
+                                        Some((wrapped, id)) => {
+                                            let nl_count = wrapped
+                                                .bytes()
+                                                .filter(|&b| b == b'\n')
+                                                .count();
+                                            (
+                                                wrapped,
+                                                Some(marker::MarkerScanner::new(&id)),
+                                                Some(marker::EchoSkipper::new(nl_count)),
+                                            )
+                                        }
+                                        None => (format!("{cmd}\n"), None, None),
+                                    };
                                 pty.write(cmd_bytes.as_bytes())?;
 
                                 // コマンド実行完了待ち。
@@ -361,10 +372,19 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                     let mut got_pty = false;
                                     while let Ok(data) = pty_rx.try_recv() {
-                                        let to_emit = if let Some(s) = scanner.as_mut() {
-                                            s.feed(&data)
+                                        // EchoSkipper でラッパ echo 行を除去 → MarkerScanner で
+                                        // 完了マーカー行を検出・除去
+                                        let after_echo = if let Some(es) =
+                                            echo_skipper.as_mut()
+                                        {
+                                            es.feed(&data)
                                         } else {
                                             data
+                                        };
+                                        let to_emit = if let Some(s) = scanner.as_mut() {
+                                            s.feed(&after_echo)
+                                        } else {
+                                            after_echo
                                         };
                                         if !to_emit.is_empty() {
                                             io::stdout().write_all(&to_emit)?;

@@ -197,6 +197,64 @@ fn find_subseq(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
+/// PTY が我々の送信したラッパコマンドをそのまま echo して返してくる
+/// 1 行ぶんを画面表示から取り除くためのスキッパ。
+///
+/// 「指定数の改行を見るまで全バイトを捨てる」というシンプルな実装。
+/// シェルの syntax highlighting や色コードが echo に挟まっても影響しない。
+///
+/// 上限 (`max_bytes`) を設けてあり、想定外に長い echo を受け取った場合は
+/// スキップを諦めて passthrough する（`stty -echo` 等で echo 無効時の保険）。
+pub struct EchoSkipper {
+    newlines_remaining: usize,
+    bytes_skipped: usize,
+    max_bytes: usize,
+    skipping: bool,
+}
+
+const DEFAULT_MAX_ECHO_BYTES: usize = 4096;
+
+impl EchoSkipper {
+    pub fn new(newlines_to_skip: usize) -> Self {
+        Self::with_max_bytes(newlines_to_skip, DEFAULT_MAX_ECHO_BYTES)
+    }
+
+    pub fn with_max_bytes(newlines_to_skip: usize, max_bytes: usize) -> Self {
+        Self {
+            newlines_remaining: newlines_to_skip,
+            bytes_skipped: 0,
+            max_bytes,
+            skipping: newlines_to_skip > 0,
+        }
+    }
+
+    pub fn feed(&mut self, data: &[u8]) -> Vec<u8> {
+        if !self.skipping {
+            return data.to_vec();
+        }
+        let mut out = Vec::new();
+        for (i, &b) in data.iter().enumerate() {
+            if self.skipping {
+                if b == b'\n' {
+                    self.newlines_remaining -= 1;
+                    if self.newlines_remaining == 0 {
+                        self.skipping = false;
+                    }
+                }
+                self.bytes_skipped += 1;
+                if self.bytes_skipped >= self.max_bytes {
+                    // 想定より長い echo: 諦めて passthrough
+                    self.skipping = false;
+                }
+            } else {
+                out.extend_from_slice(&data[i..]);
+                break;
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,5 +452,62 @@ mod tests {
         assert!(s.marker_found());
         assert_eq!(s.exit_code(), Some(7));
         assert_eq!(out, b"x\r\ntail");
+    }
+
+    #[test]
+    fn echo_skipper_skips_first_line_with_lf() {
+        let mut s = EchoSkipper::new(1);
+        let out = s.feed(b"echo_line\ncmd_output\n");
+        assert_eq!(out, b"cmd_output\n");
+    }
+
+    #[test]
+    fn echo_skipper_skips_first_line_with_crlf() {
+        let mut s = EchoSkipper::new(1);
+        let out = s.feed(b"echo\r\noutput\r\n");
+        assert_eq!(out, b"output\r\n");
+    }
+
+    #[test]
+    fn echo_skipper_split_across_feeds() {
+        let mut s = EchoSkipper::new(1);
+        let mut out = Vec::new();
+        out.extend_from_slice(&s.feed(b"partial_echo"));
+        out.extend_from_slice(&s.feed(b"_more\nrest"));
+        assert_eq!(out, b"rest");
+    }
+
+    #[test]
+    fn echo_skipper_zero_count_is_passthrough() {
+        let mut s = EchoSkipper::new(0);
+        let out = s.feed(b"all_passthrough\n");
+        assert_eq!(out, b"all_passthrough\n");
+    }
+
+    #[test]
+    fn echo_skipper_passthrough_after_finishing() {
+        let mut s = EchoSkipper::new(1);
+        let _ = s.feed(b"line1\n");
+        let out = s.feed(b"more_data");
+        assert_eq!(out, b"more_data");
+    }
+
+    #[test]
+    fn echo_skipper_byte_at_a_time() {
+        let mut s = EchoSkipper::new(1);
+        let mut out = Vec::new();
+        for &b in b"abc\r\ndef" {
+            out.extend_from_slice(&s.feed(&[b]));
+        }
+        assert_eq!(out, b"def");
+    }
+
+    #[test]
+    fn echo_skipper_gives_up_at_max_bytes() {
+        // echo 無効環境（stty -echo 等）の保険: max_bytes を超えたら諦めて passthrough
+        let mut s = EchoSkipper::with_max_bytes(1, 5);
+        let out = s.feed(b"123456789");
+        // 1〜5 はスキップ、6〜9 は passthrough
+        assert_eq!(out, b"6789");
     }
 }
