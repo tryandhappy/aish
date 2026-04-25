@@ -111,6 +111,8 @@ impl MarkerScanner {
     }
 
     /// 入力データを処理し、画面・リングバッファに渡すべきバイト列を返す。
+    /// マーカー前後の改行は `\n` / `\r\n` のどちらにも対応する（PTY の OPOST
+    /// が `\n` を `\r\n` に変換するため、実環境では `\r\n` で届く）。
     pub fn feed(&mut self, data: &[u8]) -> Vec<u8> {
         if self.found_rc.is_some() {
             return data.to_vec();
@@ -119,7 +121,8 @@ impl MarkerScanner {
 
         if let Some(idx) = find_subseq(&self.pending, &self.pattern) {
             let suffix_start = idx + self.pattern.len();
-            // パターン後に必要なバイト: 3 桁 rc + "__\n"
+            // パターン後に必要な最小バイト: 3 桁 rc + "__" + "\n" (= 6)。
+            // "__\r\n" の場合は 7 バイト。
             if self.pending.len() < suffix_start + 6 {
                 return self.flush_safe();
             }
@@ -132,13 +135,34 @@ impl MarkerScanner {
                 Ok(n) => n,
                 Err(_) => return self.flush_safe(),
             };
-            if &self.pending[suffix_start + 3..suffix_start + 6] != b"__\n" {
+            if &self.pending[suffix_start + 3..suffix_start + 5] != b"__" {
                 return self.flush_safe();
             }
+            // "__" の直後は "\n" または "\r\n"
+            let nl_pos = suffix_start + 5;
+            let after_start = match self.pending.get(nl_pos) {
+                Some(&b'\n') => nl_pos + 1,
+                Some(&b'\r') => {
+                    if self.pending.len() < nl_pos + 2 {
+                        // \r まで来たがまだ \n を見ていない、次の feed まで待つ
+                        return self.flush_safe();
+                    }
+                    if self.pending[nl_pos + 1] != b'\n' {
+                        return self.flush_safe();
+                    }
+                    nl_pos + 2
+                }
+                _ => return self.flush_safe(),
+            };
+            // パターン直前の `\r` も除去（OPOST の `\n` → `\r\n` 対策）
+            let before_end = if idx > 0 && self.pending[idx - 1] == b'\r' {
+                idx - 1
+            } else {
+                idx
+            };
             // マーカー確定
             self.found_rc = Some(rc);
-            let before = self.pending[..idx].to_vec();
-            let after_start = suffix_start + 6;
+            let before = self.pending[..before_end].to_vec();
             let after = self.pending[after_start..].to_vec();
             self.pending.clear();
             let mut out = before;
@@ -152,8 +176,8 @@ impl MarkerScanner {
     /// マーカーが分割されている可能性を考慮して、末尾の一定バイトは
     /// pending に残したまま、それ以前を出力する。
     fn flush_safe(&mut self) -> Vec<u8> {
-        // pattern 全体 + (rc + "__\n") を保持するだけの余裕を残す
-        let keep = (self.pattern.len() + 6).min(self.pending.len());
+        // pattern + (rc + "__\r\n") + 直前の \r = pattern.len() + 8
+        let keep = (self.pattern.len() + 8).min(self.pending.len());
         let split_at = self.pending.len() - keep;
         let out = self.pending[..split_at].to_vec();
         self.pending.drain(..split_at);
@@ -321,5 +345,55 @@ mod tests {
         assert!(s.marker_found());
         assert_eq!(s.exit_code(), Some(7));
         assert_eq!(out, b"out\ntail");
+    }
+
+    #[test]
+    fn scanner_detects_marker_with_crlf_line_endings() {
+        // PTY の OPOST が \n を \r\n に翻訳した実環境を模す
+        let mut s = MarkerScanner::new("abc");
+        let out = s.feed(b"output\r\n\r\n__AISH_DONE_abc_000__\r\nprompt$ ");
+        assert!(s.marker_found());
+        assert_eq!(s.exit_code(), Some(0));
+        // マーカー直前の \r も除去されるので before-bytes は "output\r\n"
+        assert_eq!(out, b"output\r\nprompt$ ");
+    }
+
+    #[test]
+    fn scanner_detects_marker_with_crlf_split_at_rc() {
+        // マーカーが rc 桁の途中で分割される
+        let mut s = MarkerScanner::new("abc");
+        let mut out = Vec::new();
+        out.extend_from_slice(&s.feed(b"out\r\n\r\n__AISH_DONE_abc_04"));
+        out.extend_from_slice(&s.feed(b"2__\r\nprompt$ "));
+        assert!(s.marker_found());
+        assert_eq!(s.exit_code(), Some(42));
+        assert_eq!(out, b"out\r\nprompt$ ");
+    }
+
+    #[test]
+    fn scanner_detects_marker_with_crlf_split_at_cr() {
+        // \r まで届いて \n がまだ来ていないケース
+        let mut s = MarkerScanner::new("abc");
+        let mut out = Vec::new();
+        out.extend_from_slice(&s.feed(b"x\r\n\r\n__AISH_DONE_abc_000__\r"));
+        assert!(!s.marker_found());
+        out.extend_from_slice(&s.feed(b"\nprompt$ "));
+        assert!(s.marker_found());
+        assert_eq!(s.exit_code(), Some(0));
+        assert_eq!(out, b"x\r\nprompt$ ");
+    }
+
+    #[test]
+    fn scanner_handles_crlf_byte_at_a_time() {
+        let input = b"x\r\n\r\n__AISH_DONE_abc_007__\r\ntail";
+        let mut s = MarkerScanner::new("abc");
+        let mut out = Vec::new();
+        for &b in input {
+            out.extend_from_slice(&s.feed(&[b]));
+        }
+        out.extend_from_slice(&s.flush_remaining());
+        assert!(s.marker_found());
+        assert_eq!(s.exit_code(), Some(7));
+        assert_eq!(out, b"x\r\ntail");
     }
 }

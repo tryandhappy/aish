@@ -365,13 +365,16 @@ CIワークフロー（`.github/workflows/release.yml`）側で `sha256sum aish-
 | 状況 | 挙動 |
 |---|---|
 | claude 未インストール | 起動時エラー表示＋`exit 1` |
-| 設定ファイルパースエラー | 警告を出して `Config::default()` で続行 |
-| 設定ファイル読み込みエラー | 同上 |
+| 設定ファイルパースエラー（デフォルトパス） | 警告を出して `Config::default()` で続行 |
+| 設定ファイル読み込みエラー（デフォルトパス） | 同上 |
+| 設定ファイルパース／読み込みエラー（`--aish-config` 明示） | エラー終了（`exit 1`） |
+| `--update` SHA256 検証失敗 | 一時ファイルを削除してエラー終了 |
+| `--update` `.sha256` 取得失敗 | fail-closed でエラー終了 |
 | claude 実行失敗 (非ゼロ終了) | `AI error: ...` 表示してループ継続 |
 | claude 出力が空 | `claude returned empty output` でエラー |
 | claude 出力にJSONなし | `No JSON found in claude output: ...` |
 | AIキャンセル (Ctrl+C中) | `^C` 表示後、対話ループ終了。aishは継続 |
-| PTY終了 | logoutメッセージ行を `\x1b[A\x1b[2K\r`（1行上にカーソル移動＋行全体クリア）で消去してaish終了 |
+| PTY終了 | 残り PTY 出力（logout メッセージ等）を表示してから aish 終了 |
 
 ---
 
