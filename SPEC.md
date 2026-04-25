@@ -114,9 +114,8 @@ CLI SSH + AI (Claude Code) ツール。クライアント側のClaude Codeから
 | キー | 動作 |
 |---|---|
 | `Ctrl+/` (0x1F) | aishプロンプトを開く |
-| それ以外 | PTYへ直送（Enter, Ctrl+C, タブ補完, 矢印キー, ESCシーケンス等すべて） |
+| それ以外 | PTYへ直送（Enter, Ctrl+C, Tab補完, Ctrl+L, Ctrl+R, 矢印キー, ESCシーケンス等すべて） |
 | フォーカスイベント `\x1b[I` / `\x1b[O` | 破棄（PTYへ送らない） |
-| 行頭の制御文字 (`at_line_start && b < 0x20`) | 無視 |
 | UTF-8マルチバイト | 先頭バイトから長さ判定して全バイト読み取りPTYへ送信 |
 
 Enter / Ctrl+C / 文字入力などいずれの場合も `passthrough_read_raw` は抜けず、`Ctrl+/` を受けるか PTY EOF までループを継続する。

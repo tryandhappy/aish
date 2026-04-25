@@ -1106,9 +1106,6 @@ fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &st
                     at_line_start = false;
                 }
             }
-            _ if at_line_start && (b < 0x20 || b == 0x7f) => {
-                // 行頭の制御文字は無視
-            }
             _ => {
                 // 通常文字(ASCII or UTF-8マルチバイト)をPTYに転送
                 let byte_len = utf8_char_len(b);
