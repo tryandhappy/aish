@@ -304,14 +304,19 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // PTY出力が落ち着いたらステータスバーとスクロール領域を復元。
-        // resize_status_bar が内部で `\x1b[?6l` を出して origin mode を確実に
-        // off にしているので、TUI コマンドが残した DEC モードもこの呼び出しで
-        // 元に戻る。追加の reset / 画面クリア / シェルへの \n 送信は副作用が
-        // 大きすぎたので削除した（カーソル位置が強制リセットされる問題があった）。
+        // TUI コマンド (top 等) が origin mode を on にしたまま抜けた場合は、
+        // 一回限りの DECOM reset (\x1b[?6l) で対処する。DECOM の set/reset は
+        // 副作用で cursor を (1, 1) に移動させるため、毎回出すと画面が壊れる。
         if status_bar_needs_refresh && last_pty_output.elapsed() > Duration::from_millis(50) {
             let (rows, _cols) = ui::terminal_size();
             if tui_recovery_pending {
-                debug_log("[main loop] tui recovery (resize_status_bar only)");
+                debug_log("[main loop] tui recovery: DECOM reset + \\n");
+                // origin mode を off に戻す（cursor は (1,1) に飛ぶ副作用あり）。
+                io::stdout().write_all(b"\x1b[?6l")?;
+                io::stdout().flush()?;
+                // shell に空の Enter を送って fresh prompt を引き出す。
+                // 受信応答は次回イテレーションで drain される。
+                pty.write(b"\n")?;
                 tui_recovery_pending = false;
             }
             ui::resize_status_bar(rows);
@@ -470,14 +475,26 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                     thread::sleep(Duration::from_millis(20));
                                 }
 
-                                // 完了後 status bar を再描画する。resize_status_bar が
-                                // origin mode を off にしてくれるので、TUI コマンドが
-                                // 残した DEC モードの影響もここでリセットされる。
+                                // 完了後 status bar を再描画する。TUI が origin mode を
+                                // on にしたまま抜けた可能性があるなら一回限りの DECOM
+                                // reset (\x1b[?6l) と \n 送信で復旧する。
                                 let (rows, _cols) = ui::terminal_size();
                                 debug_log(&format!(
                                     "exec end: tui_detected={}, chunks={}",
                                     tui_detected, chunk_count
                                 ));
+                                if tui_detected {
+                                    debug_log("[wait loop] tui recovery: DECOM reset + \\n");
+                                    io::stdout().write_all(b"\x1b[?6l")?;
+                                    io::stdout().flush()?;
+                                    pty.write(b"\n")?;
+                                    thread::sleep(Duration::from_millis(100));
+                                    while let Ok(data) = pty_rx.try_recv() {
+                                        io::stdout().write_all(&data)?;
+                                        ring_buffer.append(&data);
+                                    }
+                                    io::stdout().flush()?;
+                                }
                                 ui::resize_status_bar(rows);
 
                                 executed_summary.push(format!("`{cmd}`"));
