@@ -17,8 +17,6 @@ pub enum InputEvent {
     Line(String),
     AiPrompt(String),
     PassthroughEnded,
-    #[allow(dead_code)]
-    CtrlCExit,
 }
 
 static MINIBUFFER_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -348,25 +346,13 @@ fn termios_get(fd: i32) -> Option<libc::termios> {
 
 #[cfg(unix)]
 fn read_line_raw_loop() -> Option<String> {
-    read_line_raw_loop_from(String::new(), false)
-}
-
-#[cfg(unix)]
-fn read_line_raw_loop_from(initial: String, minibuffer: bool) -> Option<String> {
     use std::os::unix::io::FromRawFd;
-    let mut line = initial;
+    let mut line = String::new();
     let mut stdout = io::stdout();
     // io::stdin()はBufReaderを内包しており、poll()と併用するとデータ喪失する。
     // ManuallyDropでfd 0を直接読み取り、BufReaderをバイパスする。
     let mut stdin = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
     let mut buf = [0u8; 4];
-
-    // 履歴ナビゲーション用（minibufferのみ）
-    let history = prompt_history().lock().ok();
-    let hist_len = history.as_ref().map_or(0, |h| h.len());
-    drop(history);
-    let mut hist_idx: usize = hist_len; // 末尾=新規入力
-    let mut saved_input = String::new(); // 新規入力の退避用
 
     loop {
         let n = match stdin.read(&mut buf[..1]) {
@@ -388,13 +374,8 @@ fn read_line_raw_loop_from(initial: String, minibuffer: bool) -> Option<String> 
 
         match b {
             b'\n' | b'\r' => {
-                if minibuffer && line.trim() == "exit" {
-                    return None;
-                }
-                if !minibuffer {
-                    let _ = stdout.write_all(b"\x1b[0m\n");
-                    let _ = stdout.flush();
-                }
+                let _ = stdout.write_all(b"\x1b[0m\n");
+                let _ = stdout.flush();
                 break;
             }
             0x7f | 0x08 => {
@@ -406,12 +387,6 @@ fn read_line_raw_loop_from(initial: String, minibuffer: bool) -> Option<String> 
                         let _ = stdout.write_all(b"\x08 \x08");
                     }
                     let _ = stdout.flush();
-                }
-            }
-            0x1f => {
-                // Ctrl+/: aishプロンプト中ならキャンセル
-                if minibuffer {
-                    return None;
                 }
             }
             0x03 => {
@@ -463,39 +438,7 @@ fn read_line_raw_loop_from(initial: String, minibuffer: bool) -> Option<String> 
                 if ready > 0 {
                     let mut seq = [0u8; 2];
                     let _ = stdin.read(&mut seq);
-                    // aishプロンプトで上下キー → 履歴ナビゲーション
-                    if minibuffer && seq[0] == b'[' && (seq[1] == b'A' || seq[1] == b'B') {
-                        if let Ok(history) = prompt_history().lock() {
-                            let new_idx = if seq[1] == b'A' {
-                                // Up: 古い方へ
-                                if hist_idx > 0 { hist_idx - 1 } else { hist_idx }
-                            } else {
-                                // Down: 新しい方へ
-                                if hist_idx < hist_len { hist_idx + 1 } else { hist_idx }
-                            };
-                            if new_idx != hist_idx {
-                                // 現在の入力が新規入力なら退避
-                                if hist_idx == hist_len {
-                                    saved_input = line.clone();
-                                }
-                                hist_idx = new_idx;
-                                // 現在行をクリア
-                                let old_width: usize = line.chars().map(char_width).sum();
-                                for _ in 0..old_width {
-                                    let _ = stdout.write_all(b"\x08 \x08");
-                                }
-                                // 履歴またはsaved_inputで置換
-                                line = if hist_idx < hist_len {
-                                    history[hist_idx].clone()
-                                } else {
-                                    saved_input.clone()
-                                };
-                                let _ = stdout.write_all(line.as_bytes());
-                                let _ = stdout.flush();
-                            }
-                        }
-                    }
-                    // それ以外のエスケープシーケンスは無視
+                    // エスケープシーケンスは無視（矢印キー等）
                 } else {
                     // 単独ESC → キャンセル
                     return None;

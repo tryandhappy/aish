@@ -151,12 +151,6 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
         ui::build_color_start(&config.display.prompt_color),
         config.display.prompt_label,
     );
-    // ReadLine用ラベル（行末クリアなし — 入力エリアに背景色を漏らさない）
-    let aish_label_readline = format!(
-        "{}{}\x1b[0m ",
-        config.display.prompt_color,
-        config.display.prompt_label,
-    );
 
     // ユーザ入力を読み取るスレッド（パススルーモード対応）
     let (prompt_tx, prompt_rx) = mpsc::channel::<ui::InputRequest>();
@@ -226,12 +220,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
 
         // PTY出力が落ち着いたら入力スレッドを起動
         if pending_input && input_idle && last_pty_output.elapsed() > Duration::from_millis(50) {
-            let request = if mode.accepts_shell_command() {
-                ui::InputRequest::Passthrough(String::new())
-            } else {
-                ui::InputRequest::ReadLine(aish_label_readline.clone())
-            };
-            let _ = prompt_tx.send(request);
+            let _ = prompt_tx.send(ui::InputRequest::Passthrough(String::new()));
             pending_input = false;
             input_idle = false;
         }
@@ -253,9 +242,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
         // ユーザ入力をチェック
         match input_rx.try_recv() {
             Ok(ui::InputEvent::PtyData(data)) => {
-                if mode.accepts_shell_command() {
-                    let _ = pty.write(&data);
-                }
+                let _ = pty.write(&data);
                 continue;
             }
             Ok(ui::InputEvent::PassthroughEnded) => {
@@ -266,7 +253,6 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                 last_pty_output = Instant::now();
                 continue;
             }
-            Ok(ui::InputEvent::CtrlCExit) => break,
             Ok(ui::InputEvent::AiPrompt(prompt)) => {
                 input_idle = true;
                 if prompt.is_empty() {
@@ -288,14 +274,6 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
 
                             // コマンド提案がない場合は対話終了
                             if response.commands.is_empty() {
-                                break;
-                            }
-
-                            if !mode.accepts_shell_command() {
-                                ui::print_ai_message(
-                                    "(Commands cannot be executed in current mode)",
-                                    &config.display,
-                                );
                                 break;
                             }
 
@@ -322,7 +300,6 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                         Ok(ui::InputEvent::PtyData(_))
                                         | Ok(ui::InputEvent::PassthroughEnded) => continue,
                                         Ok(ui::InputEvent::AiPrompt(_)) => continue,
-                                        Ok(ui::InputEvent::CtrlCExit) => break false,
                                         Err(_) => break false,
                                     }
                                 };
@@ -448,27 +425,25 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 // AI対話終了後、シェルのプロンプトを再表示させる
-                if mode.accepts_shell_command() {
-                    pty.write(b"\n")?;
-                    thread::sleep(Duration::from_millis(200));
-                    let mut first = true;
-                    while let Ok(data) = pty_rx.try_recv() {
-                        let output = if first {
-                            first = false;
-                            // 先頭の改行を除去してプロンプトだけ表示
-                            let trimmed = data.iter()
-                                .position(|&b| b != b'\r' && b != b'\n')
-                                .unwrap_or(data.len());
-                            &data[trimmed..]
-                        } else {
-                            &data
-                        };
-                        if !output.is_empty() {
-                            io::stdout().write_all(output)?;
-                            io::stdout().flush()?;
-                        }
-                        ring_buffer.append(&data);
+                pty.write(b"\n")?;
+                thread::sleep(Duration::from_millis(200));
+                let mut first = true;
+                while let Ok(data) = pty_rx.try_recv() {
+                    let output = if first {
+                        first = false;
+                        // 先頭の改行を除去してプロンプトだけ表示
+                        let trimmed = data.iter()
+                            .position(|&b| b != b'\r' && b != b'\n')
+                            .unwrap_or(data.len());
+                        &data[trimmed..]
+                    } else {
+                        &data
+                    };
+                    if !output.is_empty() {
+                        io::stdout().write_all(output)?;
+                        io::stdout().flush()?;
                     }
+                    ring_buffer.append(&data);
                 }
                 input_idle = true;
                 pending_input = true;
