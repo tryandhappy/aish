@@ -64,6 +64,7 @@ jobs:
       - name: Copy raw binary
         run: |
           cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "${BINARY_NAME}-${{ matrix.target }}"
+          sha256sum "${BINARY_NAME}-${{ matrix.target }}" > "${BINARY_NAME}-${{ matrix.target }}.sha256"
 
       - name: Package archive
         run: |
@@ -87,6 +88,7 @@ jobs:
           name: ${{ env.BINARY_NAME }}-${{ matrix.target }}
           path: |
             ${{ env.BINARY_NAME }}-${{ matrix.target }}
+            ${{ env.BINARY_NAME }}-${{ matrix.target }}.sha256
             ${{ env.BINARY_NAME }}-*.tar.gz
             ${{ env.BINARY_NAME }}-*.tar.gz.sha256
             target/${{ matrix.target }}/debian/*.deb

@@ -341,8 +341,15 @@ TOML形式。未指定フィールドはデフォルト値。
 2. `curl` で `https://api.github.com/repos/tryandhappy/aish/releases/latest` を叩いて `tag_name` を取得。
 3. 現バージョンと一致したら `"Already up to date."` で終了。
 4. `aish-{target}` を一時ファイルへダウンロード。
-5. `chmod 0755` → 現在の実行ファイルパスへ `rename`（クロスFS時は `copy` + 一時削除）。
-6. 成功時 `"Updated to v{latest}"` 表示。
+5. **SHA256 チェックサム検証**:
+   - 同じリリースから `aish-{target}.sha256` を取得（`sha256sum` 形式: `<64-hex>  <filename>`）。
+   - ローカルで `sha256sum` コマンドにより一時ファイルのハッシュを計算。
+   - 一致しない場合は一時ファイルを削除してエラー終了（インストールは行わない）。
+   - リリース側で `.sha256` が公開されていない場合もエラー終了（fail-closed）。
+6. `chmod 0755` → 現在の実行ファイルパスへ `rename`（クロスFS時は `copy` + 一時削除）。
+7. 成功時 `"Updated to v{latest}"` 表示。
+
+CIワークフロー（`.github/workflows/release.yml`）側で `sha256sum aish-{target} > aish-{target}.sha256` を生成し、リリースアセットとして公開する。
 
 ---
 
