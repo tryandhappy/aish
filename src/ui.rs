@@ -63,7 +63,8 @@ pub fn setup_status_bar(rows: u16, label: &str, color: &str) {
     let _ = stdout.flush();
 }
 
-/// リサイズ時: スクロール領域を再設定しステータスバーを再描画する（改行なし）
+/// リサイズ時: スクロール領域を再設定しステータスバーを再描画する（改行なし）。
+/// シェル側のカーソル位置を壊さないよう save/restore で囲む。
 pub fn resize_status_bar(rows: u16) {
     TERM_ROWS.store(rows, Ordering::Relaxed);
     let label = STATUS_BAR_LABEL.get().map(|s| s.as_str()).unwrap_or("");
@@ -71,8 +72,8 @@ pub fn resize_status_bar(rows: u16) {
     let mut stdout = io::stdout();
     let scroll_bottom = rows.saturating_sub(1).max(1);
     let _ = write!(stdout,
-        "\x1b[1;{}r\x1b[{};1H{}{}\x1b[K\x1b[0m\x1b[{};1H",
-        scroll_bottom, rows, color, label, scroll_bottom
+        "\x1b7\x1b[1;{}r\x1b[{};1H{}{}\x1b[K\x1b[0m\x1b8",
+        scroll_bottom, rows, color, label
     );
     let _ = stdout.flush();
 }
@@ -246,13 +247,17 @@ pub fn print_ai_commands(commands: &[String], display: &DisplayConfig) {
     io::stdout().flush().ok();
 }
 
-pub fn print_confirm_prompt(commands: &[String], display: &DisplayConfig) {
-    if commands.is_empty() {
-        return;
-    }
-    print_ai_commands(commands, display);
+pub fn print_single_confirm_prompt(
+    cmd: &str,
+    index: usize,
+    total: usize,
+    display: &DisplayConfig,
+) {
     let color = &display.confirm_color;
-    print!("{}Execute? (Y/n) \x1b[0m ", color);
+    print!(
+        "{}Execute [{}/{}]: {} (Y/n)\x1b[0m ",
+        color, index, total, cmd
+    );
     io::stdout().flush().ok();
 }
 
@@ -538,8 +543,392 @@ fn passthrough_read_unix(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &s
     let _ = tx.send(InputEvent::PassthroughEnded);
 }
 
+/// ANSIエスケープを除去して可視幅（表示カラム数）を返す
+fn visible_width(s: &str) -> usize {
+    let stripped = strip_ansi_escapes::strip(s.as_bytes());
+    std::str::from_utf8(&stripped)
+        .unwrap_or("")
+        .chars()
+        .map(char_width)
+        .sum()
+}
+
+/// 入力を可視行にレイアウトする。
+/// 各要素は (start_char, end_char_exclusive, is_first_on_logical_line) を表す。
+/// cursor_vline, cursor_vcol はカーソルの可視行インデックスと左端からのカラムオフセット。
+fn compute_visual_layout(
+    chars: &[char],
+    cursor_pos: usize,
+    avail_first: usize,
+    avail_cont: usize,
+) -> (Vec<(usize, usize, bool)>, usize, usize) {
+    let mut vlines: Vec<(usize, usize, bool)> = Vec::new();
+    let mut cursor_vline = 0usize;
+    let mut cursor_vcol = 0usize;
+    let mut line_start = 0usize;
+    let mut col_used = 0usize;
+    let mut is_first = true;
+
+    for i in 0..chars.len() {
+        let c = chars[i];
+        let avail = if is_first { avail_first } else { avail_cont };
+
+        if c == '\n' {
+            if i == cursor_pos {
+                cursor_vline = vlines.len();
+                cursor_vcol = col_used;
+            }
+            vlines.push((line_start, i, is_first));
+            line_start = i + 1;
+            col_used = 0;
+            is_first = true;
+            continue;
+        }
+
+        let w = char_width(c);
+        if col_used > 0 && col_used + w > avail {
+            vlines.push((line_start, i, is_first));
+            line_start = i;
+            col_used = 0;
+            is_first = false;
+        }
+
+        if i == cursor_pos {
+            cursor_vline = vlines.len();
+            cursor_vcol = col_used;
+        }
+        col_used += w;
+    }
+
+    if cursor_pos >= chars.len() {
+        cursor_vline = vlines.len();
+        cursor_vcol = col_used;
+    }
+    vlines.push((line_start, chars.len(), is_first));
+
+    (vlines, cursor_vline, cursor_vcol)
+}
+
+/// aishプロンプト（ミニバッファ）を現在の状態で再描画する。
+/// 入力長に応じて縦方向に拡張し、DECSTBMを動的に調整する。
+/// 戻り値: 新しくミニバッファが占有する行数。
+#[cfg(unix)]
+fn redraw_minibuffer(
+    stdout: &mut io::Stdout,
+    term_rows: u16,
+    term_cols: u16,
+    max_rows: u16,
+    label: &str,
+    label_width: usize,
+    input_bg: &str,
+    chars: &[char],
+    cursor_pos: usize,
+    rows_used: &mut u16,
+) {
+    let total_cols = term_cols as usize;
+    let avail_first = total_cols.saturating_sub(label_width).max(1);
+    let indent_width = label_width;
+    let avail_cont = total_cols.saturating_sub(indent_width).max(1);
+
+    let (vlines, cvline, cvcol) =
+        compute_visual_layout(chars, cursor_pos, avail_first, avail_cont);
+    let total_vlines = vlines.len();
+    let visible_count = total_vlines.min(max_rows as usize).max(1);
+
+    // 総行数が max_rows を超える場合、カーソル行が見える位置までスクロール
+    let scroll_top = if total_vlines > visible_count {
+        let min_top = cvline.saturating_sub(visible_count - 1);
+        let max_top = total_vlines - visible_count;
+        min_top.min(max_top)
+    } else {
+        0
+    };
+
+    let new_rows_used = visible_count as u16;
+
+    // DECSTBM を更新（シュリンクする場合は不要になった行を消去）
+    if new_rows_used != *rows_used {
+        if new_rows_used < *rows_used {
+            let clear_from = term_rows - *rows_used + 1;
+            let clear_to = term_rows - new_rows_used;
+            for r in clear_from..=clear_to {
+                let _ = write!(stdout, "\x1b[{};1H\x1b[2K", r);
+            }
+        }
+        let scroll_bottom = term_rows.saturating_sub(new_rows_used).max(1);
+        let _ = write!(stdout, "\x1b[1;{}r", scroll_bottom);
+        *rows_used = new_rows_used;
+    }
+
+    let start_row = term_rows - new_rows_used + 1;
+
+    for disp in 0..visible_count {
+        let vi = scroll_top + disp;
+        let row = start_row + disp as u16;
+        let (s, e, is_first_line) = vlines[vi];
+        let _ = write!(stdout, "\x1b[{};1H\x1b[0m\x1b[2K", row);
+        if is_first_line {
+            let _ = write!(stdout, "{}", label);
+        } else {
+            // 継続行はラベル幅ぶん空白でインデント
+            for _ in 0..indent_width {
+                let _ = stdout.write_all(b" ");
+            }
+        }
+        let _ = write!(stdout, "{}", input_bg);
+        let line_str: String = chars[s..e].iter().collect();
+        let _ = stdout.write_all(line_str.as_bytes());
+        let _ = write!(stdout, "\x1b[K");
+    }
+
+    let cursor_display_line = cvline - scroll_top;
+    let cursor_row = start_row + cursor_display_line as u16;
+    let prefix_w = if vlines[cvline].2 {
+        label_width
+    } else {
+        indent_width
+    };
+    let cursor_col = prefix_w + cvcol + 1;
+    let _ = write!(stdout, "\x1b[{};{}H", cursor_row, cursor_col);
+    let _ = stdout.flush();
+}
+
+/// aishプロンプト用のマルチラインエディタ。
+/// 矢印キー/Home/End/Delete/BSによる編集、履歴ナビゲーション、
+/// Alt+Enter / Shift+Enter (CSI u) による改行挿入をサポートする。
+/// 入力長に応じて縦方向に拡張し、最大 max_rows 行まで表示する。
+/// 戻り値は (入力テキスト, 最終的に占有した行数)。
+#[cfg(unix)]
+fn read_minibuffer_line(
+    stdout: &mut io::Stdout,
+    term_rows: u16,
+    term_cols: u16,
+    max_rows: u16,
+    label: &str,
+    label_width: usize,
+    input_bg: &str,
+) -> (Option<String>, u16) {
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+    let mut stdin = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
+    let mut buf = [0u8; 4];
+
+    let mut chars: Vec<char> = Vec::new();
+    let mut cursor_pos: usize = 0;
+    let mut rows_used: u16 = 1;
+
+    // 履歴ナビゲーション
+    let hist_len = prompt_history().lock().map_or(0, |h| h.len());
+    let mut hist_idx: usize = hist_len;
+    let mut saved_input: Vec<char> = Vec::new();
+
+    redraw_minibuffer(
+        stdout, term_rows, term_cols, max_rows, label, label_width, input_bg,
+        &chars, cursor_pos, &mut rows_used,
+    );
+
+    loop {
+        let n = match stdin.read(&mut buf[..1]) {
+            Ok(0) => {
+                let text = if chars.is_empty() {
+                    None
+                } else {
+                    Some(chars.iter().collect())
+                };
+                return (text, rows_used);
+            }
+            Ok(n) => n,
+            Err(_) => return (None, rows_used),
+        };
+        if n == 0 {
+            continue;
+        }
+        let b = buf[0];
+
+        match b {
+            b'\n' | b'\r' => {
+                let s: String = chars.iter().collect();
+                if s.trim() == "exit" {
+                    return (None, rows_used);
+                }
+                return (Some(s), rows_used);
+            }
+            0x7f | 0x08 => {
+                if cursor_pos > 0 {
+                    cursor_pos -= 1;
+                    chars.remove(cursor_pos);
+                }
+            }
+            0x1f => return (None, rows_used), // Ctrl+/ でキャンセル
+            0x03 => return (None, rows_used), // Ctrl-C
+            0x04 => {
+                if chars.is_empty() {
+                    return (None, rows_used);
+                }
+                if cursor_pos < chars.len() {
+                    chars.remove(cursor_pos);
+                }
+            }
+            0x01 => cursor_pos = 0,
+            0x05 => cursor_pos = chars.len(),
+            0x02 => {
+                if cursor_pos > 0 {
+                    cursor_pos -= 1;
+                }
+            }
+            0x06 => {
+                if cursor_pos < chars.len() {
+                    cursor_pos += 1;
+                }
+            }
+            0x15 => {
+                chars.drain(..cursor_pos);
+                cursor_pos = 0;
+            }
+            0x0b => {
+                chars.truncate(cursor_pos);
+            }
+            0x17 => {
+                let mut end = cursor_pos;
+                while end > 0 && chars[end - 1] == ' ' {
+                    end -= 1;
+                }
+                while end > 0 && chars[end - 1] != ' ' {
+                    end -= 1;
+                }
+                chars.drain(end..cursor_pos);
+                cursor_pos = end;
+            }
+            0x1b => {
+                let fd = (&*stdin).as_raw_fd();
+                let mut pollfd = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let ready = unsafe { libc::poll(&mut pollfd, 1, 50) };
+                if ready <= 0 {
+                    return (None, rows_used); // 単独ESCでキャンセル
+                }
+                let mut first = [0u8; 1];
+                if stdin.read(&mut first).is_err() {
+                    continue;
+                }
+                match first[0] {
+                    b'\r' | b'\n' => {
+                        // Alt+Enter: 改行を挿入
+                        chars.insert(cursor_pos, '\n');
+                        cursor_pos += 1;
+                    }
+                    b'[' | b'O' => {
+                        // CSI/SS3 パラメータと終端を読む
+                        let mut params: Vec<u8> = Vec::new();
+                        let mut final_byte: u8 = 0;
+                        loop {
+                            let mut c = [0u8; 1];
+                            match stdin.read(&mut c) {
+                                Ok(1) => {
+                                    if c[0] >= 0x40 && c[0] <= 0x7E {
+                                        final_byte = c[0];
+                                        break;
+                                    }
+                                    params.push(c[0]);
+                                }
+                                _ => break,
+                            }
+                        }
+                        // Shift+Enter / modifier+Enter の CSI u 形式: ESC [ 13 ; N u
+                        // 修飾キーありに限定するため "13;" で始まるものだけマッチ
+                        // (プレーンEnterが \x1b[13u で届いた場合は else 側へ流す)
+                        if final_byte == b'u' && params.starts_with(b"13;") {
+                            chars.insert(cursor_pos, '\n');
+                            cursor_pos += 1;
+                        } else {
+                            match (params.as_slice(), final_byte) {
+                                (b"", b'D') => {
+                                    if cursor_pos > 0 {
+                                        cursor_pos -= 1;
+                                    }
+                                }
+                                (b"", b'C') => {
+                                    if cursor_pos < chars.len() {
+                                        cursor_pos += 1;
+                                    }
+                                }
+                                (b"", b'H') | (b"1", b'~') | (b"7", b'~') => cursor_pos = 0,
+                                (b"", b'F') | (b"4", b'~') | (b"8", b'~') => {
+                                    cursor_pos = chars.len()
+                                }
+                                (b"3", b'~') => {
+                                    if cursor_pos < chars.len() {
+                                        chars.remove(cursor_pos);
+                                    }
+                                }
+                                (b"", b'A') | (b"", b'B') => {
+                                    if let Ok(history) = prompt_history().lock() {
+                                        let new_idx = if final_byte == b'A' {
+                                            if hist_idx > 0 {
+                                                hist_idx - 1
+                                            } else {
+                                                hist_idx
+                                            }
+                                        } else if hist_idx < hist_len {
+                                            hist_idx + 1
+                                        } else {
+                                            hist_idx
+                                        };
+                                        if new_idx != hist_idx {
+                                            if hist_idx == hist_len {
+                                                saved_input = chars.clone();
+                                            }
+                                            hist_idx = new_idx;
+                                            chars = if hist_idx < hist_len {
+                                                history[hist_idx].chars().collect()
+                                            } else {
+                                                saved_input.clone()
+                                            };
+                                            cursor_pos = chars.len();
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {} // 未知のエスケープは無視
+                }
+            }
+            _ if b < 0x20 => {}
+            _ => {
+                let byte_len = utf8_char_len(b);
+                buf[0] = b;
+                let mut read_so_far = 1;
+                while read_so_far < byte_len {
+                    match stdin.read(&mut buf[read_so_far..byte_len]) {
+                        Ok(n) if n > 0 => read_so_far += n,
+                        _ => break,
+                    }
+                }
+                if read_so_far == byte_len {
+                    if let Ok(s) = std::str::from_utf8(&buf[..byte_len]) {
+                        for c in s.chars() {
+                            chars.insert(cursor_pos, c);
+                            cursor_pos += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        redraw_minibuffer(
+            stdout, term_rows, term_cols, max_rows, label, label_width, input_bg,
+            &chars, cursor_pos, &mut rows_used,
+        );
+    }
+}
+
 /// aishプロンプトをステータスバー行に表示し、ユーザ入力を受け付ける。
 /// 入力確定後にステータスバーを復元し、InputEventを送信する。
+/// 入力が長いとき縦方向に拡張し、終了時に DECSTBM を元に戻す。
 #[cfg(unix)]
 fn show_minibuffer(
     stdout: &mut io::Stdout,
@@ -550,15 +939,30 @@ fn show_minibuffer(
 ) {
     MINIBUFFER_ACTIVE.store(true, Ordering::Relaxed);
     let rows = TERM_ROWS.load(Ordering::Relaxed);
+    let (_, cols) = terminal_size();
+    let label_width = visible_width(aish_label);
+    // 最大ミニバッファ行数: 端末高さの半分、かつ1以上
+    let max_rows = (rows / 2).max(1);
 
-    // カーソル保存→ステータスバー行に移動→aishプロンプトを描画
-    let _ = write!(stdout, "\x1b7\x1b[{};1H{}{}\x1b[K", rows, aish_label, input_bg);
+    // カーソル保存
+    let _ = write!(stdout, "\x1b7");
     let _ = stdout.flush();
 
-    let result = read_line_raw_loop_from(String::new(), true);
+    let (result, rows_used) = read_minibuffer_line(
+        stdout, rows, cols, max_rows, aish_label, label_width, input_bg,
+    );
 
+    // DECSTBM を元に戻す (1..rows-1)、ミニバッファが使用した追加行をクリア
+    let scroll_bottom = rows.saturating_sub(1).max(1);
+    let _ = write!(stdout, "\x1b[0m\x1b[1;{}r", scroll_bottom);
+    if rows_used > 1 {
+        let clear_from = rows - rows_used + 1;
+        let clear_to = rows - 1;
+        for r in clear_from..=clear_to {
+            let _ = write!(stdout, "\x1b[{};1H\x1b[2K", r);
+        }
+    }
     // ステータスバーを復元→カーソル復元
-    let _ = write!(stdout, "\x1b[0m");
     redraw_status_bar(stdout);
     let _ = write!(stdout, "\x1b8");
     let _ = stdout.flush();
@@ -579,7 +983,15 @@ fn show_minibuffer(
                 }
             }
             // スクロールエリアにプロンプト内容をエコー表示
-            let _ = write!(stdout, "\n{}{}\x1b[K\x1b[0m\n", aish_label, text);
+            // 複数行入力は各論理行の先頭に [aish] ラベルを付ける
+            let _ = write!(stdout, "\n");
+            for (i, line) in text.split('\n').enumerate() {
+                if i > 0 {
+                    let _ = write!(stdout, "\n");
+                }
+                let _ = write!(stdout, "{}{}\x1b[K\x1b[0m", aish_label, line);
+            }
+            let _ = write!(stdout, "\n");
             let _ = stdout.flush();
             if cancel_shell {
                 let _ = tx.send(InputEvent::PtyData(vec![0x03]));

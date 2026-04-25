@@ -332,47 +332,58 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                 break;
                             }
 
-                            ui::print_confirm_prompt(&response.commands, &config.display);
-                            let _ = prompt_tx.send(ui::InputRequest::ReadLine(String::new()));
-                            let confirmed = loop {
-                                match input_rx.recv() {
-                                    Ok(ui::InputEvent::Line(line)) => break ui::parse_confirm(&line),
-                                    Ok(ui::InputEvent::PtyData(_))
-                                    | Ok(ui::InputEvent::PassthroughEnded) => continue,
-                                    Ok(ui::InputEvent::AiPrompt(_)) => continue,
-                                    Ok(ui::InputEvent::CtrlCExit) => break false,
-                                    Err(_) => break false,
+                            ui::print_ai_commands(&response.commands, &config.display);
+
+                            // コマンドを1つずつ確認＋実行
+                            let total = response.commands.len();
+                            let mut any_executed = false;
+                            for (i, cmd) in response.commands.iter().enumerate() {
+                                ui::print_single_confirm_prompt(
+                                    cmd,
+                                    i + 1,
+                                    total,
+                                    &config.display,
+                                );
+                                let _ = prompt_tx
+                                    .send(ui::InputRequest::ReadLine(String::new()));
+                                let confirmed = loop {
+                                    match input_rx.recv() {
+                                        Ok(ui::InputEvent::Line(line)) => {
+                                            break ui::parse_confirm(&line)
+                                        }
+                                        Ok(ui::InputEvent::PtyData(_))
+                                        | Ok(ui::InputEvent::PassthroughEnded) => continue,
+                                        Ok(ui::InputEvent::AiPrompt(_)) => continue,
+                                        Ok(ui::InputEvent::CtrlCExit) => break false,
+                                        Err(_) => break false,
+                                    }
+                                };
+
+                                if !confirmed {
+                                    continue;
                                 }
-                            };
 
-                            if !confirmed {
-                                break;
-                            }
-
-                            // コマンド実行
-                            for cmd in &response.commands {
+                                any_executed = true;
                                 pty.write(format!("{}\n", cmd).as_bytes())?;
-                                thread::sleep(Duration::from_millis(500));
-                                while let Ok(data) = pty_rx.try_recv() {
-                                    io::stdout().write_all(&data)?;
-                                    io::stdout().flush()?;
-                                    ring_buffer.append(&data);
+
+                                // このコマンドの出力が落ち着くまで待機してから次へ
+                                loop {
+                                    thread::sleep(Duration::from_millis(500));
+                                    let mut got_data = false;
+                                    while let Ok(data) = pty_rx.try_recv() {
+                                        io::stdout().write_all(&data)?;
+                                        io::stdout().flush()?;
+                                        ring_buffer.append(&data);
+                                        got_data = true;
+                                    }
+                                    if !got_data {
+                                        break;
+                                    }
                                 }
                             }
 
-                            // 出力が落ち着くまで待機
-                            loop {
-                                thread::sleep(Duration::from_millis(500));
-                                let mut got_data = false;
-                                while let Ok(data) = pty_rx.try_recv() {
-                                    io::stdout().write_all(&data)?;
-                                    io::stdout().flush()?;
-                                    ring_buffer.append(&data);
-                                    got_data = true;
-                                }
-                                if !got_data {
-                                    break;
-                                }
+                            if !any_executed {
+                                break;
                             }
 
                             // 実行結果をAIに送信して分析を継続
