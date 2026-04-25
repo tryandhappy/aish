@@ -1,7 +1,5 @@
 mod ai;
 mod config;
-#[allow(dead_code)]
-mod marker;
 mod mode;
 mod prompt_sniffer;
 mod pty_handler;
