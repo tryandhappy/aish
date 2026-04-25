@@ -311,20 +311,22 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
             let (rows, _cols) = ui::terminal_size();
             if tui_recovery_pending {
                 debug_log("[main loop] tui recovery: Ctrl+L to shell");
-                // \x1b[r で DECSTBM を全画面にリセット (TUI が変更してた可能性)
                 io::stdout().write_all(b"\x1b[r")?;
                 io::stdout().flush()?;
-                // shell に Ctrl+L (form feed, 0x0c) を送って readline の
-                // clear-screen を起動。shell は terminfo `clear` (typically
-                // \x1b[H\x1b[2J) を出してから PS1 を再描画する。
                 pty.write(b"\x0c")?;
-                // shell の応答が PTY に来るまで待って drain
                 thread::sleep(Duration::from_millis(200));
+                let mut response = Vec::new();
                 while let Ok(data) = pty_rx.try_recv() {
+                    response.extend_from_slice(&data);
                     io::stdout().write_all(&data)?;
                     ring_buffer.append(&data);
                 }
                 io::stdout().flush()?;
+                debug_log(&format!(
+                    "[main loop] Ctrl+L response: {} bytes: {}",
+                    response.len(),
+                    debug_bytes(&response, 300)
+                ));
                 tui_recovery_pending = false;
             }
             ui::resize_status_bar(rows);
