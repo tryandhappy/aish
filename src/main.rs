@@ -70,14 +70,47 @@ extern "C" fn sigwinch_handler(_sig: libc::c_int) {
     ui::record_sigwinch();
 }
 
-/// PTY 出力に alt screen 切替シーケンスが含まれているかをざっくり検出する。
-/// xterm 系: `\x1b[?1049h`、古い形式: `\x1b[?47h` / `\x1b[?1047h`。
-/// 全部の組み合わせを厳密に網羅するわけではないが、TUI コマンド (top/vim/less 等)
-/// の検出には十分。
-fn contains_alt_screen_enter(data: &[u8]) -> bool {
-    data.windows(8).any(|w| w == b"\x1b[?1049h")
-        || data.windows(8).any(|w| w == b"\x1b[?1047h")
-        || data.windows(6).any(|w| w == b"\x1b[?47h")
+/// PTY 出力に TUI コマンドが端末状態を変更した形跡があるかを検出する。
+/// 検出すべき変化:
+/// - alt screen 出入り (`\x1b[?1049h/l`、`\x1b[?1047h/l`、`\x1b[?47h/l`)
+/// - DECSTBM (スクロール領域) 変更 (`\x1b[<n>;<m>r` または `\x1b[r`)
+/// - 画面クリア (`\x1b[2J`、`\x1bc` (RIS))
+/// いずれか検出されたら aish のレイアウトが壊れている可能性ありとみなす。
+fn contains_tui_signature(data: &[u8]) -> bool {
+    // alt screen
+    if data.windows(8).any(|w| w == b"\x1b[?1049h" || w == b"\x1b[?1049l") {
+        return true;
+    }
+    if data.windows(8).any(|w| w == b"\x1b[?1047h" || w == b"\x1b[?1047l") {
+        return true;
+    }
+    if data.windows(6).any(|w| w == b"\x1b[?47h" || w == b"\x1b[?47l") {
+        return true;
+    }
+    // 画面クリア
+    if data.windows(4).any(|w| w == b"\x1b[2J" || w == b"\x1b[1J") {
+        return true;
+    }
+    if data.windows(2).any(|w| w == b"\x1bc") {
+        return true;
+    }
+    // DECSTBM 変更: \x1b[ followed by digits/semicolons followed by 'r'
+    let mut i = 0;
+    while i + 2 < data.len() {
+        if data[i] == 0x1b && data[i + 1] == b'[' {
+            let mut j = i + 2;
+            while j < data.len() && (data[j].is_ascii_digit() || data[j] == b';') {
+                j += 1;
+            }
+            if j < data.len() && data[j] == b'r' {
+                return true;
+            }
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+    false
 }
 
 fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
@@ -332,7 +365,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                 let quiet_threshold = Duration::from_millis(200);
                                 let mut sniffer = prompt_sniffer::PromptSniffer::new();
                                 let mut last_pty_activity = Instant::now();
-                                let mut alt_screen_used = false;
+                                let mut tui_detected = false;
                                 loop {
                                     if ui::check_and_clear_sigwinch() {
                                         let (new_rows, new_cols) = ui::terminal_size();
@@ -347,8 +380,8 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                         io::stdout().flush()?;
                                         ring_buffer.append(&data);
                                         sniffer.feed(&data);
-                                        if !alt_screen_used && contains_alt_screen_enter(&data) {
-                                            alt_screen_used = true;
+                                        if !tui_detected && contains_tui_signature(&data) {
+                                            tui_detected = true;
                                         }
                                         got_pty = true;
                                     }
@@ -369,25 +402,30 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                 }
 
                                 // TUI コマンド (top/vim/less 等) が alt screen を使った場合、
-                                // DECSTBM や cursor 位置が壊れた状態で抜けてくるので復旧させる:
-                                //   1. Ctrl+L (form feed) を PTY に送る → シェルが
-                                //      \x1b[H\x1b[2J + プロンプト再描画 を返す
-                                //   2. その応答を即座に drain して画面を更新（AI follow-up の
-                                //      数秒間滞留させない）
-                                //   3. status bar を再描画して DECSTBM を aish 設定に戻す
+                                // DECSTBM や cursor 位置が壊れた状態で抜けてくるので復旧させる。
+                                // 復旧手順:
+                                //   1. \x1b[r で DECSTBM をリセット
+                                //   2. \x1b[1;1H で cursor を画面上部に強制移動（壊れた位置から脱出）
+                                //   3. \x1b[J で cursor 以降をクリア（残骸除去）
+                                //   4. resize_status_bar で aish の DECSTBM + status bar を再設定
+                                //   5. \n を PTY に送って shell に新しいプロンプトを出させる
+                                //   6. その応答を即座に drain して画面に反映
                                 // alt screen を使わない通常コマンドでは何もしない。
                                 let (rows, _cols) = ui::terminal_size();
-                                if alt_screen_used {
-                                    pty.write(b"\x0c")?;
-                                    // shell が Ctrl+L を処理して応答を返すまでの猶予
-                                    thread::sleep(Duration::from_millis(80));
+                                if tui_detected {
+                                    io::stdout().write_all(b"\x1b[r\x1b[1;1H\x1b[J")?;
+                                    io::stdout().flush()?;
+                                    ui::resize_status_bar(rows);
+                                    pty.write(b"\n")?;
+                                    thread::sleep(Duration::from_millis(200));
                                     while let Ok(data) = pty_rx.try_recv() {
                                         io::stdout().write_all(&data)?;
                                         ring_buffer.append(&data);
                                     }
                                     io::stdout().flush()?;
+                                } else {
+                                    ui::resize_status_bar(rows);
                                 }
-                                ui::resize_status_bar(rows);
 
                                 executed_summary.push(format!("`{cmd}`"));
                             }
