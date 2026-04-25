@@ -310,7 +310,10 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                 debug_log("[main loop] running tui recovery");
                 // DECSTR (soft reset) で origin mode・DECSTBM・各種 DEC モードを
                 // デフォルトに戻す + cursor home + 画面クリア
-                io::stdout().write_all(b"\x1b[!p\x1b[1;1H\x1b[2J")?;
+                // DECSTR (soft reset) でモード一括リセット → cursor を可視化 →
+// cursor home → 画面クリア。DECSTR は副作用で cursor を不可視に
+// するので \x1b[?25h で戻す。
+io::stdout().write_all(b"\x1b[!p\x1b[?25h\x1b[1;1H\x1b[2J")?;
                 io::stdout().flush()?;
                 ui::resize_status_bar(rows);
                 pty.write(b"\n")?;
@@ -492,7 +495,10 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                     debug_log("starting recovery sequence");
                                     // DECSTR (soft reset) で origin mode・DECSTBM・各種
                                     // DEC モードをデフォルトに戻す + cursor home + 画面クリア
-                                    io::stdout().write_all(b"\x1b[!p\x1b[1;1H\x1b[2J")?;
+                                    // DECSTR (soft reset) でモード一括リセット → cursor を可視化 →
+// cursor home → 画面クリア。DECSTR は副作用で cursor を不可視に
+// するので \x1b[?25h で戻す。
+io::stdout().write_all(b"\x1b[!p\x1b[?25h\x1b[1;1H\x1b[2J")?;
                                     io::stdout().flush()?;
                                     ui::resize_status_bar(rows);
                                     pty.write(b"\n")?;
