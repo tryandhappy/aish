@@ -304,18 +304,19 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // PTY出力が落ち着いたらステータスバーとスクロール領域を復元。
-        // TUI コマンド (top 等) が origin mode を on にしたまま抜けた場合は、
-        // 一回限りの DECOM reset (\x1b[?6l) で対処する。DECOM の set/reset は
-        // 副作用で cursor を (1, 1) に移動させるため、毎回出すと画面が壊れる。
+        // TUI コマンド (top 等) が抜けたあとは、一回限りの復旧シーケンスで
+        // 端末状態をリセットして画面を綺麗にする。
         if status_bar_needs_refresh && last_pty_output.elapsed() > Duration::from_millis(50) {
             let (rows, _cols) = ui::terminal_size();
             if tui_recovery_pending {
-                debug_log("[main loop] tui recovery: DECOM reset + \\n");
-                // origin mode を off に戻す（cursor は (1,1) に飛ぶ副作用あり）。
-                io::stdout().write_all(b"\x1b[?6l")?;
+                debug_log("[main loop] tui recovery: DECOM + clear + new prompt");
+                // 1. \x1b[?6l: DECOM reset (origin mode off; cursor が (1, 1) に飛ぶ副作用あり)
+                // 2. \x1b[2J: 画面クリア (TUI コマンドの残骸を消す)
+                io::stdout().write_all(b"\x1b[?6l\x1b[2J")?;
                 io::stdout().flush()?;
-                // shell に空の Enter を送って fresh prompt を引き出す。
-                // 受信応答は次回イテレーションで drain される。
+                // 3. shell に \n を送って fresh prompt を引き出す。
+                //    応答 (\r\n + PS1) は次回イテレーションで drain され、
+                //    cursor が row 2 に進む。
                 pty.write(b"\n")?;
                 tui_recovery_pending = false;
             }
@@ -484,8 +485,8 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                     tui_detected, chunk_count
                                 ));
                                 if tui_detected {
-                                    debug_log("[wait loop] tui recovery: DECOM reset + \\n");
-                                    io::stdout().write_all(b"\x1b[?6l")?;
+                                    debug_log("[wait loop] tui recovery: DECOM + clear + new prompt");
+                                    io::stdout().write_all(b"\x1b[?6l\x1b[2J")?;
                                     io::stdout().flush()?;
                                     pty.write(b"\n")?;
                                     thread::sleep(Duration::from_millis(100));
