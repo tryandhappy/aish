@@ -37,7 +37,7 @@ CLI SSH + AI (Claude Code) ツール。クライアント側のClaude Codeから
 | **Local** | SSH引数なし (`aish`) | `$SHELL`（未定義なら`/bin/bash`）をPTYで起動 |
 | **Remote** | SSH引数あり (`aish user@host` 等) | `ssh` をPTYで起動。引数はそのままsshに渡す |
 
-両モードとも `accepts_shell_command()` は true。終了は `exit` コマンド、PTYプロセス終了、または Ctrl+C 連打。
+両モードとも `accepts_shell_command()` は true。終了は `exit` コマンド、または PTY プロセス終了。
 
 ---
 
@@ -99,13 +99,6 @@ CLI SSH + AI (Claude Code) ツール。クライアント側のClaude Codeから
 - 続けて各コマンドごとに `Execute [i/N]: {cmd} (Y/n) ` を `confirm_color` で表示し、ReadLineで個別に応答を受ける。
 - 空Enter / `y` / `yes` （大小文字無視）を承認とみなす。それ以外は拒否してそのコマンドはスキップ、次のコマンドの確認へ進む。
 
-### 4.7 Ctrl+Cヒント
-- ReadLineモード（AI確認プロンプト等）で Ctrl+C 検知時、`(Ctrl+C to exit)` を2秒間プロンプト前に表示。
-- Ctrl+C を 2秒以内に連打した場合は aish を終了。
-- 連打検知は `record_ctrl_c()` 内で `CTRL_C_LAST_MS` と現在時刻を比較して行い、観測されると `CTRL_C_EXIT_REQUESTED` がセットされる。メインループおよび AI 確認ループで毎回このフラグをチェックして break する。
-- パススルーモードの Ctrl+C はそのまま PTY へ送られる（シェル側で処理される）ため、aish のカウンタには加算されない。従って **Ctrl+C 連打による終了は ReadLine モードでのみ有効**。
-- rawモードでは ISIG が無効化されているため、キーボード Ctrl+C は SIGINT を発行しない。read_line / read_minibuffer 側で `0x03` を受けた時に `record_ctrl_c()` を直接呼んでカウンタを進める（minibuffer の Ctrl+C はキャンセルのみで連打集計には加算しない）。
-
 ---
 
 ## 5. キー入力
@@ -148,10 +141,9 @@ Enter / Ctrl+C / 文字入力などいずれの場合も `passthrough_read_raw` 
 ### 5.4 シグナル
 | シグナル | ハンドラ | 動作 |
 |---|---|---|
-| `SIGINT` | `sigint_handler` | `record_ctrl_c()` を呼ぶ（時刻記録 + 2秒以内なら `CTRL_C_EXIT_REQUESTED` セット） |
 | `SIGWINCH` | `sigwinch_handler` | `SIGWINCH_RECEIVED` をセット |
 
-メインループ側で非同期に消費する。
+メインループ側で非同期に消費する。SIGINT は独自に処理せず、OS デフォルトに委ねる（rawモードでは ISIG 無効のためキーボード Ctrl+C は SIGINT を発行しない）。
 
 ---
 
@@ -256,13 +248,11 @@ claude -p --resume <session_id> \
 ### 8.3 メインループ
 - 約1ms ポーリングで以下を順に処理:
   1. SIGWINCH検知→PTYリサイズ＆ステータスバー再描画
-  2. Ctrl+C連打判定
-  3. Ctrl+Cヒント期限切れ
-  4. PTY出力ドレイン（`minibuffer_active()` ならstdout描画を抑制）
-  5. PTY出力50ms落ち着いたらステータスバー再描画
-  6. 入力スレッドがidleかつ同50ms条件でリクエスト送信
-  7. PTYプロセス終了検知
-  8. 入力イベント処理
+  2. PTY出力ドレイン（`minibuffer_active()` ならstdout描画を抑制）
+  3. PTY出力50ms落ち着いたらステータスバー再描画
+  4. 入力スレッドがidleかつ同50ms条件でリクエスト送信
+  5. PTYプロセス終了検知
+  6. 入力イベント処理
 
 ---
 
@@ -274,8 +264,6 @@ claude -p --resume <session_id> \
 | `input_idle` | 入力スレッドが `prompt_rx.recv()` で待機中か（キュー重複防止） |
 | `MINIBUFFER_ACTIVE` | ミニバッファ表示中（PTY出力の画面描画を抑制） |
 | `SIGWINCH_RECEIVED` | 端末リサイズ要求 |
-| `CTRL_C_LAST_MS` | 直近 Ctrl+C のミリ秒タイムスタンプ（連打検知・ヒント表示判定用） |
-| `CTRL_C_EXIT_REQUESTED` | 2秒以内の連打が観測されたかどうか（終了要求） |
 | `TERM_ROWS` | 現在の端末高さキャッシュ（ステータスバー・スピナー用） |
 
 ### 備考
@@ -365,7 +353,6 @@ CIワークフロー（`.github/workflows/release.yml`）側で `sha256sum aish-
 | claude 出力にJSONなし | `No JSON found in claude output: ...` |
 | AIキャンセル (Ctrl+C中) | `^C` 表示後、対話ループ終了。aishは継続 |
 | PTY終了 | logoutメッセージ行を `\x1b[A\x1b[2K\r`（1行上にカーソル移動＋行全体クリア）で消去してaish終了 |
-| Ctrl+C連打 | aish自体を終了 |
 
 ---
 

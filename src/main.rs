@@ -65,11 +65,6 @@ fn parse_args() -> CliAction {
 }
 
 #[cfg(unix)]
-extern "C" fn sigint_handler(_sig: libc::c_int) {
-    ui::record_ctrl_c();
-}
-
-#[cfg(unix)]
 extern "C" fn sigwinch_handler(_sig: libc::c_int) {
     ui::record_sigwinch();
 }
@@ -79,7 +74,6 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(unix)]
     unsafe {
-        libc::signal(libc::SIGINT, sigint_handler as *const () as libc::sighandler_t);
         libc::signal(libc::SIGWINCH, sigwinch_handler as *const () as libc::sighandler_t);
     }
 
@@ -203,12 +197,6 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     // メインループ
     loop {
-        // Ctrl+C 連打検知（ui::record_ctrl_c() 内で 2秒以内の連打が観測されると true になる）
-        if ui::ctrl_c_exit_requested() {
-            eprintln!();
-            break;
-        }
-
         // 端末リサイズ検出
         if ui::check_and_clear_sigwinch() {
             let (new_rows, new_cols) = ui::terminal_size();
@@ -240,12 +228,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
             let request = if mode.accepts_shell_command() {
                 ui::InputRequest::Passthrough(String::new())
             } else {
-                let hint = if ui::ctrl_c_hint_active() {
-                    "\x1b[33m(Ctrl+C to exit)\x1b[0m "
-                } else {
-                    ""
-                };
-                ui::InputRequest::ReadLine(format!("{}{}", aish_label_readline, hint))
+                ui::InputRequest::ReadLine(aish_label_readline.clone())
             };
             let _ = prompt_tx.send(request);
             pending_input = false;
@@ -321,13 +304,6 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                             let total = response.commands.len();
                             let mut any_executed = false;
                             for (i, cmd) in response.commands.iter().enumerate() {
-                                if ui::ctrl_c_exit_requested() {
-                                    break;
-                                }
-                                if ui::ctrl_c_hint_active() {
-                                    print!("\x1b[33m(Ctrl+C to exit)\x1b[0m ");
-                                    io::stdout().flush().ok();
-                                }
                                 ui::print_single_confirm_prompt(
                                     cmd,
                                     i + 1,
@@ -348,10 +324,6 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                         Err(_) => break false,
                                     }
                                 };
-
-                                if ui::ctrl_c_exit_requested() {
-                                    break;
-                                }
 
                                 if !confirmed {
                                     continue;
@@ -374,10 +346,6 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                         break;
                                     }
                                 }
-                            }
-
-                            if ui::ctrl_c_exit_requested() {
-                                break;
                             }
 
                             if !any_executed {

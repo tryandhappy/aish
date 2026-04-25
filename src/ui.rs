@@ -1,12 +1,10 @@
 use crate::config::DisplayConfig;
 use std::io::{self, Read, Write};
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use unicode_width::UnicodeWidthChar;
-
-const CTRL_C_DOUBLE_TAP_MS: u64 = 2000;
 
 static PROMPT_HISTORY: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 
@@ -23,44 +21,11 @@ pub enum InputEvent {
     CtrlCExit,
 }
 
-static CTRL_C_LAST_MS: AtomicU64 = AtomicU64::new(0);
-static CTRL_C_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 static MINIBUFFER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static SIGWINCH_RECEIVED: AtomicBool = AtomicBool::new(false);
 static TERM_ROWS: AtomicU16 = AtomicU16::new(24);
 static STATUS_BAR_LABEL: OnceLock<String> = OnceLock::new();
 static STATUS_BAR_COLOR: OnceLock<String> = OnceLock::new();
-
-/// Ctrl+C を1回受け取ったことを記録する。
-/// 2秒以内の連打を検出した場合は `CTRL_C_EXIT_REQUESTED` をセットする。
-pub fn record_ctrl_c() {
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    let prev_ms = CTRL_C_LAST_MS.swap(now_ms, Ordering::Relaxed);
-    if prev_ms != 0 && now_ms.saturating_sub(prev_ms) < CTRL_C_DOUBLE_TAP_MS {
-        CTRL_C_EXIT_REQUESTED.store(true, Ordering::Relaxed);
-    }
-}
-
-/// 2秒以内の Ctrl+C 連打が観測されたか。
-pub fn ctrl_c_exit_requested() -> bool {
-    CTRL_C_EXIT_REQUESTED.load(Ordering::Relaxed)
-}
-
-/// 直近の Ctrl+C から 2秒以内かどうか。`(Ctrl+C to exit)` ヒント表示判定に使用。
-pub fn ctrl_c_hint_active() -> bool {
-    let last = CTRL_C_LAST_MS.load(Ordering::Relaxed);
-    if last == 0 {
-        return false;
-    }
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    now_ms.saturating_sub(last) < CTRL_C_DOUBLE_TAP_MS
-}
 
 pub fn minibuffer_active() -> bool {
     MINIBUFFER_ACTIVE.load(Ordering::Relaxed)
@@ -421,9 +386,7 @@ fn read_line_raw_loop_from(initial: String, minibuffer: bool) -> Option<String> 
                 }
             }
             0x03 => {
-                // Ctrl-C: rawモードで ISIG が無効なので SIGINT は発行されない。
-                // 連打検知のためカウンタを手動で進める。
-                record_ctrl_c();
+                // Ctrl-C: 入力をキャンセルして None を返す。aish 自体は終了しない。
                 let _ = stdout.write_all(b"\n");
                 let _ = stdout.flush();
                 return None;
