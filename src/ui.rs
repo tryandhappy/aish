@@ -31,6 +31,40 @@ pub fn minibuffer_active() -> bool {
     MINIBUFFER_ACTIVE.load(Ordering::Relaxed)
 }
 
+/// stdin から利用可能なバイトをノンブロッキングで取得する。
+/// AI 提案コマンドの完了待ち中に、ユーザのキー入力 / Ctrl+C / パスワード入力等を
+/// PTY に転送するために使う。`BufReader` をバイパスして fd 0 を直接読む。
+#[cfg(unix)]
+pub fn drain_stdin_nonblocking() -> Vec<u8> {
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+    let fd = io::stdin().as_raw_fd();
+    let mut stdin = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
+    let mut out = Vec::new();
+    let mut buf = [0u8; 1024];
+    loop {
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ret = unsafe { libc::poll(&mut pfd, 1, 0) };
+        if ret <= 0 || (pfd.revents & libc::POLLIN) == 0 {
+            break;
+        }
+        match stdin.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => out.extend_from_slice(&buf[..n]),
+            Err(_) => break,
+        }
+    }
+    out
+}
+
+#[cfg(not(unix))]
+pub fn drain_stdin_nonblocking() -> Vec<u8> {
+    Vec::new()
+}
+
 pub fn record_sigwinch() {
     SIGWINCH_RECEIVED.store(true, Ordering::Relaxed);
 }

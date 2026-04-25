@@ -332,19 +332,39 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                 any_executed = true;
                                 pty.write(format!("{}\n", cmd).as_bytes())?;
 
-                                // このコマンドの出力が落ち着くまで待機してから次へ
+                                // コマンド実行完了待ち。
+                                // - PTY 出力をドレインして画面・リングバッファへ
+                                // - stdin → PTY 転送（パスワード入力・Ctrl+C 中断・対話への応答）
+                                // - SIGWINCH 検知（リサイズ追従）
+                                // - PTY 出力が 500ms 無音になったら完了とみなす
+                                let quiet_threshold = Duration::from_millis(500);
+                                let mut last_pty_activity = Instant::now();
                                 loop {
-                                    thread::sleep(Duration::from_millis(500));
-                                    let mut got_data = false;
+                                    if ui::check_and_clear_sigwinch() {
+                                        let (new_rows, new_cols) = ui::terminal_size();
+                                        let new_pty_rows =
+                                            new_rows.saturating_sub(1).max(1);
+                                        let _ = pty.resize(new_pty_rows, new_cols);
+                                        ui::resize_status_bar(new_rows);
+                                    }
+                                    let mut got_pty = false;
                                     while let Ok(data) = pty_rx.try_recv() {
                                         io::stdout().write_all(&data)?;
                                         io::stdout().flush()?;
                                         ring_buffer.append(&data);
-                                        got_data = true;
+                                        got_pty = true;
                                     }
-                                    if !got_data {
+                                    if got_pty {
+                                        last_pty_activity = Instant::now();
+                                    }
+                                    let stdin_bytes = ui::drain_stdin_nonblocking();
+                                    if !stdin_bytes.is_empty() {
+                                        pty.write(&stdin_bytes)?;
+                                    }
+                                    if last_pty_activity.elapsed() >= quiet_threshold {
                                         break;
                                     }
+                                    thread::sleep(Duration::from_millis(20));
                                 }
                             }
 
