@@ -613,9 +613,13 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // 終了時に DECSTBM をフルリセット (TUI コマンドや minibuffer が残した可能性に備えて)
-    let _ = io::stdout().write_all(b"\x1b[r");
-    let _ = io::stdout().flush();
+    // 終了時の DECSTBM リセットはここでは送らない。
+    // \x1b[r は VT100 仕様上、引数有無にかかわらずカーソルを (1,1) に
+    // 移動させる副作用があり、aish 終了直後に親シェル画面の先頭に
+    // カーソルが飛んでしまう。
+    // minibuffer 終了時 (ui::show_minibuffer) と TUI コマンド復旧時
+    // (main loop / 確認ループ内) でそれぞれ \x1b[r を送っているので、
+    // 通常の終了経路ではここでリセットしなくても DECSTBM は default のはず。
 
     if let Some(sid) = ai_session.session_id() {
         eprintln!("\nResume this session with:\nclaude --resume {sid}");
