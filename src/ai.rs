@@ -1,6 +1,6 @@
 use crate::config::LogConfig;
 use serde::Deserialize;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -96,15 +96,27 @@ impl AiSession {
         args.push(DISALLOWED_TOOLS.to_string());
         args.push("--json-schema".to_string());
         args.push(AI_RESPONSE_SCHEMA.to_string());
-        args.push(prompt);
+        // prompt は引数ではなく stdin で渡す。
+        // ターミナルコンテキストを含む prompt が ARG_MAX (~2MB) を超えると
+        // execve() が E2BIG (`Argument list too long`, os error 7) で失敗するため。
 
         let mut child = Command::new("claude")
             .args(&args)
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
 
         write_log(&self.log_path, &format!("claude {}", shell_join(&args)));
+        write_log(&self.log_path, &format!("[prompt via stdin]\n{prompt}"));
+
+        // prompt を子プロセスの stdin に書き込み、EOF を伝えるために close する。
+        // close しないと claude は入力待ちで永遠にブロックする。
+        {
+            let mut stdin = child.stdin.take().expect("stdin should be piped");
+            stdin.write_all(prompt.as_bytes())?;
+            // stdin はスコープを抜けて drop されると close される
+        }
 
         // stdout/stderrを別スレッドで読み取り
         let child_stdout = child.stdout.take().unwrap();

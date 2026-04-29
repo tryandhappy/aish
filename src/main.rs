@@ -169,7 +169,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     let config = config::Config::load(args.config_path.as_deref())?;
 
     let (term_rows, term_cols) = ui::terminal_size();
-    let pty_rows = term_rows.saturating_sub(1).max(1);
+    let pty_rows = term_rows;
 
     let mode = if args.ssh_args.is_empty() {
         Mode::Local
@@ -227,13 +227,13 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
         &config.display.term_cursor_color,
     );
 
-    // ステータスバー: 最下行に [aish] ラベルを常時表示
-    let status_label = format!(
-        "aish v{} | Ctrl+/ for AI",
+    // 起動バナー: 1 度だけ画面上部に表示する (status bar は廃止)
+    let header_color = ui::build_color_start(&config.display.header_color);
+    print!(
+        "{header_color}aish v{} | Ctrl+/ for AI\x1b[0m\n",
         env!("CARGO_PKG_VERSION"),
     );
-    let status_color = &config.display.header_color;
-    ui::setup_status_bar(term_rows, &status_label, status_color);
+    io::stdout().flush().ok();
 
     let aish_label = format!(
         "{}{}\x1b[0m ",
@@ -265,8 +265,12 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                         print!("{prompt}");
                         io::stdout().flush().ok();
                     }
-                    let line = ui::read_line().unwrap_or_else(|| "n".to_string());
-                    if input_tx.send(ui::InputEvent::Line(line)).is_err() {
+                    // None は Ctrl+C / EOF。確認プロンプト側で「残り全部キャンセル」として扱う。
+                    let event = match ui::read_line() {
+                        Some(line) => ui::InputEvent::Line(line),
+                        None => ui::InputEvent::ReadLineCancelled,
+                    };
+                    if input_tx.send(event).is_err() {
                         break;
                     }
                 }
@@ -277,9 +281,8 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut pending_input = true; // 入力スレッド起動待ち
     let mut input_idle = true;
     let mut last_pty_output = Instant::now();
-    let mut status_bar_needs_refresh = false;
     // passthrough モードで TUI コマンド (top/vim/less 等) が走った形跡。
-    // 検出されると次の status bar 再描画タイミングで重い復旧を実行する。
+    // 検出されると PTY 出力が落ち着いたタイミングで Ctrl+L 復旧を実行する。
     let mut tui_recovery_pending = false;
 
     // メインループ
@@ -287,9 +290,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
         // 端末リサイズ検出
         if ui::check_and_clear_sigwinch() {
             let (new_rows, new_cols) = ui::terminal_size();
-            let new_pty_rows = new_rows.saturating_sub(1).max(1);
-            let _ = pty.resize(new_pty_rows, new_cols);
-            ui::resize_status_bar(new_rows);
+            let _ = pty.resize(new_rows, new_cols);
         }
 
         // PTY出力をチェック
@@ -300,7 +301,6 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
             }
             ring_buffer.append(&data);
             last_pty_output = Instant::now();
-            status_bar_needs_refresh = true;
             if !tui_recovery_pending && contains_tui_signature(&data) {
                 tui_recovery_pending = true;
                 debug_log(&format!(
@@ -310,34 +310,28 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // PTY出力が落ち着いたらステータスバーとスクロール領域を復元。
-        // TUI コマンド (top 等) 終了後は shell に Ctrl+L を送って画面クリア +
-        // プロンプト再描画を **shell 自身に** 任せる方式に切替。
+        // PTY出力が落ち着いたら TUI コマンド (top 等) からの復帰処理を行う。
+        // shell に Ctrl+L を送って画面クリア + プロンプト再描画を **shell 自身に** 任せる。
         // aish 側で escape を組み立てるよりも端末固有のクセに強い。
-        if status_bar_needs_refresh && last_pty_output.elapsed() > Duration::from_millis(50) {
-            let (rows, _cols) = ui::terminal_size();
-            if tui_recovery_pending {
-                debug_log("[main loop] tui recovery: Ctrl+L to shell");
-                io::stdout().write_all(b"\x1b[r")?;
-                io::stdout().flush()?;
-                pty.write(b"\x0c")?;
-                thread::sleep(Duration::from_millis(200));
-                let mut response = Vec::new();
-                while let Ok(data) = pty_rx.try_recv() {
-                    response.extend_from_slice(&data);
-                    io::stdout().write_all(&data)?;
-                    ring_buffer.append(&data);
-                }
-                io::stdout().flush()?;
-                debug_log(&format!(
-                    "[main loop] Ctrl+L response: {} bytes: {}",
-                    response.len(),
-                    debug_bytes(&response, 300)
-                ));
-                tui_recovery_pending = false;
+        if tui_recovery_pending && last_pty_output.elapsed() > Duration::from_millis(50) {
+            debug_log("[main loop] tui recovery: Ctrl+L to shell");
+            io::stdout().write_all(b"\x1b[r")?;
+            io::stdout().flush()?;
+            pty.write(b"\x0c")?;
+            thread::sleep(Duration::from_millis(200));
+            let mut response = Vec::new();
+            while let Ok(data) = pty_rx.try_recv() {
+                response.extend_from_slice(&data);
+                io::stdout().write_all(&data)?;
+                ring_buffer.append(&data);
             }
-            ui::resize_status_bar(rows);
-            status_bar_needs_refresh = false;
+            io::stdout().flush()?;
+            debug_log(&format!(
+                "[main loop] Ctrl+L response: {} bytes: {}",
+                response.len(),
+                debug_bytes(&response, 300)
+            ));
+            tui_recovery_pending = false;
         }
 
         // PTY出力が落ち着いたら入力スレッドを起動
@@ -405,28 +399,51 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                             let total = response.commands.len();
                             let mut any_executed = false;
                             let mut executed_summary: Vec<String> = Vec::new();
+                            // ユーザが [a] (= all) を選んだ後は残りを自動承認する
+                            let mut auto_approve_remaining = false;
+                            // ユーザが Ctrl+C で残り全部キャンセルを選んだ
+                            let mut user_cancelled = false;
                             for (i, cmd) in response.commands.iter().enumerate() {
-                                ui::print_single_confirm_prompt(
-                                    cmd,
-                                    i + 1,
-                                    total,
-                                    &config.display,
-                                );
-                                let _ = prompt_tx
-                                    .send(ui::InputRequest::ReadLine(String::new()));
-                                let confirmed = loop {
-                                    match input_rx.recv() {
-                                        Ok(ui::InputEvent::Line(line)) => {
-                                            break ui::parse_confirm(&line)
+                                let confirmed = if auto_approve_remaining {
+                                    true
+                                } else {
+                                    ui::print_single_confirm_prompt(
+                                        cmd,
+                                        i + 1,
+                                        total,
+                                        &config.display,
+                                    );
+                                    let _ = prompt_tx
+                                        .send(ui::InputRequest::ReadLine(String::new()));
+                                    loop {
+                                        match input_rx.recv() {
+                                            Ok(ui::InputEvent::Line(line)) => {
+                                                match ui::parse_confirm(&line) {
+                                                    ui::ConfirmChoice::Yes => break true,
+                                                    ui::ConfirmChoice::No => break false,
+                                                    ui::ConfirmChoice::All => {
+                                                        auto_approve_remaining = true;
+                                                        break true;
+                                                    }
+                                                }
+                                            }
+                                            Ok(ui::InputEvent::ReadLineCancelled) => {
+                                                // Ctrl+C: 残りすべてをキャンセル
+                                                user_cancelled = true;
+                                                break false;
+                                            }
+                                            Ok(ui::InputEvent::PtyData(_))
+                                            | Ok(ui::InputEvent::PassthroughEnded) => continue,
+                                            Ok(ui::InputEvent::AiPrompt(_)) => continue,
+                                            Err(_) => break false,
                                         }
-                                        Ok(ui::InputEvent::PtyData(_))
-                                        | Ok(ui::InputEvent::PassthroughEnded) => continue,
-                                        Ok(ui::InputEvent::AiPrompt(_)) => continue,
-                                        Err(_) => break false,
                                     }
                                 };
 
                                 if !confirmed {
+                                    if user_cancelled {
+                                        break;
+                                    }
                                     continue;
                                 }
 
@@ -450,10 +467,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                 loop {
                                     if ui::check_and_clear_sigwinch() {
                                         let (new_rows, new_cols) = ui::terminal_size();
-                                        let new_pty_rows =
-                                            new_rows.saturating_sub(1).max(1);
-                                        let _ = pty.resize(new_pty_rows, new_cols);
-                                        ui::resize_status_bar(new_rows);
+                                        let _ = pty.resize(new_rows, new_cols);
                                     }
                                     let mut got_pty = false;
                                     while let Ok(data) = pty_rx.try_recv() {
@@ -492,10 +506,8 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                     thread::sleep(Duration::from_millis(20));
                                 }
 
-                                // 完了後 status bar を再描画する。TUI が origin mode を
-                                // on にしたまま抜けた可能性があるなら一回限りの DECOM
-                                // reset (\x1b[?6l) と \n 送信で復旧する。
-                                let (rows, _cols) = ui::terminal_size();
+                                // 完了後、TUI が DECSTBM や origin mode を残したまま抜けた
+                                // 可能性があるなら shell に Ctrl+L を送って復旧する。
                                 debug_log(&format!(
                                     "exec end: tui_detected={}, chunks={}",
                                     tui_detected, chunk_count
@@ -512,7 +524,6 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                     io::stdout().flush()?;
                                 }
-                                ui::resize_status_bar(rows);
 
                                 executed_summary.push(format!("`{cmd}`"));
                             }
@@ -525,10 +536,17 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                             let follow_up_context = ring_buffer.get_unsent();
                             println!();
                             let spinner = ui::Spinner::start(&config.display);
-                            let follow_up_text = format!(
-                                "実行したコマンド: {}。出力は terminal フェンスに含まれます。分析してください。追加の操作が必要であれば提案してください。",
-                                executed_summary.join(", ")
-                            );
+                            let follow_up_text = if user_cancelled {
+                                format!(
+                                    "ユーザが Ctrl+C で残りのコマンドをキャンセルしました。実行されたコマンド: {}。出力は terminal フェンスに含まれます。実行された分だけで分析してください。",
+                                    executed_summary.join(", ")
+                                )
+                            } else {
+                                format!(
+                                    "実行したコマンド: {}。出力は terminal フェンスに含まれます。分析してください。追加の操作が必要であれば提案してください。",
+                                    executed_summary.join(", ")
+                                )
+                            };
                             ai_result = ai_session.send(&follow_up_context, &follow_up_text);
                             spinner.stop();
                         }
@@ -583,6 +601,11 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+            Ok(ui::InputEvent::ReadLineCancelled) => {
+                // メインループでは ReadLine を発行していない (AI 確認時のみ) ので
+                // ここに来るのは想定外。安全側で無視する。
+                continue;
+            }
             Err(mpsc::TryRecvError::Empty) => {
                 thread::sleep(Duration::from_millis(1));
             }
@@ -590,9 +613,9 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // ステータスバー・スクロール領域をクリーンアップ
-    let (final_rows, _) = ui::terminal_size();
-    ui::cleanup_status_bar(final_rows);
+    // 終了時に DECSTBM をフルリセット (TUI コマンドや minibuffer が残した可能性に備えて)
+    let _ = io::stdout().write_all(b"\x1b[r");
+    let _ = io::stdout().flush();
 
     if let Some(sid) = ai_session.session_id() {
         eprintln!("\nResume this session with:\nclaude --resume {sid}");

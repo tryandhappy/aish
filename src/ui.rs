@@ -1,6 +1,6 @@
 use crate::config::DisplayConfig;
 use std::io::{self, Read, Write};
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -17,13 +17,13 @@ pub enum InputEvent {
     Line(String),
     AiPrompt(String),
     PassthroughEnded,
+    /// `ReadLine` 中にユーザが Ctrl+C を押した (もしくは EOF)。
+    /// 確認プロンプト中なら「残りコマンドを全部キャンセル」を意味する。
+    ReadLineCancelled,
 }
 
 static MINIBUFFER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static SIGWINCH_RECEIVED: AtomicBool = AtomicBool::new(false);
-static TERM_ROWS: AtomicU16 = AtomicU16::new(24);
-static STATUS_BAR_LABEL: OnceLock<String> = OnceLock::new();
-static STATUS_BAR_COLOR: OnceLock<String> = OnceLock::new();
 
 pub fn minibuffer_active() -> bool {
     MINIBUFFER_ACTIVE.load(Ordering::Relaxed)
@@ -115,71 +115,6 @@ pub fn cleanup_terminal_indicator() {
     let _ = stdout.flush();
 }
 
-/// 初回: 改行でステータスバー用の1行を確保してからスクロール領域を設定し描画する
-pub fn setup_status_bar(rows: u16, label: &str, color: &str) {
-    TERM_ROWS.store(rows, Ordering::Relaxed);
-    let _ = STATUS_BAR_LABEL.set(label.to_string());
-    let _ = STATUS_BAR_COLOR.set(color.to_string());
-    let mut stdout = io::stdout();
-    let scroll_bottom = rows.saturating_sub(1).max(1);
-    let _ = write!(stdout,
-        "\n\x1b[1;{scroll_bottom}r\x1b[{rows};1H{color}{label}\x1b[K\x1b[0m\x1b[{scroll_bottom};1H"
-    );
-    let _ = stdout.flush();
-}
-
-/// リサイズ時: スクロール領域を再設定しステータスバーを再描画する（改行なし）。
-/// シェル側のカーソル位置を壊さないよう save/restore で囲む。
-///
-/// 注意: `\x1b[?6l` (DECOM reset) はここでは **絶対に呼ばない**。
-/// VT100 仕様で DECOM の set/reset は副作用としてカーソルを (1, 1) に移動させる
-/// ため、status bar 再描画のたびにカーソルが画面左上に固定される事故が起こる。
-/// 直前の TUI コマンドが origin mode を on にしたまま抜けた場合の対処は、
-/// `main.rs` の TUI 検知後の一回限りの復旧で行う。
-pub fn resize_status_bar(rows: u16) {
-    TERM_ROWS.store(rows, Ordering::Relaxed);
-    let label = STATUS_BAR_LABEL.get().map(|s| s.as_str()).unwrap_or("");
-    let color = STATUS_BAR_COLOR.get().map(|s| s.as_str()).unwrap_or("");
-    let mut stdout = io::stdout();
-    let scroll_bottom = rows.saturating_sub(1).max(1);
-    let _ = write!(stdout,
-        "\x1b7\x1b[1;{scroll_bottom}r\x1b[{rows};1H{color}{label}\x1b[K\x1b[0m\x1b8"
-    );
-    let _ = stdout.flush();
-}
-
-/// ステータスバーを再描画する（ラベル・色はstaticから取得、カーソル移動のみ）
-fn redraw_status_bar(stdout: &mut io::Stdout) {
-    let rows = TERM_ROWS.load(Ordering::Relaxed);
-    let label = STATUS_BAR_LABEL.get().map(|s| s.as_str()).unwrap_or("");
-    let color = STATUS_BAR_COLOR.get().map(|s| s.as_str()).unwrap_or("");
-    let _ = write!(stdout,
-        "\x1b[{rows};1H{color}{label}\x1b[K\x1b[0m"
-    );
-    let _ = stdout.flush();
-}
-
-/// ステータスバー内容のみ再描画（DECSTBM変更なし、カーソル位置保全）
-#[allow(dead_code)]
-pub fn refresh_status_bar() {
-    let rows = TERM_ROWS.load(Ordering::Relaxed);
-    let label = STATUS_BAR_LABEL.get().map(|s| s.as_str()).unwrap_or("");
-    let color = STATUS_BAR_COLOR.get().map(|s| s.as_str()).unwrap_or("");
-    let mut stdout = io::stdout();
-    let _ = write!(stdout,
-        "\x1b7\x1b[{rows};1H{color}{label}\x1b[K\x1b[0m\x1b8"
-    );
-    let _ = stdout.flush();
-}
-
-/// スクロール領域をリセットしステータスバーをクリアする
-pub fn cleanup_status_bar(rows: u16) {
-    let mut stdout = io::stdout();
-    // スクロール領域リセット→ステータスバー行クリア
-    let _ = write!(stdout, "\x1b[r\x1b[{rows};1H\x1b[2K");
-    let _ = stdout.flush();
-}
-
 pub fn terminal_size() -> (u16, u16) {
     #[cfg(unix)]
     {
@@ -256,20 +191,21 @@ impl Spinner {
         let handle = std::thread::spawn(move || {
             let mut stdout = io::stdout();
             let mut i = 0;
+            // 現在カーソルがある行に \r で戻りながらフレームを更新する。
+            // Spinner は AI 思考中に呼ばれ、直前は minibuffer のエコー出力後の
+            // 新しい行頭にカーソルがあるので、その行をスピナー専用に使う。
             while running_clone.load(Ordering::Relaxed) {
-                let rows = TERM_ROWS.load(Ordering::Relaxed);
-                let _ = write!(stdout,
-                    "\x1b7\x1b[{};1H{}{} {}\x1b[0m\x1b[K\x1b8",
-                    rows, color, SPINNER_FRAMES[i], message
+                let _ = write!(
+                    stdout,
+                    "\r{}{} {}\x1b[0m\x1b[K",
+                    color, SPINNER_FRAMES[i], message
                 );
                 let _ = stdout.flush();
                 i = (i + 1) % SPINNER_FRAMES.len();
                 std::thread::sleep(Duration::from_millis(80));
             }
-            // ステータスバーを元に戻す（カーソル位置を保全）
-            let _ = write!(stdout, "\x1b7");
-            redraw_status_bar(&mut stdout);
-            let _ = write!(stdout, "\x1b8");
+            // 終了時は行をクリアして次の出力 (AI 応答) が同じ行に出るようにする
+            let _ = write!(stdout, "\r\x1b[K");
             let _ = stdout.flush();
         });
 
@@ -323,15 +259,43 @@ pub fn print_single_confirm_prompt(
     display: &DisplayConfig,
 ) {
     let color = &display.confirm_color;
+    // 残コマンドがある (= 最後ではない) ときだけ [Y/n/a] を出す。
+    // a = 残り全部を自動承認 (apt / sudo の慣習)。
+    let options = if index < total { "Y/n/a" } else { "Y/n" };
+    // "Exec?" をオレンジ文字+暗い茶色背景 (prompt_color 系) で区別する試行。
+    // 終了は再度 confirm_color を適用して元の薄黄/グレーに戻す。
+    // 選択肢 [Y/n] / [Y/n/a] は bold + reverse で強調。
+    let label_on = "\x1b[38;5;208;48;2;50;35;20m";
+    let hl_on = "\x1b[1;7m";
+    // 先頭に改行を入れて、確認プロンプトを必ず行頭から開始する。
+    // 2つ目以降は直前にシェルプロンプト (`user@host:~$ `) が描画されるため、
+    // これを入れないと混ざってしまう。1つ目の前は空行になるが
+    // `Proposed commands:` リストとの区切りになり視認性が上がる。
+    // cmd 前後のスペースは色を付けないように、各セグメント境界で \x1b[0m リセットする。
     print!(
-        "{color}Execute [{index}/{total}]: {cmd} (Y/n)\x1b[0m "
+        "\n{color}{label_on}Exec?\x1b[0m {color}{cmd}\x1b[0m {color}{hl_on}[{options}]\x1b[0m "
     );
     io::stdout().flush().ok();
 }
 
-pub fn parse_confirm(input: &str) -> bool {
+pub enum ConfirmChoice {
+    Yes,
+    No,
+    All,
+}
+
+pub fn parse_confirm(input: &str) -> ConfirmChoice {
     let trimmed = input.trim();
-    trimmed.is_empty() || trimmed.eq_ignore_ascii_case("y") || trimmed.eq_ignore_ascii_case("yes")
+    if trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("y")
+        || trimmed.eq_ignore_ascii_case("yes")
+    {
+        ConfirmChoice::Yes
+    } else if trimmed.eq_ignore_ascii_case("a") || trimmed.eq_ignore_ascii_case("all") {
+        ConfirmChoice::All
+    } else {
+        ConfirmChoice::No
+    }
 }
 
 pub enum UserInput {
@@ -947,8 +911,7 @@ fn show_minibuffer(
     cancel_shell: bool,
 ) {
     MINIBUFFER_ACTIVE.store(true, Ordering::Relaxed);
-    let rows = TERM_ROWS.load(Ordering::Relaxed);
-    let (_, cols) = terminal_size();
+    let (rows, cols) = terminal_size();
     let label_width = visible_width(aish_label);
     // 最大ミニバッファ行数: 端末高さの半分、かつ1以上
     let max_rows = (rows / 2).max(1);
@@ -961,18 +924,19 @@ fn show_minibuffer(
         stdout, rows, cols, max_rows, aish_label, label_width, input_bg,
     );
 
-    // DECSTBM を元に戻す (1..rows-1)、ミニバッファが使用した追加行をクリア
-    let scroll_bottom = rows.saturating_sub(1).max(1);
-    let _ = write!(stdout, "\x1b[0m\x1b[1;{scroll_bottom}r");
+    // DECSTBM をフルリセット (1..rows)、ミニバッファが使用した追加行をクリア
+    let _ = write!(stdout, "\x1b[0m\x1b[r");
     if rows_used > 1 {
         let clear_from = rows - rows_used + 1;
-        let clear_to = rows - 1;
+        let clear_to = rows;
         for r in clear_from..=clear_to {
             let _ = write!(stdout, "\x1b[{r};1H\x1b[2K");
         }
+    } else if rows_used == 1 {
+        // 1 行ミニバッファでも最終行に入力跡が残っているのでクリア
+        let _ = write!(stdout, "\x1b[{rows};1H\x1b[2K");
     }
-    // ステータスバーを復元→カーソル復元
-    redraw_status_bar(stdout);
+    // カーソル復元
     let _ = write!(stdout, "\x1b8");
     let _ = stdout.flush();
     MINIBUFFER_ACTIVE.store(false, Ordering::Relaxed);
