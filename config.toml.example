@@ -23,6 +23,15 @@ ai_color = "\u001B[38;5;216m"                                  # default: "\u001
 input_color = ""                                               # default: "" (terminal default)
 confirm_color = "\u001B[38;5;228;48;5;239m"                    # default: pale yellow text, gray bg
 
+# Terminal-level "aish is running" indicators (OSC 10/11/12).
+# Format: "#rrggbb" or "rgb:rr/gg/bb" — color specs sent to the terminal itself, NOT ANSI SGR.
+# Empty string disables that channel (terminal default is kept).
+# These do NOT consume any screen rows/cols, so they don't conflict with fullscreen apps,
+# scroll regions, or `clear`.
+term_fg_color = ""                                             # default: "" — OSC 10 default foreground
+term_bg_color = ""                                             # default: "" — OSC 11 default background
+term_cursor_color = "#ff8800"                                  # default: "#ff8800" (orange) — OSC 12 cursor color
+
 # Logging settings
 # Log Claude Code CLI commands and responses
 [log]

@@ -59,6 +59,12 @@ pub struct DisplayConfig {
     pub input_color: String,
     #[serde(default = "default_confirm_color")]
     pub confirm_color: String,
+    #[serde(default)]
+    pub term_fg_color: String,
+    #[serde(default)]
+    pub term_bg_color: String,
+    #[serde(default = "default_term_cursor_color")]
+    pub term_cursor_color: String,
 }
 
 impl Default for DisplayConfig {
@@ -73,6 +79,9 @@ impl Default for DisplayConfig {
             ai_color: default_ai_color(),
             input_color: String::new(),
             confirm_color: default_confirm_color(),
+            term_fg_color: String::new(),
+            term_bg_color: String::new(),
+            term_cursor_color: default_term_cursor_color(),
         }
     }
 }
@@ -111,6 +120,10 @@ fn default_ai_color() -> String {
 
 fn default_confirm_color() -> String {
     "\x1b[38;5;228;48;5;239m".to_string()
+}
+
+fn default_term_cursor_color() -> String {
+    "#ff8800".to_string()
 }
 
 impl Config {

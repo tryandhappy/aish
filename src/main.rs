@@ -211,14 +211,21 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // ターミナルタイトルにaishラベルを設定
+    // ターミナル側に "aish 動作中" を示す OSC を送る:
+    //   OSC 0/1/2: ウィンドウ/タブ/アイコンタイトル
+    //   OSC 10/11/12: 前景/背景/カーソル色 (config で空文字なら送らない)
+    // PTY コンテンツ領域には干渉しないので、fullscreen アプリ等と衝突しない。
     let title = if args.ssh_args.is_empty() {
         config.display.shell_prefix_label.clone()
     } else {
         format!("{} {}", config.display.shell_prefix_label, args.ssh_args.join(" "))
     };
-    print!("\x1b]2;{title}\x07");
-    io::stdout().flush().ok();
+    ui::setup_terminal_indicator(
+        &title,
+        &config.display.term_fg_color,
+        &config.display.term_bg_color,
+        &config.display.term_cursor_color,
+    );
 
     // ステータスバー: 最下行に [aish] ラベルを常時表示
     let status_label = format!(
@@ -607,9 +614,8 @@ fn main() {
         }
         CliAction::Run(args) => {
             let result = run(args);
-            // ターミナルタイトルを復元
-            print!("\x1b]2;\x07");
-            io::stdout().flush().ok();
+            // OSC 0/1/2 (タイトル) と OSC 10/11/12 (色) をリセット
+            ui::cleanup_terminal_indicator();
             ui::restore_terminal_settings();
             if let Err(e) = result {
                 eprintln!("Error: {e}");

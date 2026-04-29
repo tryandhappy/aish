@@ -71,6 +71,50 @@ pub fn check_and_clear_sigwinch() -> bool {
     SIGWINCH_RECEIVED.swap(false, Ordering::Relaxed)
 }
 
+/// ターミナルの "aish 動作中" 表示を OSC で設定する。
+/// - OSC 0/1/2: アイコン名 / ウィンドウタイトル
+/// - OSC 10/11/12: 前景 / 背景 / カーソル色 (色指定が空でない場合のみ送る)
+/// PTY のコンテンツ領域には一切干渉しないため、fullscreen アプリやスクロール領域と衝突しない。
+pub fn setup_terminal_indicator(
+    title: &str,
+    fg_color: &str,
+    bg_color: &str,
+    cursor_color: &str,
+) {
+    let mut stdout = io::stdout();
+    // OSC 0: icon name + window title (両方をまとめてセット)
+    let _ = write!(stdout, "\x1b]0;{title}\x07");
+    // OSC 1: icon name (タブ名のみのターミナル向け)
+    let _ = write!(stdout, "\x1b]1;{title}\x07");
+    // OSC 2: window title (タイトルバーのみのターミナル向け)
+    let _ = write!(stdout, "\x1b]2;{title}\x07");
+    if !fg_color.is_empty() {
+        let _ = write!(stdout, "\x1b]10;{fg_color}\x07");
+    }
+    if !bg_color.is_empty() {
+        let _ = write!(stdout, "\x1b]11;{bg_color}\x07");
+    }
+    if !cursor_color.is_empty() {
+        let _ = write!(stdout, "\x1b]12;{cursor_color}\x07");
+    }
+    let _ = stdout.flush();
+}
+
+/// 起動時に OSC 0/1/2 で設定したタイトルと OSC 10/11/12 で設定した色をリセットする。
+/// OSC 110/111/112 はそれぞれ前景/背景/カーソル色をターミナルのデフォルトに戻す。
+pub fn cleanup_terminal_indicator() {
+    let mut stdout = io::stdout();
+    // タイトルを空文字でクリア (シェル側のプロンプトが上書きする想定)
+    let _ = write!(stdout, "\x1b]0;\x07");
+    let _ = write!(stdout, "\x1b]1;\x07");
+    let _ = write!(stdout, "\x1b]2;\x07");
+    // 色をデフォルトに戻す
+    let _ = write!(stdout, "\x1b]110\x07");
+    let _ = write!(stdout, "\x1b]111\x07");
+    let _ = write!(stdout, "\x1b]112\x07");
+    let _ = stdout.flush();
+}
+
 /// 初回: 改行でステータスバー用の1行を確保してからスクロール領域を設定し描画する
 pub fn setup_status_bar(rows: u16, label: &str, color: &str) {
     TERM_ROWS.store(rows, Ordering::Relaxed);
