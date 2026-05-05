@@ -174,10 +174,12 @@ session resume は Claude のみで利用。Codex/Gemini/Qwen は session resume
 #### 安全性の差
 
 - **Claude**: `--disallowedTools "Bash,Edit,Write,Read"` をフラグレベルでツール拒否。最も強力。
-- **Codex**: `-s read-only` で sandbox を read-only に固定するが、これは「実行された場合の影響範囲」を限定するだけで、
-  ツール呼び出し自体は禁止されない。モデルが reasoning 中に `ls` 等の read-only コマンドを発火させ、
-  aish の確認を経ずにローカル情報を観測する可能性がある (書き込みは sandbox で防がれる)。
-  完全なツール禁止は system prompt の指示に依存する。
+- **Codex**: `codex exec` は本来エージェント (内部でツールを呼ぶ) なので、aish の確認 UI を迂回しないよう
+  ツール系 feature をすべて `--disable` で落として LLM のみに退化させる
+  (`shell_tool` / `unified_exec` / `browser_use` / `computer_use` / `multi_agent` / `image_generation` /
+  `tool_search` / `tool_suggest` / `plugins` / `apps` / `skill_mcp_dependency_install` /
+  `tool_call_mcp_elicitation`)。さらに defense-in-depth として `-s read-only` sandbox を併用。
+  この設定で codex は提案 JSON だけを返す純粋な LLM として動作する。
 - **Gemini / Qwen**: フラグレベルの制約は無く、system prompt の「ツール禁止」指示のみ。
 - 最大限の安全性が必要な場合は `--aish-ai claude` を使うこと。
 

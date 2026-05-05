@@ -8,24 +8,38 @@ use crate::config::{AiConfig, LogConfig};
 /// 直近何ターン分の会話履歴をプロンプトに含めるか。
 const MAX_HISTORY_TURNS: usize = 8;
 
+/// codex の自律エージェント挙動を無効化するための feature 一覧。
+/// `codex features list` で stable / experimental の tool 系をすべて落とす。
+/// これを付けないと codex は内部で shell 等を実行して結果だけを返してしまい、
+/// aish の「提案 → 確認 → 実行」モデルを迂回する。
+const DISABLE_TOOL_FEATURES: &[&str] = &[
+    "shell_tool",                  // shell 実行
+    "unified_exec",                // 別系統の exec
+    "browser_use",                 // ブラウザ操作
+    "computer_use",                // computer use
+    "multi_agent",                 // sub-agent (sub-agent がツールを持つ恐れ)
+    "image_generation",            // 画像生成
+    "tool_search",                 // ツール探索
+    "tool_suggest",                // ツール提案
+    "plugins",                     // プラグイン (任意ツール経由)
+    "apps",                        // app 連携
+    "skill_mcp_dependency_install", // MCP 依存インストール
+    "tool_call_mcp_elicitation",   // MCP ツール呼び出し
+];
+
 /// Codex CLI (`codex exec`) backend。
 ///
 /// 戦略:
-/// - `codex exec -s read-only --skip-git-repo-check --ephemeral -o <tmp> -`
-///   - `-s read-only`: 万が一モデルがツール呼び出しを試みても read-only sandbox で防ぐ。
+/// - `codex exec --disable <tool features...> -s read-only --skip-git-repo-check --ephemeral -o <tmp> -`
+///   - `--disable shell_tool` 等で **codex のツール群をすべて切り**、純粋な LLM 応答だけを得る。
+///     これにより codex が aish の確認 UI を経由せずローカルでコマンド実行する経路を塞ぐ。
+///   - `-s read-only`: 万一切り漏れたツールが残っても sandbox で write を防ぐ defense-in-depth。
 ///   - `--skip-git-repo-check`: aish は git リポジトリ外で起動されることがある。
 ///   - `--ephemeral`: セッションファイルを永続化させない。aish 側で session 管理しない方針。
 ///   - `-o <tmp>`: 最終 assistant メッセージだけをファイルに書き出す。stdout はイベントログ。
 ///   - `-`: PROMPT を stdin から読む。
 /// - JSON Schema 強制機能は無いので system prompt で `{message, commands}` 出力を強く指示し、
 ///   `extract_json` で抽出する。失敗時は全文を message としてフォールバック。
-///
-/// 安全性の限界 (SPEC.md §6 参照):
-/// - codex CLI の `-s read-only` は **shell 実行を防ぐが、ツール呼び出し自体を禁止する仕組みではない**。
-///   モデルが reasoning 中に read-only コマンド (`ls`, `cat` 等) を発火させ、aish の確認なしに
-///   ローカル情報を観測する可能性がある。書き込みやサーバ側変更は read-only sandbox で防げる。
-///   完全な「ツール禁止」は system prompt の指示に依存するため、最大限の安全性が必要なら
-///   `--aish-ai claude` (`--disallowedTools` でフラグレベル拒否) を使うこと。
 ///
 /// session resume は使わず、内部で履歴 (user_prompt, ai_message) を保持して毎回プロンプトに含める。
 pub struct CodexBackend {
@@ -67,8 +81,13 @@ impl AiBackend for CodexBackend {
 
         let last_msg_path = unique_tmp_path(".txt");
 
-        let mut args: Vec<String> = vec![
-            "exec".to_string(),
+        let mut args: Vec<String> = vec!["exec".to_string()];
+        // 全ツール feature を無効化して codex を「LLM のみ」にする (信頼原則の根幹)。
+        for feat in DISABLE_TOOL_FEATURES {
+            args.push("--disable".to_string());
+            args.push(feat.to_string());
+        }
+        args.extend([
             "-s".to_string(),
             "read-only".to_string(),
             "--skip-git-repo-check".to_string(),
@@ -76,7 +95,7 @@ impl AiBackend for CodexBackend {
             "-o".to_string(),
             last_msg_path.clone(),
             "-".to_string(),
-        ];
+        ]);
         args.extend(self.extra_args.iter().cloned());
 
         let stdout_result = run_cli_capture_stdout("codex", &args, &prompt, &self.log_path);
