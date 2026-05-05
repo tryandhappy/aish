@@ -286,7 +286,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut tui_recovery_pending = false;
 
     // メインループ
-    loop {
+    'main_loop: loop {
         // 端末リサイズ検出
         if ui::check_and_clear_sigwinch() {
             let (new_rows, new_cols) = ui::terminal_size();
@@ -469,6 +469,19 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                 let mut tui_detected = false;
                                 let mut chunk_count = 0usize;
                                 loop {
+                                    // 子プロセス (ssh / shell) が死んだら待っても意味がない。
+                                    // sudo reboot 等で SSH が切れた後はプロンプトに戻らないため、
+                                    // sniffer ベースの完了判定だと永遠にハングする。
+                                    // 残り出力をドレインしてメインループごと抜ける。
+                                    if !pty.is_alive() {
+                                        thread::sleep(Duration::from_millis(50));
+                                        while let Ok(data) = pty_rx.try_recv() {
+                                            io::stdout().write_all(&data)?;
+                                            ring_buffer.append(&data);
+                                        }
+                                        io::stdout().flush().ok();
+                                        break 'main_loop;
+                                    }
                                     if ui::check_and_clear_sigwinch() {
                                         let (new_rows, new_cols) = ui::terminal_size();
                                         let _ = pty.resize(new_rows, new_cols);
