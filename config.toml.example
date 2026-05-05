@@ -40,7 +40,7 @@ path = "~/.aish/logs/claude-code.log"                          # default: "~/.ai
 
 # AI backend settings
 # `backend` selects which CLI to drive. `--aish-ai <kind>` (CLI flag) overrides this.
-# Phase I: only "claude" is implemented. Other kinds parse but exit at startup.
+# Supported: claude (Claude Code), codex (OpenAI Codex CLI), gemini (Google Gemini CLI), qwen (Alibaba Qwen Code).
 # `system_prompt` / `language` here override the top-level values; if empty, the
 # top-level values above are used (backward compatibility).
 [ai]
@@ -52,12 +52,13 @@ language = ""                                                  # default: "" —
 disallowed_tools = "Bash,Edit,Write,Read"                      # default: "Bash,Edit,Write,Read"
 extra_args = []                                                # default: [] — extra args appended to `claude -p ...`
 
-# Placeholders for future backends. Setting these does not enable the backend yet.
+# Codex / Gemini / Qwen don't have JSON-schema flags, so JSON output is enforced via system prompt.
+# Use extra_args for model selection or other CLI-specific flags.
 [ai.codex]
-extra_args = []
+extra_args = []                                                # e.g. ["-m", "gpt-5.5"]
 
 [ai.gemini]
-extra_args = []
+extra_args = []                                                # e.g. ["-m", "gemini-2.5-pro"]
 
 [ai.qwen]
 extra_args = []

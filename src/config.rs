@@ -32,15 +32,10 @@ pub struct AiConfig {
     pub language: String,
     #[serde(default)]
     pub claude: ClaudeBackendConfig,
-    // 以下は Phase II 以降で実装するバックエンドのプレースホルダ。
-    // 設定ファイル側に書いてもパースエラーにせず受け入れる。
-    #[allow(dead_code)]
     #[serde(default)]
     pub codex: GenericBackendConfig,
-    #[allow(dead_code)]
     #[serde(default)]
     pub gemini: GenericBackendConfig,
-    #[allow(dead_code)]
     #[serde(default)]
     pub qwen: GenericBackendConfig,
 }
@@ -86,7 +81,6 @@ fn default_disallowed_tools() -> String {
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct GenericBackendConfig {
-    #[allow(dead_code)]
     #[serde(default)]
     pub extra_args: Vec<String>,
 }

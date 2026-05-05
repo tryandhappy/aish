@@ -1,4 +1,8 @@
-use std::io::Read;
+use super::types::{AiError, AiResponse};
+use std::io::{Read, Write};
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::Duration;
 
 /// stdinからCtrl+C (0x03) が入力されているかノンブロッキングでチェック
 #[cfg(unix)]
@@ -152,6 +156,180 @@ pub(crate) fn build_system_prompt(prompt: &str, language: &str) -> String {
     } else {
         format!("{prompt} Respond in {language}.")
     }
+}
+
+/// JSON Schema フラグを持たない backend (codex/gemini/qwen) 向けの system prompt。
+/// JSON 単独出力を強く指示し、aish の信頼原則 (提案ベース・無書き込み・ツール非使用) を埋め込む。
+pub(crate) fn build_proposal_system_prompt(base: &str, language: &str) -> String {
+    let lang_part = if language.is_empty() {
+        String::new()
+    } else {
+        format!(" Respond in {language}.")
+    };
+    format!(
+        "{base}{lang_part}\n\n\
+         重要 (安全制約):\n\
+         - あなたは aish の提案エンジンです。**いかなるツール呼び出しも行わないでください**。\
+         shell exec, file read, file write, web search, code interpreter 等のいずれも禁止です。\n\
+         - ターミナルの内容は既に下記 ```terminal``` ブロックに含まれています。\
+         追加の情報収集はせず、与えられた情報だけで判断してください。\n\
+         - コマンドは「提案のみ」行ってください。\
+         直接の実行・ファイル編集・サーバへの書き込みは一切行わないでください。\
+         実行可否は aish が画面でユーザに確認します。\n\n\
+         応答ルール:\n\
+         - 1度のレスポンスで提案するコマンドは1つだけにしてください。複数ステップが必要な場合は、\
+         実行結果を確認してから次のコマンドを提案してください。\n\
+         - &&や||による条件付き実行は1つのコマンドとして維持してください。\n\n\
+         出力フォーマット: 必ず以下の JSON だけを 1 つ出力してください。\
+         前後に説明文・コードフェンス・追加テキストを付けないでください。\n\
+         {{\"message\": \"ユーザへの説明\", \"commands\": [\"提案コマンド\"]}}\n\
+         追加のコマンド提案が不要な場合は commands を [] にしてください。"
+    )
+}
+
+/// system + 過去ターン履歴 + terminal context + user prompt を 1 本のプロンプトに連結する。
+/// session resume が無い backend (codex/gemini/qwen) で毎回フルコンテキストを送るための整形。
+/// `history` は (user_prompt, ai_message) の時系列リスト。空でも OK。
+pub(crate) fn build_full_prompt(
+    system: &str,
+    history: &[(String, String)],
+    terminal_context: &str,
+    user_prompt: &str,
+) -> String {
+    let history_block = if history.is_empty() {
+        String::new()
+    } else {
+        let mut s = String::from("## これまでの会話\n\n");
+        for (i, (u, a)) in history.iter().enumerate() {
+            s.push_str(&format!("### Turn {}\nユーザ: {u}\nAI: {a}\n\n", i + 1));
+        }
+        s.push_str("## 現在のターン\n\n");
+        s
+    };
+    let context_block = if terminal_context.is_empty() {
+        String::new()
+    } else {
+        format!("```terminal\n{terminal_context}\n```\n\n")
+    };
+    format!("{system}\n\n{history_block}{context_block}{user_prompt}")
+}
+
+/// 直近 `max_turns` 件だけ残すように履歴をトリムする。
+/// 古いターンから捨てる。
+pub(crate) fn trim_history(history: &mut Vec<(String, String)>, max_turns: usize) {
+    while history.len() > max_turns {
+        history.remove(0);
+    }
+}
+
+/// 子プロセスを spawn し stdin に prompt を流して stdout 全体を返す。
+/// Ctrl+C でキャンセル、stderr はログに記録。
+pub(crate) fn run_cli_capture_stdout(
+    program: &str,
+    args: &[String],
+    stdin_input: &str,
+    log_path: &Option<String>,
+) -> Result<String, AiError> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    write_log(log_path, &format!("{program} {}", shell_join(args)));
+    write_log(log_path, &format!("[prompt via stdin]\n{stdin_input}"));
+
+    {
+        let mut stdin = child.stdin.take().expect("stdin should be piped");
+        stdin.write_all(stdin_input.as_bytes())?;
+        // drop で close → EOF
+    }
+
+    let child_stdout = child.stdout.take().unwrap();
+    let child_stderr = child.stderr.take().unwrap();
+
+    let stdout_handle = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut r = child_stdout;
+        let _ = r.read_to_end(&mut buf);
+        buf
+    });
+
+    let stderr_handle = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut r = child_stderr;
+        let _ = r.read_to_end(&mut buf);
+        buf
+    });
+
+    let status = loop {
+        match child.try_wait()? {
+            Some(status) => break status,
+            None => {
+                if check_stdin_cancel() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = stdout_handle.join();
+                    let _ = stderr_handle.join();
+                    return Err(AiError::Cancelled);
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+    };
+
+    let stdout_bytes = stdout_handle.join().unwrap_or_default();
+    let stderr_bytes = stderr_handle.join().unwrap_or_default();
+    let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
+    let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
+
+    write_log(log_path, stdout.trim());
+    if !stderr.trim().is_empty() {
+        write_log(log_path, &format!("[stderr]\n{}", stderr.trim()));
+    }
+
+    if !status.success() {
+        return Err(AiError::NonZeroExit { stderr });
+    }
+
+    if stdout.trim().is_empty() {
+        return Err(AiError::EmptyOutput { stderr });
+    }
+
+    Ok(stdout)
+}
+
+/// 出力テキストから AiResponse を抽出する。JSON が見つからなければ全文を message としてフォールバック。
+/// JSON Schema 強制が無い backend で使う。
+pub(crate) fn parse_ai_response_lossy(raw: &str) -> AiResponse {
+    if let Some(json_str) = extract_json(raw) {
+        if let Ok(resp) = serde_json::from_str::<AiResponse>(json_str) {
+            return resp;
+        }
+    }
+    AiResponse {
+        message: raw.trim().to_string(),
+        commands: Vec::new(),
+    }
+}
+
+/// `~/.aish/tmp/` 以下にユニークな一時ファイルパスを生成する。実ファイルは作らない。
+/// codex の `--output-last-message` 用。プロセスID + 単調カウンタで衝突回避。
+pub(crate) fn unique_tmp_path(suffix: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let dir = if let Some(home) = dirs::home_dir() {
+        home.join(".aish").join("tmp")
+    } else {
+        std::env::temp_dir()
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join(format!("aish-{pid}-{n}{suffix}"))
+        .to_string_lossy()
+        .to_string()
 }
 
 #[cfg(test)]

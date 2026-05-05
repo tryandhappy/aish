@@ -1,4 +1,7 @@
 use super::claude::ClaudeBackend;
+use super::codex::CodexBackend;
+use super::gemini::GeminiBackend;
+use super::qwen::QwenBackend;
 use super::types::{AiBackend, AiError, BackendKind};
 use crate::config::{AiConfig, LogConfig};
 use std::process::Command;
@@ -10,18 +13,9 @@ pub fn create_backend(
 ) -> Result<Box<dyn AiBackend>, AiError> {
     match kind {
         BackendKind::Claude => Ok(Box::new(ClaudeBackend::new(cfg, log))),
-        BackendKind::Codex => Err(AiError::NotInstalled {
-            kind,
-            hint: "Codex backend not yet implemented in aish".to_string(),
-        }),
-        BackendKind::Gemini => Err(AiError::NotInstalled {
-            kind,
-            hint: "Gemini backend not yet implemented in aish".to_string(),
-        }),
-        BackendKind::Qwen => Err(AiError::NotInstalled {
-            kind,
-            hint: "Qwen backend not yet implemented in aish".to_string(),
-        }),
+        BackendKind::Codex => Ok(Box::new(CodexBackend::new(cfg, log))),
+        BackendKind::Gemini => Ok(Box::new(GeminiBackend::new(cfg, log))),
+        BackendKind::Qwen => Ok(Box::new(QwenBackend::new(cfg, log))),
     }
 }
 

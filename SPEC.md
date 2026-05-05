@@ -148,14 +148,38 @@ Enter / Ctrl+C / 文字入力などいずれの場合も `passthrough_read_raw` 
 
 ---
 
-## 6. AI連携（Claude Code CLI）
+## 6. AI連携
 
-aish は trait `AiBackend` を介して複数の AI CLI に対応する設計。Phase I では Claude Code のみ実装され、
-Codex/Gemini/Qwen は `--aish-ai` フラグや `[ai].backend` での kind 指定は受け付けるが、起動時に
-未対応である旨を表示して終了する。各バックエンドは JSON で `{message, commands[]}` 相当を返し、
-aish は提案ベースで動作する。CLI 非依存の原則 (透明性・サーバ無書き込み) は trait 実装側で守る責任を負う。
+aish は trait `AiBackend` を介して 4 種類の AI CLI に対応する: **Claude Code / OpenAI Codex CLI / Google Gemini CLI / Alibaba Qwen Code**。各バックエンドは JSON で `{message, commands[]}` 相当を返し、aish は提案ベースで動作する。CLI 非依存の原則 (透明性・サーバ無書き込み) は trait 実装側で守る責任を負う。
 
 選択優先順位: `--aish-ai` (CLI) > `[ai].backend` (設定) > `claude` (既定)。
+
+### 6.0 バックエンド能力差
+
+| 機能 | Claude | Codex | Gemini | Qwen |
+|---|---|---|---|---|
+| 非対話モード | `claude -p` | `codex exec -` | `gemini` (stdin) | `qwen` (stdin) |
+| プロンプト渡し | stdin | stdin | stdin | stdin |
+| JSON Schema 強制 | `--json-schema` | なし | なし | なし |
+| 危険ツール無効化 | `--disallowedTools` | `-s read-only` (sandbox) | system prompt のみ | system prompt のみ |
+| セッション再開 | `--resume <sid>` | あり (`exec resume`) だが aish は未使用 | なし | なし |
+| 実装ファイル | `src/ai/claude.rs` | `src/ai/codex.rs` | `src/ai/gemini.rs` | `src/ai/qwen.rs` |
+
+JSON Schema 強制が無いバックエンドは system prompt で `{"message":..., "commands":[...]}` 単独出力を強く指示し、`extract_json` で抽出する。失敗時は出力全体を `message` として `commands: []` でフォールバック。
+
+session resume は Claude のみで利用。Codex/Gemini/Qwen は session resume 機構を使わず、各 backend 内部で
+直近 8 ターン分の (user_prompt, ai_message) を履歴として保持し、毎回プロンプトに含めて再送する。
+ターミナル差分 (ring buffer) と合わせることで、`mark_sent` 後でも multi-step ワークフローが文脈を保つ。
+
+#### 安全性の差
+
+- **Claude**: `--disallowedTools "Bash,Edit,Write,Read"` をフラグレベルでツール拒否。最も強力。
+- **Codex**: `-s read-only` で sandbox を read-only に固定するが、これは「実行された場合の影響範囲」を限定するだけで、
+  ツール呼び出し自体は禁止されない。モデルが reasoning 中に `ls` 等の read-only コマンドを発火させ、
+  aish の確認を経ずにローカル情報を観測する可能性がある (書き込みは sandbox で防がれる)。
+  完全なツール禁止は system prompt の指示に依存する。
+- **Gemini / Qwen**: フラグレベルの制約は無く、system prompt の「ツール禁止」指示のみ。
+- 最大限の安全性が必要な場合は `--aish-ai claude` を使うこと。
 
 ### 6.1 起動
 - aish起動時に選択されたバックエンドのバイナリ (`claude`/`codex`/`gemini`/`qwen`) を `--version` で確認し、失敗なら「Please install ...」を表示して終了。Claude の場合のみインストールコマンドも併せて表示。
@@ -359,7 +383,7 @@ TOML形式。未指定フィールドはデフォルト値。
 #### `[ai.codex]` / `[ai.gemini]` / `[ai.qwen]`
 | キー | 既定値 | 説明 |
 |---|---|---|
-| `extra_args` | `[]` | 各 CLI への追加引数。Phase I では未使用（バックエンド未実装） |
+| `extra_args` | `[]` | 各 CLI への追加引数 (例: `["-m", "gpt-5.5"]`)。aish ビルトイン引数の後ろに追記される |
 
 トップレベル `system_prompt` / `language` は後方互換のため残す。`[ai]` セクションが省略されたり
 そのフィールドが空文字なら、トップレベルの値が `[ai]` 側にコピーされる。

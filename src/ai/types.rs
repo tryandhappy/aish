@@ -56,7 +56,6 @@ impl BackendKind {
 #[derive(Debug)]
 pub enum AiError {
     Cancelled,
-    NotInstalled { kind: BackendKind, hint: String },
     Spawn(std::io::Error),
     NonZeroExit { stderr: String },
     EmptyOutput { stderr: String },
@@ -69,9 +68,6 @@ impl fmt::Display for AiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AiError::Cancelled => write!(f, "Cancelled"),
-            AiError::NotInstalled { kind, hint } => {
-                write!(f, "{} backend not available: {}", kind.as_str(), hint)
-            }
             AiError::Spawn(e) => write!(f, "failed to spawn AI CLI: {e}"),
             AiError::NonZeroExit { stderr } => write!(f, "AI CLI failed: {stderr}"),
             AiError::EmptyOutput { stderr } => {
