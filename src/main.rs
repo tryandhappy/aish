@@ -43,29 +43,56 @@ fn parse_args() -> CliAction {
     let mut ssh_args = Vec::new();
     let mut i = 0;
 
+    /// `--name VAL` (空白区切り) と `--name=VAL` (= 区切り) の両形式から値を取り出す。
+    /// 戻り値: (value, advance) — value は取り出した値、advance は i を進める量 (1 または 2)。
+    /// 値が無い (引数末尾 / `--name=` で空文字) 場合 None。
+    fn take_value<'a>(args: &'a [String], i: usize, name: &str) -> Option<(&'a str, usize)> {
+        let arg = args[i].as_str();
+        if arg == name {
+            args.get(i + 1).map(|v| (v.as_str(), 2))
+        } else if let Some(rest) = arg.strip_prefix(name).and_then(|r| r.strip_prefix('=')) {
+            if rest.is_empty() {
+                None
+            } else {
+                Some((rest, 1))
+            }
+        } else {
+            None
+        }
+    }
+
     while i < args.len() {
-        if args[i] == "--aish-config" {
-            if i + 1 < args.len() {
-                config_path = Some(args[i + 1].clone());
-                i += 2;
-                continue;
-            } else {
-                eprintln!("Error: --aish-config requires a value");
-                std::process::exit(1);
+        let arg = args[i].as_str();
+        // --aish-config <path> / --aish-config=<path>
+        if arg == "--aish-config" || arg.starts_with("--aish-config=") {
+            match take_value(&args, i, "--aish-config") {
+                Some((v, adv)) => {
+                    config_path = Some(v.to_string());
+                    i += adv;
+                    continue;
+                }
+                None => {
+                    eprintln!("Error: --aish-config requires a value");
+                    std::process::exit(1);
+                }
             }
         }
-        if args[i] == "--aish-ai" {
-            if i + 1 < args.len() {
-                ai_backend = Some(args[i + 1].clone());
-                i += 2;
-                continue;
-            } else {
-                eprintln!("Error: --aish-ai requires a value (claude|codex|gemini|qwen)");
-                std::process::exit(1);
+        // --aish-ai <kind> / --aish-ai=<kind>
+        if arg == "--aish-ai" || arg.starts_with("--aish-ai=") {
+            match take_value(&args, i, "--aish-ai") {
+                Some((v, adv)) => {
+                    ai_backend = Some(v.to_string());
+                    i += adv;
+                    continue;
+                }
+                None => {
+                    eprintln!("Error: --aish-ai requires a value (claude|codex|gemini|qwen)");
+                    std::process::exit(1);
+                }
             }
         }
-        if args[i].starts_with("--aish-") {
-            eprintln!("Warning: Unknown aish option: {}", args[i]);
+        if arg.starts_with("--aish-") {
+            eprintln!("Warning: Unknown aish option: {arg}");
             i += 1;
             continue;
         }
