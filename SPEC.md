@@ -47,6 +47,7 @@ CLI SSH + AI (Claude Code) ツール。クライアント側のClaude Codeから
 |---|---|
 | `--version` / `-V` | バージョン表示して終了 |
 | `--update` | GitHub Releases から最新バイナリをダウンロードして自己更新 |
+| `--help` / `--aish-help` | ヘルプを表示して終了 |
 | `--aish-config <path>` | 設定ファイルのパスを指定（デフォルト `~/.aish/config.toml`）|
 | `--aish-ai <kind>` | AIバックエンドを選択（`claude`/`codex`/`gemini`/`qwen`、既定 `claude`）。設定ファイル `[ai].backend` を上書きする |
 | `--aish-*` (未知) | 警告を出して無視 |

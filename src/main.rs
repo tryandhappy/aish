@@ -23,6 +23,7 @@ enum CliAction {
     Run(AishArgs),
     Update,
     Version,
+    Help,
 }
 
 fn parse_args() -> CliAction {
@@ -32,6 +33,7 @@ fn parse_args() -> CliAction {
         match arg.as_str() {
             "--update" => return CliAction::Update,
             "--version" | "-V" => return CliAction::Version,
+            "--help" | "--aish-help" => return CliAction::Help,
             _ => {}
         }
     }
@@ -690,8 +692,54 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn print_help() {
+    let version = env!("CARGO_PKG_VERSION");
+    println!("\
+aish v{version} — CLI SSH + AI
+
+USAGE:
+    aish [AISH_OPTIONS] [SSH_ARGS...]   Remote: ssh user@host etc. (引数はそのまま ssh に渡す)
+    aish [AISH_OPTIONS]                 Local:  $SHELL を起動
+    aish --version | --update | --help
+
+AISH OPTIONS:
+    --aish-config <PATH>   設定ファイルパス (既定: ~/.aish/config.toml)
+    --aish-ai <KIND>       AI バックエンド: claude | codex | gemini | qwen (既定: claude)
+                           [ai].backend より優先される
+    --aish-help            このヘルプを表示 (--help と同じ)
+
+OTHER OPTIONS:
+    --version, -V          バージョン表示
+    --update               GitHub Releases から自己更新
+    --help                 このヘルプを表示
+
+KEYS (起動後):
+    Ctrl+/                 aish プロンプトを開く (AI に質問)
+    Y / Enter              提案コマンドを実行
+    n                      この提案をスキップ
+    a                      残りの提案をすべて自動承認
+    Ctrl+C                 提案キャンセル / コマンド中断
+
+EXAMPLES:
+    aish                                # ローカルシェルを Claude で
+    aish user@host                      # SSH 接続を Claude で
+    aish --aish-ai codex                # ローカルシェルを Codex で
+    aish --aish-ai gemini user@host     # SSH を Gemini で
+    aish --aish-config /path/to/config.toml --aish-ai codex
+
+CONFIG:
+    ~/.aish/config.toml に [ai] backend = \"codex\" 等で既定を変更可能。
+    詳細は config.toml.example および SPEC.md を参照。
+
+REPOSITORY:
+    https://github.com/tryandhappy/aish");
+}
+
 fn main() {
     match parse_args() {
+        CliAction::Help => {
+            print_help();
+        }
         CliAction::Version => {
             println!("aish {}", env!("CARGO_PKG_VERSION"));
         }
