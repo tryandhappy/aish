@@ -174,6 +174,38 @@ pub fn build_color_start(color: &str) -> String {
     format!("{color}\x1b[K")
 }
 
+/// バックエンド種別ごとのバナー色 (256-color)。未知名は orange (208) にフォールバック。
+fn backend_color_code(name: &str) -> u8 {
+    match name {
+        "claude" => 208,    // orange (aish 既定)
+        "codex" => 39,      // cyan-blue
+        "gemini" => 135,    // purple
+        "qwen" => 198,      // pink-magenta
+        _ => 208,
+    }
+}
+
+/// 起動時のバナーを表示する。
+/// 2 行のスリム ASCII アート (バックエンド色) + 続く status 行で
+/// バージョン・バックエンド名・(あれば) モデル名・キーヒントを表示する。
+pub fn print_startup_banner(backend_name: &str, model: Option<&str>, version: &str) {
+    let color = backend_color_code(backend_name);
+    let art_color = format!("\x1b[38;5;{color}m");
+    let backend_color = format!("\x1b[1;38;5;{color}m");
+    let dim = "\x1b[38;5;245m";
+    let model_color = "\x1b[38;5;250m";
+    let reset = "\x1b[0m";
+
+    println!("{art_color}  ▄▀█ █ █▀ █░█  {reset}");
+    print!("{art_color}  █▀█ █ ▄█ █▀█  {reset}");
+    print!("  {dim}v{version} · {reset}{backend_color}{backend_name}{reset}");
+    if let Some(m) = model {
+        print!(" {dim}·{reset} {model_color}{m}{reset}");
+    }
+    println!(" {dim}· Ctrl+/ for AI{reset}");
+    let _ = io::stdout().flush();
+}
+
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 pub struct Spinner {

@@ -110,6 +110,9 @@ fn default_log_path() -> String {
 pub struct DisplayConfig {
     #[serde(default = "default_shell_prefix_label")]
     pub shell_prefix_label: String,
+    /// 旧ステータスバー / 旧バナー用の色。現状はバナーがバックエンド色を使うため未参照。
+    /// 既存ユーザの設定ファイルが parse エラーにならないよう field は残す。
+    #[allow(dead_code)]
     #[serde(default = "default_header_color")]
     pub header_color: String,
     #[serde(default = "default_prompt_label")]

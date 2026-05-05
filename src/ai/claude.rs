@@ -1,5 +1,6 @@
 use super::common::{
-    build_system_prompt, check_stdin_cancel, expand_tilde, extract_json, shell_join, write_log,
+    build_system_prompt, check_stdin_cancel, expand_tilde, extract_json, extract_model_from_args,
+    shell_join, write_log,
 };
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
 use crate::config::{AiConfig, LogConfig};
@@ -54,6 +55,10 @@ impl AiBackend for ClaudeBackend {
 
     fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
+    }
+
+    fn model(&self) -> Option<String> {
+        extract_model_from_args(&self.extra_args)
     }
 
     fn send(&mut self, req: &AiRequest) -> Result<AiResponse, AiError> {

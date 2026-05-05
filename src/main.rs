@@ -266,12 +266,13 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // 起動バナー: 1 度だけ画面上部に表示する (status bar は廃止)
-    let header_color = ui::build_color_start(&config.display.header_color);
-    print!(
-        "{header_color}aish v{} | Ctrl+/ for AI\x1b[0m\n",
+    // backend ごとに色を変える 2 行 ASCII アート + バージョン・モデル・キーヒント。
+    let banner_model = ai_session.model();
+    ui::print_startup_banner(
+        kind.as_str(),
+        banner_model.as_deref(),
         env!("CARGO_PKG_VERSION"),
     );
-    io::stdout().flush().ok();
 
     let aish_label = format!(
         "{}{}\x1b[0m ",

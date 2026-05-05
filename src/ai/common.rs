@@ -222,6 +222,24 @@ pub(crate) fn trim_history(history: &mut Vec<(String, String)>, max_turns: usize
     }
 }
 
+/// `extra_args` から `-m <X>` / `--model <X>` / `-m=X` / `--model=X` を検出してモデル名を返す。
+/// CLI ごとの差異を気にせず単純に `-m` か `--model` を見るだけの軽量パーサ。
+pub(crate) fn extract_model_from_args(args: &[String]) -> Option<String> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "-m" || arg == "--model" {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix("--model=") {
+            return Some(rest.to_string());
+        }
+        if let Some(rest) = arg.strip_prefix("-m=") {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
 /// 子プロセスを spawn し stdin に prompt を流して stdout 全体を返す。
 /// Ctrl+C でキャンセル、stderr はログに記録。
 pub(crate) fn run_cli_capture_stdout(
@@ -395,5 +413,41 @@ mod tests {
     #[test]
     fn build_system_prompt_skips_when_empty_language() {
         assert_eq!(build_system_prompt("base.", ""), "base.");
+    }
+
+    #[test]
+    fn extract_model_short_separated() {
+        let args = vec!["-m".into(), "gpt-4".into()];
+        assert_eq!(extract_model_from_args(&args), Some("gpt-4".into()));
+    }
+
+    #[test]
+    fn extract_model_long_separated() {
+        let args = vec!["--model".into(), "claude-sonnet-4-6".into()];
+        assert_eq!(extract_model_from_args(&args), Some("claude-sonnet-4-6".into()));
+    }
+
+    #[test]
+    fn extract_model_short_eq() {
+        let args = vec!["-m=gpt-4".into()];
+        assert_eq!(extract_model_from_args(&args), Some("gpt-4".into()));
+    }
+
+    #[test]
+    fn extract_model_long_eq() {
+        let args = vec!["--model=gemini-2.5-pro".into()];
+        assert_eq!(extract_model_from_args(&args), Some("gemini-2.5-pro".into()));
+    }
+
+    #[test]
+    fn extract_model_absent() {
+        let args = vec!["-s".into(), "read-only".into()];
+        assert_eq!(extract_model_from_args(&args), None);
+    }
+
+    #[test]
+    fn extract_model_dangling_short_returns_none() {
+        let args = vec!["-m".into()];
+        assert_eq!(extract_model_from_args(&args), None);
     }
 }

@@ -1,6 +1,6 @@
 use super::common::{
-    build_full_prompt, build_proposal_system_prompt, expand_tilde, parse_ai_response_lossy,
-    run_cli_capture_stdout, trim_history,
+    build_full_prompt, build_proposal_system_prompt, expand_tilde, extract_model_from_args,
+    parse_ai_response_lossy, run_cli_capture_stdout, trim_history,
 };
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
 use crate::config::{AiConfig, LogConfig};
@@ -44,6 +44,10 @@ impl QwenBackend {
 impl AiBackend for QwenBackend {
     fn name(&self) -> &'static str {
         "qwen"
+    }
+
+    fn model(&self) -> Option<String> {
+        extract_model_from_args(&self.extra_args)
     }
 
     fn send(&mut self, req: &AiRequest) -> Result<AiResponse, AiError> {

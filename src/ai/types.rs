@@ -20,6 +20,12 @@ pub trait AiBackend: Send {
     fn session_id(&self) -> Option<&str> {
         None
     }
+    /// 設定から取得できるモデル名 (起動バナー表示用)。
+    /// CLI に問い合わせず `extra_args` 等のローカル情報から判定するので、
+    /// 取得できない backend は None を返す。
+    fn model(&self) -> Option<String> {
+        None
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
