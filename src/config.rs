@@ -12,10 +12,83 @@ pub struct Config {
     pub display: DisplayConfig,
     #[serde(default)]
     pub log: LogConfig,
+    #[serde(default)]
+    pub ai: AiConfig,
 }
 
 fn default_language() -> String {
     "Japanese".to_string()
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct AiConfig {
+    #[serde(default = "default_backend")]
+    pub backend: String,
+    /// 空なら Config.system_prompt にフォールバック (Config::load 内でマージ)
+    #[serde(default)]
+    pub system_prompt: String,
+    /// 空なら Config.language にフォールバック
+    #[serde(default)]
+    pub language: String,
+    #[serde(default)]
+    pub claude: ClaudeBackendConfig,
+    // 以下は Phase II 以降で実装するバックエンドのプレースホルダ。
+    // 設定ファイル側に書いてもパースエラーにせず受け入れる。
+    #[allow(dead_code)]
+    #[serde(default)]
+    pub codex: GenericBackendConfig,
+    #[allow(dead_code)]
+    #[serde(default)]
+    pub gemini: GenericBackendConfig,
+    #[allow(dead_code)]
+    #[serde(default)]
+    pub qwen: GenericBackendConfig,
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            backend: default_backend(),
+            system_prompt: String::new(),
+            language: String::new(),
+            claude: ClaudeBackendConfig::default(),
+            codex: GenericBackendConfig::default(),
+            gemini: GenericBackendConfig::default(),
+            qwen: GenericBackendConfig::default(),
+        }
+    }
+}
+
+fn default_backend() -> String {
+    "claude".to_string()
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ClaudeBackendConfig {
+    #[serde(default = "default_disallowed_tools")]
+    pub disallowed_tools: String,
+    #[serde(default)]
+    pub extra_args: Vec<String>,
+}
+
+impl Default for ClaudeBackendConfig {
+    fn default() -> Self {
+        Self {
+            disallowed_tools: default_disallowed_tools(),
+            extra_args: Vec::new(),
+        }
+    }
+}
+
+fn default_disallowed_tools() -> String {
+    "Bash,Edit,Write,Read".to_string()
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct GenericBackendConfig {
+    #[allow(dead_code)]
+    #[serde(default)]
+    pub extra_args: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -164,8 +237,11 @@ impl Config {
             }
         };
 
-        match toml::from_str(&content) {
-            Ok(config) => Ok(config),
+        match toml::from_str::<Config>(&content) {
+            Ok(mut config) => {
+                config.merge_ai_fallbacks();
+                Ok(config)
+            }
             Err(e) => {
                 if explicit {
                     Err(format!(
@@ -179,5 +255,77 @@ impl Config {
                 }
             }
         }
+    }
+
+    /// `[ai]` セクションが空のフィールドはトップレベル値で埋める。
+    /// 既存ユーザの `system_prompt` / `language` を `[ai]` 不在でも引き継ぐための後方互換処理。
+    fn merge_ai_fallbacks(&mut self) {
+        if self.ai.system_prompt.is_empty() {
+            self.ai.system_prompt = self.system_prompt.clone();
+        }
+        if self.ai.language.is_empty() {
+            self.ai.language = self.language.clone();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ai_fallback_picks_top_level_when_ai_section_missing() {
+        let toml_str = r#"
+system_prompt = "top-level prompt"
+language = "English"
+"#;
+        let mut config: Config = toml::from_str(toml_str).unwrap();
+        config.merge_ai_fallbacks();
+        assert_eq!(config.ai.system_prompt, "top-level prompt");
+        assert_eq!(config.ai.language, "English");
+        assert_eq!(config.ai.backend, "claude");
+    }
+
+    #[test]
+    fn ai_section_overrides_top_level() {
+        let toml_str = r#"
+system_prompt = "top-level prompt"
+language = "English"
+
+[ai]
+backend = "codex"
+system_prompt = "ai-section prompt"
+language = "French"
+"#;
+        let mut config: Config = toml::from_str(toml_str).unwrap();
+        config.merge_ai_fallbacks();
+        assert_eq!(config.ai.system_prompt, "ai-section prompt");
+        assert_eq!(config.ai.language, "French");
+        assert_eq!(config.ai.backend, "codex");
+    }
+
+    #[test]
+    fn ai_partial_override_falls_back_per_field() {
+        let toml_str = r#"
+system_prompt = "top-level prompt"
+language = "English"
+
+[ai]
+backend = "gemini"
+language = "Japanese"
+"#;
+        let mut config: Config = toml::from_str(toml_str).unwrap();
+        config.merge_ai_fallbacks();
+        // system_prompt was empty in [ai] so falls back
+        assert_eq!(config.ai.system_prompt, "top-level prompt");
+        assert_eq!(config.ai.language, "Japanese");
+        assert_eq!(config.ai.backend, "gemini");
+    }
+
+    #[test]
+    fn claude_disallowed_tools_default() {
+        let cfg = ClaudeBackendConfig::default();
+        assert_eq!(cfg.disallowed_tools, "Bash,Edit,Write,Read");
+        assert!(cfg.extra_args.is_empty());
     }
 }

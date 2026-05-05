@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 struct AishArgs {
     config_path: Option<String>,
+    ai_backend: Option<String>,
     ssh_args: Vec<String>,
 }
 
@@ -36,6 +37,7 @@ fn parse_args() -> CliAction {
     }
 
     let mut config_path = None;
+    let mut ai_backend = None;
     let mut ssh_args = Vec::new();
     let mut i = 0;
 
@@ -50,6 +52,16 @@ fn parse_args() -> CliAction {
                 std::process::exit(1);
             }
         }
+        if args[i] == "--aish-ai" {
+            if i + 1 < args.len() {
+                ai_backend = Some(args[i + 1].clone());
+                i += 2;
+                continue;
+            } else {
+                eprintln!("Error: --aish-ai requires a value (claude|codex|gemini|qwen)");
+                std::process::exit(1);
+            }
+        }
         if args[i].starts_with("--aish-") {
             eprintln!("Warning: Unknown aish option: {}", args[i]);
             i += 1;
@@ -61,6 +73,7 @@ fn parse_args() -> CliAction {
 
     CliAction::Run(AishArgs {
         config_path,
+        ai_backend,
         ssh_args,
     })
 }
@@ -160,13 +173,37 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
         libc::signal(libc::SIGWINCH, sigwinch_handler as *const () as libc::sighandler_t);
     }
 
-    if !ai::check_claude_installed() {
-        eprintln!("Please install Claude Code.");
-        eprintln!("curl -fsSL https://claude.ai/install.sh | bash");
-        std::process::exit(1);
+    let config = config::Config::load(args.config_path.as_deref())?;
+
+    // バックエンド種別の決定: --aish-ai > [ai].backend > "claude"
+    // どちらの経路でも未知の値はエラーで弾く（CLI と config の挙動を揃える）。
+    let kind = match args.ai_backend.as_deref() {
+        Some(s) => ai::BackendKind::parse(s).map_err(|e| format!("--aish-ai: {e}"))?,
+        None => ai::BackendKind::parse(&config.ai.backend)
+            .map_err(|e| format!("[ai].backend in config: {e}"))?,
+    };
+
+    if !ai::check_installed(kind) {
+        // 直接 exit すると main の restore_terminal_settings / cleanup_terminal_indicator が
+        // 走らず端末が raw モードで残るので、必ず Err で抜けて main 側のクリーンアップを通す。
+        return Err(match kind {
+            ai::BackendKind::Claude => {
+                "Please install Claude Code.\ncurl -fsSL https://claude.ai/install.sh | bash"
+                    .into()
+            }
+            other => format!(
+                "Backend `{}` is not installed or not on PATH.",
+                other.as_str()
+            )
+            .into(),
+        });
     }
 
-    let config = config::Config::load(args.config_path.as_deref())?;
+    // バックエンド初期化は PTY 起動より先に行う。
+    // 未実装バックエンド (codex/gemini/qwen) を選んだ場合、PTY や SSH を立ち上げる前に
+    // ここで NotInstalled エラーを返してプロセスを終了させる。
+    let mut ai_session: Box<dyn ai::AiBackend> = ai::create_backend(kind, &config.ai, &config.log)
+        .map_err(|e| format!("Failed to initialize AI backend: {e}"))?;
 
     let (term_rows, term_cols) = ui::terminal_size();
     let pty_rows = term_rows;
@@ -184,7 +221,6 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut ring_buffer = ring_buffer::RingBuffer::new();
-    let mut ai_session = ai::AiSession::new(&config.system_prompt, &config.language, &config.log);
 
     // PTY出力を読み取るスレッド
     let (pty_tx, pty_rx) = mpsc::channel::<Vec<u8>>();
@@ -382,7 +418,10 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 let context = ring_buffer.get_unsent();
                 let spinner = ui::Spinner::start(&config.display);
-                let mut ai_result = ai_session.send(&context, &prompt);
+                let mut ai_result = ai_session.send(&ai::AiRequest {
+                    terminal_context: &context,
+                    user_prompt: &prompt,
+                });
                 spinner.stop();
 
                 // AIとの対話ループ: コマンド実行→結果をAIに送信→分析→繰り返し
@@ -564,11 +603,14 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
                                     executed_summary.join(", ")
                                 )
                             };
-                            ai_result = ai_session.send(&follow_up_context, &follow_up_text);
+                            ai_result = ai_session.send(&ai::AiRequest {
+                                terminal_context: &follow_up_context,
+                                user_prompt: &follow_up_text,
+                            });
                             spinner.stop();
                         }
                         Err(e) => {
-                            if e.to_string() == ai::CANCELLED {
+                            if matches!(e, ai::AiError::Cancelled) {
                                 eprintln!("^C");
                             } else {
                                 eprintln!("AI error: {e}");
@@ -638,8 +680,11 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     // (main loop / 確認ループ内) でそれぞれ \x1b[r を送っているので、
     // 通常の終了経路ではここでリセットしなくても DECSTBM は default のはず。
 
-    if let Some(sid) = ai_session.session_id() {
-        eprintln!("\nResume this session with:\nclaude --resume {sid}");
+    // resume コマンドは Claude のものに固定形式。他バックエンドは形式が異なるため出さない。
+    if kind == ai::BackendKind::Claude {
+        if let Some(sid) = ai_session.session_id() {
+            eprintln!("\nResume this session with:\nclaude --resume {sid}");
+        }
     }
 
     Ok(())

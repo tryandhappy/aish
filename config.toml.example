@@ -37,3 +37,27 @@ term_cursor_color = "#ff8800"                                  # default: "#ff88
 [log]
 enabled = false                                                # default: false
 path = "~/.aish/logs/claude-code.log"                          # default: "~/.aish/logs/claude-code.log"
+
+# AI backend settings
+# `backend` selects which CLI to drive. `--aish-ai <kind>` (CLI flag) overrides this.
+# Phase I: only "claude" is implemented. Other kinds parse but exit at startup.
+# `system_prompt` / `language` here override the top-level values; if empty, the
+# top-level values above are used (backward compatibility).
+[ai]
+backend = "claude"                                             # default: "claude" — claude|codex|gemini|qwen
+system_prompt = ""                                             # default: "" — falls back to top-level system_prompt
+language = ""                                                  # default: "" — falls back to top-level language
+
+[ai.claude]
+disallowed_tools = "Bash,Edit,Write,Read"                      # default: "Bash,Edit,Write,Read"
+extra_args = []                                                # default: [] — extra args appended to `claude -p ...`
+
+# Placeholders for future backends. Setting these does not enable the backend yet.
+[ai.codex]
+extra_args = []
+
+[ai.gemini]
+extra_args = []
+
+[ai.qwen]
+extra_args = []

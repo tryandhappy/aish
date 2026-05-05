@@ -48,6 +48,7 @@ CLI SSH + AI (Claude Code) ツール。クライアント側のClaude Codeから
 | `--version` / `-V` | バージョン表示して終了 |
 | `--update` | GitHub Releases から最新バイナリをダウンロードして自己更新 |
 | `--aish-config <path>` | 設定ファイルのパスを指定（デフォルト `~/.aish/config.toml`）|
+| `--aish-ai <kind>` | AIバックエンドを選択（`claude`/`codex`/`gemini`/`qwen`、既定 `claude`）。設定ファイル `[ai].backend` を上書きする |
 | `--aish-*` (未知) | 警告を出して無視 |
 | それ以外 | SSH引数としてそのまま `ssh` に渡す |
 
@@ -149,8 +150,15 @@ Enter / Ctrl+C / 文字入力などいずれの場合も `passthrough_read_raw` 
 
 ## 6. AI連携（Claude Code CLI）
 
+aish は trait `AiBackend` を介して複数の AI CLI に対応する設計。Phase I では Claude Code のみ実装され、
+Codex/Gemini/Qwen は `--aish-ai` フラグや `[ai].backend` での kind 指定は受け付けるが、起動時に
+未対応である旨を表示して終了する。各バックエンドは JSON で `{message, commands[]}` 相当を返し、
+aish は提案ベースで動作する。CLI 非依存の原則 (透明性・サーバ無書き込み) は trait 実装側で守る責任を負う。
+
+選択優先順位: `--aish-ai` (CLI) > `[ai].backend` (設定) > `claude` (既定)。
+
 ### 6.1 起動
-- aish起動時に `claude --version` を実行し、失敗なら「Please install Claude Code」を表示して終了。
+- aish起動時に選択されたバックエンドのバイナリ (`claude`/`codex`/`gemini`/`qwen`) を `--version` で確認し、失敗なら「Please install ...」を表示して終了。Claude の場合のみインストールコマンドも併せて表示。
 
 ### 6.2 初回リクエスト
 ```
@@ -334,6 +342,27 @@ TOML形式。未指定フィールドはデフォルト値。
 |---|---|---|
 | `enabled` | `false` | ログ出力有効化 |
 | `path` | `~/.aish/logs/claude-code.log` | ログファイルパス（`~/` はホーム展開） |
+
+### 11.4 `[ai]`
+| キー | 既定値 | 説明 |
+|---|---|---|
+| `backend` | `"claude"` | 使用する AI CLI (`claude`/`codex`/`gemini`/`qwen`)。`--aish-ai` で上書き可能 |
+| `system_prompt` | `""` | 空ならトップレベル `system_prompt` にフォールバック |
+| `language` | `""` | 空ならトップレベル `language` にフォールバック |
+
+#### `[ai.claude]`
+| キー | 既定値 | 説明 |
+|---|---|---|
+| `disallowed_tools` | `"Bash,Edit,Write,Read"` | claude CLI に渡す `--disallowedTools` の値 |
+| `extra_args` | `[]` | claude CLI に追加で渡す引数（先頭からの位置はビルトイン引数の後ろ） |
+
+#### `[ai.codex]` / `[ai.gemini]` / `[ai.qwen]`
+| キー | 既定値 | 説明 |
+|---|---|---|
+| `extra_args` | `[]` | 各 CLI への追加引数。Phase I では未使用（バックエンド未実装） |
+
+トップレベル `system_prompt` / `language` は後方互換のため残す。`[ai]` セクションが省略されたり
+そのフィールドが空文字なら、トップレベルの値が `[ai]` 側にコピーされる。
 
 ---
 
