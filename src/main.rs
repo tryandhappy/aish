@@ -341,8 +341,12 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
             input_idle = false;
         }
 
-        // PTYプロセスの終了チェック
-        if alive_rx.try_recv().is_ok() {
+        // PTYプロセスの終了チェック。
+        // EOF 検出 (alive_rx) だけだと、子プロセスが exit しても master read が
+        // EOF を返さないケース (リモート再起動による ssh 切断等) で
+        // pty_reader スレッドが read() でブロックしたままになり詰まる。
+        // child.try_wait() による能動検出も併用する。
+        if alive_rx.try_recv().is_ok() || !pty.is_alive() {
             // 残りのPTY出力（logoutメッセージ等）を表示してから終了する
             thread::sleep(Duration::from_millis(50));
             while let Ok(data) = pty_rx.try_recv() {
