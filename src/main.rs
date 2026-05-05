@@ -761,6 +761,29 @@ CONFIG:
 
 REPOSITORY:
     https://github.com/tryandhappy/aish");
+
+    // 末尾に ssh --help (= ssh 自身の usage) を追記。SSH_ARGS にどんな引数が
+    // 渡せるかをそのまま見せる。ssh が PATH に無い・出力が空ならスキップ。
+    println!();
+    println!("SSH ARGUMENTS (`ssh --help`):");
+    match std::process::Command::new("ssh").arg("--help").output() {
+        Ok(out) => {
+            let mut combined = out.stdout;
+            combined.extend_from_slice(&out.stderr);
+            let text = String::from_utf8_lossy(&combined);
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                println!("    (ssh が出力を返しませんでした)");
+            } else {
+                for line in trimmed.lines() {
+                    println!("    {line}");
+                }
+            }
+        }
+        Err(_) => {
+            println!("    (ssh コマンドが PATH に見つかりません)");
+        }
+    }
 }
 
 fn main() {
