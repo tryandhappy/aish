@@ -1,6 +1,7 @@
 use super::common::{
     build_full_prompt, build_proposal_system_prompt, expand_tilde, extract_model_from_args,
-    parse_ai_response_lossy, run_cli_capture_stdout, trim_history, unique_tmp_path, write_log,
+    override_model_in_args, parse_ai_response_lossy, run_cli_capture_stdout, trim_history,
+    unique_tmp_path, write_log,
 };
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
 use crate::config::{AiConfig, LogConfig};
@@ -57,10 +58,11 @@ impl CodexBackend {
             None
         };
         let system_prompt = build_proposal_system_prompt(&cfg.system_prompt, &cfg.language);
+        let override_model = (!cfg.model.is_empty()).then_some(cfg.model.as_str());
         Self {
             system_prompt,
             log_path,
-            extra_args: cfg.codex.extra_args.clone(),
+            extra_args: override_model_in_args(&cfg.codex.extra_args, override_model),
             history: Vec::new(),
         }
     }

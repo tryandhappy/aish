@@ -1,6 +1,6 @@
 use super::common::{
     build_system_prompt, check_stdin_cancel, expand_tilde, extract_json, extract_model_from_args,
-    shell_join, write_log,
+    override_model_in_args, shell_join, write_log,
 };
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
 use crate::config::{AiConfig, LogConfig};
@@ -38,11 +38,12 @@ impl ClaudeBackend {
             None
         };
         let system_prompt = build_system_prompt(&cfg.system_prompt, &cfg.language);
+        let override_model = (!cfg.model.is_empty()).then_some(cfg.model.as_str());
         Self {
             session_id: None,
             system_prompt,
             disallowed_tools: cfg.claude.disallowed_tools.clone(),
-            extra_args: cfg.claude.extra_args.clone(),
+            extra_args: override_model_in_args(&cfg.claude.extra_args, override_model),
             log_path,
         }
     }

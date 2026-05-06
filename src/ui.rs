@@ -174,9 +174,6 @@ pub fn build_color_start(color: &str) -> String {
     format!("{color}\x1b[K")
 }
 
-/// aish ロゴ色 (256-color)。aish のブランドカラー固定でオレンジ。
-const LOGO_COLOR: u8 = 208;
-
 /// AI バックエンド種別ごとの識別色 (256-color)。未知名は orange にフォールバック。
 fn backend_color_code(name: &str) -> u8 {
     match name {
@@ -189,23 +186,27 @@ fn backend_color_code(name: &str) -> u8 {
 }
 
 /// 起動時のバナーを表示する。
-/// ロゴ (aish ASCII アート) は常にオレンジ。続く status 行で
-/// バージョン + バックエンド名 (バックエンド別色) + (あれば) モデル名 + キーヒントを表示。
+/// ロゴ (aish ASCII アート) は Sunset 配色 (黄→橙→赤橙→マゼンタ) の truecolor。
+/// 続く status 行でバージョン + バックエンド名 (バックエンド別色) + (あれば) モデル名 + キーヒント。
 pub fn print_startup_banner(backend_name: &str, model: Option<&str>, version: &str) {
-    let logo_color = format!("\x1b[38;5;{LOGO_COLOR}m");
+    // Sunset gradient: A=yellow-orange / I=orange / S=red-orange / H=magenta
+    let c_a = "\x1b[38;2;255;200;40m";
+    let c_i = "\x1b[38;2;255;140;0m";
+    let c_s = "\x1b[38;2;255;80;40m";
+    let c_h = "\x1b[38;2;220;40;100m";
     let backend_col = backend_color_code(backend_name);
     let backend_color = format!("\x1b[1;38;5;{backend_col}m");
     let dim = "\x1b[38;5;245m";
     let model_color = "\x1b[38;5;250m";
     let reset = "\x1b[0m";
 
-    println!("{logo_color}  ▄▀█ █ █▀ █░█  {reset}");
-    print!("{logo_color}  █▀█ █ ▄█ █▀█  {reset}");
+    println!("  {c_a}▄▀█{reset} {c_i}█{reset} {c_s}█▀{reset} {c_h}█░█{reset}  ");
+    print!("  {c_a}█▀█{reset} {c_i}█{reset} {c_s}▄█{reset} {c_h}█▀█{reset}  ");
     print!("  {dim}v{version} · {reset}{backend_color}{backend_name}{reset}");
     if let Some(m) = model {
         print!(" {dim}·{reset} {model_color}{m}{reset}");
     }
-    println!(" {dim}· Ctrl+/ for AI{reset}");
+    println!(" {dim}· (Ctrl+/){reset}");
     let _ = io::stdout().flush();
 }
 

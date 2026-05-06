@@ -39,12 +39,15 @@ enabled = false                                                # default: false
 path = "~/.aish/logs/claude-code.log"                          # default: "~/.aish/logs/claude-code.log"
 
 # AI backend settings
-# `backend` selects which CLI to drive. `--aish-ai <kind>` (CLI flag) overrides this.
+# `backend` selects which CLI to drive. `--ai <kind>` (CLI flag) overrides this.
 # Supported: claude (Claude Code), codex (OpenAI Codex CLI), gemini (Google Gemini CLI), qwen (Alibaba Qwen Code).
 # `system_prompt` / `language` here override the top-level values; if empty, the
 # top-level values above are used (backward compatibility).
 [ai]
 backend = "claude"                                             # default: "claude" — claude|codex|gemini|qwen
+model = ""                                                     # default: "" — モデル名 (例: "sonnet", "gpt-5", "gemini-2.5-pro")
+                                                               # `--model <NAME>` (CLI) > [ai].model > extra_args の -m 指定 の順で優先
+                                                               # 空のときはバックエンド CLI 既定のモデルが使われる
 system_prompt = ""                                             # default: "" — falls back to top-level system_prompt
 language = ""                                                  # default: "" — falls back to top-level language
 

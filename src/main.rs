@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 struct AishArgs {
     config_path: Option<String>,
     ai_backend: Option<String>,
+    ai_model: Option<String>,
     ssh_args: Vec<String>,
 }
 
@@ -33,13 +34,14 @@ fn parse_args() -> CliAction {
         match arg.as_str() {
             "--update" => return CliAction::Update,
             "--version" | "-V" => return CliAction::Version,
-            "--help" | "--aish-help" => return CliAction::Help,
+            "--help" => return CliAction::Help,
             _ => {}
         }
     }
 
     let mut config_path = None;
     let mut ai_backend = None;
+    let mut ai_model = None;
     let mut ssh_args = Vec::new();
     let mut i = 0;
 
@@ -63,38 +65,47 @@ fn parse_args() -> CliAction {
 
     while i < args.len() {
         let arg = args[i].as_str();
-        // --aish-config <path> / --aish-config=<path>
-        if arg == "--aish-config" || arg.starts_with("--aish-config=") {
-            match take_value(&args, i, "--aish-config") {
+        // --config <path> / --config=<path>
+        if arg == "--config" || arg.starts_with("--config=") {
+            match take_value(&args, i, "--config") {
                 Some((v, adv)) => {
                     config_path = Some(v.to_string());
                     i += adv;
                     continue;
                 }
                 None => {
-                    eprintln!("Error: --aish-config requires a value");
+                    eprintln!("Error: --config requires a value");
                     std::process::exit(1);
                 }
             }
         }
-        // --aish-ai <kind> / --aish-ai=<kind>
-        if arg == "--aish-ai" || arg.starts_with("--aish-ai=") {
-            match take_value(&args, i, "--aish-ai") {
+        // --ai <kind> / --ai=<kind>
+        if arg == "--ai" || arg.starts_with("--ai=") {
+            match take_value(&args, i, "--ai") {
                 Some((v, adv)) => {
                     ai_backend = Some(v.to_string());
                     i += adv;
                     continue;
                 }
                 None => {
-                    eprintln!("Error: --aish-ai requires a value (claude|codex|gemini|qwen)");
+                    eprintln!("Error: --ai requires a value (claude|codex|gemini|qwen)");
                     std::process::exit(1);
                 }
             }
         }
-        if arg.starts_with("--aish-") {
-            eprintln!("Warning: Unknown aish option: {arg}");
-            i += 1;
-            continue;
+        // --model <name> / --model=<name>
+        if arg == "--model" || arg.starts_with("--model=") {
+            match take_value(&args, i, "--model") {
+                Some((v, adv)) => {
+                    ai_model = Some(v.to_string());
+                    i += adv;
+                    continue;
+                }
+                None => {
+                    eprintln!("Error: --model requires a value");
+                    std::process::exit(1);
+                }
+            }
         }
         ssh_args.push(args[i].clone());
         i += 1;
@@ -103,6 +114,7 @@ fn parse_args() -> CliAction {
     CliAction::Run(AishArgs {
         config_path,
         ai_backend,
+        ai_model,
         ssh_args,
     })
 }
@@ -202,12 +214,18 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
         libc::signal(libc::SIGWINCH, sigwinch_handler as *const () as libc::sighandler_t);
     }
 
-    let config = config::Config::load(args.config_path.as_deref())?;
+    let mut config = config::Config::load(args.config_path.as_deref())?;
 
-    // バックエンド種別の決定: --aish-ai > [ai].backend > "claude"
+    // モデル名の決定: --model > [ai].model > 既存 extra_args の -m
+    // CLI 指定があれば config.ai.model を上書きし、各 backend の new() で extra_args に注入される。
+    if let Some(m) = args.ai_model.as_deref() {
+        config.ai.model = m.to_string();
+    }
+
+    // バックエンド種別の決定: --ai > [ai].backend > "claude"
     // どちらの経路でも未知の値はエラーで弾く（CLI と config の挙動を揃える）。
     let kind = match args.ai_backend.as_deref() {
-        Some(s) => ai::BackendKind::parse(s).map_err(|e| format!("--aish-ai: {e}"))?,
+        Some(s) => ai::BackendKind::parse(s).map_err(|e| format!("--ai: {e}"))?,
         None => ai::BackendKind::parse(&config.ai.backend)
             .map_err(|e| format!("[ai].backend in config: {e}"))?,
     };
@@ -294,6 +312,7 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     // 起動バナー: 1 度だけ画面上部に表示する (status bar は廃止)
     // backend ごとに色を変える 2 行 ASCII アート + バージョン・モデル・キーヒント。
+    // model 未指定時はモデル欄を省略する。
     let banner_model = ai_session.model();
     ui::print_startup_banner(
         kind.as_str(),
@@ -731,10 +750,11 @@ USAGE:
     aish --version | --update | --help
 
 AISH OPTIONS:
-    --aish-config <PATH>   設定ファイルパス (既定: ~/.aish/config.toml)
-    --aish-ai <KIND>       AI バックエンド: claude | codex | gemini | qwen (既定: claude)
+    --config <PATH>        設定ファイルパス (既定: ~/.aish/config.toml)
+    --ai <KIND>            AI バックエンド: claude | codex | gemini | qwen (既定: claude)
                            [ai].backend より優先される
-    --aish-help            このヘルプを表示 (--help と同じ)
+    --model <NAME>         使用モデル名 (例: sonnet, gpt-5, gemini-2.5-pro)
+                           [ai].model および extra_args の -m 指定より優先される
 
 OTHER OPTIONS:
     --version, -V          バージョン表示
@@ -751,9 +771,11 @@ KEYS (起動後):
 EXAMPLES:
     aish                                # ローカルシェルを Claude で
     aish user@host                      # SSH 接続を Claude で
-    aish --aish-ai codex                # ローカルシェルを Codex で
-    aish --aish-ai gemini user@host     # SSH を Gemini で
-    aish --aish-config /path/to/config.toml --aish-ai codex
+    aish --ai codex                     # ローカルシェルを Codex で
+    aish --ai gemini user@host          # SSH を Gemini で
+    aish --model sonnet                 # Claude を sonnet モデルで起動
+    aish --ai codex --model gpt-5
+    aish --config /path/to/config.toml --ai codex
 
 CONFIG:
     ~/.aish/config.toml に [ai] backend = \"codex\" 等で既定を変更可能。

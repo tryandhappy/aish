@@ -47,10 +47,10 @@ CLI SSH + AI (Claude Code) ツール。クライアント側のClaude Codeから
 |---|---|
 | `--version` / `-V` | バージョン表示して終了 |
 | `--update` | GitHub Releases から最新バイナリをダウンロードして自己更新 |
-| `--help` / `--aish-help` | ヘルプを表示して終了 |
-| `--aish-config <path>` | 設定ファイルのパスを指定（デフォルト `~/.aish/config.toml`）|
-| `--aish-ai <kind>` | AIバックエンドを選択（`claude`/`codex`/`gemini`/`qwen`、既定 `claude`）。設定ファイル `[ai].backend` を上書きする |
-| `--aish-*` (未知) | 警告を出して無視 |
+| `--help` | ヘルプを表示して終了 |
+| `--config <path>` | 設定ファイルのパスを指定（デフォルト `~/.aish/config.toml`）|
+| `--ai <kind>` | AIバックエンドを選択（`claude`/`codex`/`gemini`/`qwen`、既定 `claude`）。設定ファイル `[ai].backend` を上書きする |
+| `--model <name>` | 使用モデル名を指定（例: `sonnet`, `gpt-5`, `gemini-2.5-pro`）。`[ai].model` および各バックエンドの `extra_args` の `-m` より優先 |
 | それ以外 | SSH引数としてそのまま `ssh` に渡す |
 
 ---
@@ -153,7 +153,7 @@ Enter / Ctrl+C / 文字入力などいずれの場合も `passthrough_read_raw` 
 
 aish は trait `AiBackend` を介して 4 種類の AI CLI に対応する: **Claude Code / OpenAI Codex CLI / Google Gemini CLI / Alibaba Qwen Code**。各バックエンドは JSON で `{message, commands[]}` 相当を返し、aish は提案ベースで動作する。CLI 非依存の原則 (透明性・サーバ無書き込み) は trait 実装側で守る責任を負う。
 
-選択優先順位: `--aish-ai` (CLI) > `[ai].backend` (設定) > `claude` (既定)。
+選択優先順位: `--ai` (CLI) > `[ai].backend` (設定) > `claude` (既定)。
 
 ### 6.0 バックエンド能力差
 
@@ -182,7 +182,7 @@ session resume は Claude のみで利用。Codex/Gemini/Qwen は session resume
   `tool_call_mcp_elicitation`)。さらに defense-in-depth として `-s read-only` sandbox を併用。
   この設定で codex は提案 JSON だけを返す純粋な LLM として動作する。
 - **Gemini / Qwen**: フラグレベルの制約は無く、system prompt の「ツール禁止」指示のみ。
-- 最大限の安全性が必要な場合は `--aish-ai claude` を使うこと。
+- 最大限の安全性が必要な場合は `--ai claude` を使うこと。
 
 ### 6.1 起動
 - aish起動時に選択されたバックエンドのバイナリ (`claude`/`codex`/`gemini`/`qwen`) を `--version` で確認し、失敗なら「Please install ...」を表示して終了。Claude の場合のみインストールコマンドも併せて表示。
@@ -373,7 +373,8 @@ TOML形式。未指定フィールドはデフォルト値。
 ### 11.4 `[ai]`
 | キー | 既定値 | 説明 |
 |---|---|---|
-| `backend` | `"claude"` | 使用する AI CLI (`claude`/`codex`/`gemini`/`qwen`)。`--aish-ai` で上書き可能 |
+| `backend` | `"claude"` | 使用する AI CLI (`claude`/`codex`/`gemini`/`qwen`)。`--ai` で上書き可能 |
+| `model` | `""` | モデル名（例: `sonnet`, `gpt-5`）。空ならバックエンド CLI 既定。`--model` で上書き可能 |
 | `system_prompt` | `""` | 空ならトップレベル `system_prompt` にフォールバック |
 | `language` | `""` | 空ならトップレベル `language` にフォールバック |
 
@@ -418,7 +419,7 @@ CIワークフロー（`.github/workflows/release.yml`）側で `sha256sum aish-
 | claude 未インストール | 起動時エラー表示＋`exit 1` |
 | 設定ファイルパースエラー（デフォルトパス） | 警告を出して `Config::default()` で続行 |
 | 設定ファイル読み込みエラー（デフォルトパス） | 同上 |
-| 設定ファイルパース／読み込みエラー（`--aish-config` 明示） | エラー終了（`exit 1`） |
+| 設定ファイルパース／読み込みエラー（`--config` 明示） | エラー終了（`exit 1`） |
 | `--update` SHA256 検証失敗 | 一時ファイルを削除してエラー終了 |
 | `--update` `.sha256` 取得失敗 | fail-closed でエラー終了 |
 | claude 実行失敗 (非ゼロ終了) | `AI error: ...` 表示してループ継続 |

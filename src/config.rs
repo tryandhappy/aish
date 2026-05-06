@@ -24,6 +24,10 @@ fn default_language() -> String {
 pub struct AiConfig {
     #[serde(default = "default_backend")]
     pub backend: String,
+    /// 全バックエンド共通のモデル名。空なら指定なし。`--model` が優先。
+    /// 解決後は選択されたバックエンドの extra_args に `--model <name>` を注入する。
+    #[serde(default)]
+    pub model: String,
     /// 空なら Config.system_prompt にフォールバック (Config::load 内でマージ)
     #[serde(default)]
     pub system_prompt: String,
@@ -44,6 +48,7 @@ impl Default for AiConfig {
     fn default() -> Self {
         Self {
             backend: default_backend(),
+            model: String::new(),
             system_prompt: String::new(),
             language: String::new(),
             claude: ClaudeBackendConfig::default(),
@@ -198,7 +203,7 @@ fn default_term_cursor_color() -> String {
 
 impl Config {
     /// 設定をロードする。
-    /// `config_path` が `Some` (ユーザが `--aish-config` で明示) の場合、
+    /// `config_path` が `Some` (ユーザが `--config` で明示) の場合、
     /// ファイル不在・読み取り失敗・パース失敗はエラーとして返す。
     /// `None` (デフォルトパス) の場合は読み取り/パース失敗時に警告を出して既定値で続行する。
     pub fn load(config_path: Option<&str>) -> Result<Self, String> {

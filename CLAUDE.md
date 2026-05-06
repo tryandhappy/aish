@@ -36,5 +36,5 @@ aish は SSH でサーバを管理する道具なので、**ユーザが画面�
 - **AI 提案コマンドの完了判定は `PromptSniffer` による passive 検出**。コマンドはユーザ承認文字列をそのまま PTY に送り、PTY 出力末尾がプロンプト形 (`[$#>%➜❯»][空白]+`) になり 200ms 静音したら完了。
 
 ## 設定ファイル
-- `~/.aish/config.toml` (TOML)。`--aish-config <path>` で変更可能。
+- `~/.aish/config.toml` (TOML)。`--config <path>` で変更可能。
 - `config.toml.example` にサンプルあり。
