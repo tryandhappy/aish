@@ -1,7 +1,6 @@
 use super::common::{
-    build_full_prompt, build_proposal_system_prompt, expand_tilde, extract_model_from_args,
-    override_model_in_args, parse_ai_response_lossy, run_cli_capture_stdout, trim_history,
-    unique_tmp_path, write_log,
+    build_full_prompt, build_system_prompt, expand_tilde, extract_model_from_args,
+    parse_ai_response_lossy, run_cli_capture_stdout, trim_history, unique_tmp_path, write_log,
 };
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
 use crate::config::{AiConfig, LogConfig};
@@ -46,7 +45,11 @@ const DISABLE_TOOL_FEATURES: &[&str] = &[
 pub struct CodexBackend {
     system_prompt: String,
     log_path: Option<String>,
-    extra_args: Vec<String>,
+    base_extra_args: Vec<String>,
+    /// runtime モデル指定 (`/model`)。`Some` のとき send() 時に `--model <m>` を追加。
+    model: Option<String>,
+    /// runtime effort 指定 (`/effort`)。`Some` のとき send() 時に `-c model_reasoning_effort=<e>` を追加。
+    effort: Option<String>,
     history: Vec<(String, String)>,
 }
 
@@ -57,12 +60,13 @@ impl CodexBackend {
         } else {
             None
         };
-        let system_prompt = build_proposal_system_prompt(&cfg.system_prompt, &cfg.language);
-        let override_model = (!cfg.model.is_empty()).then_some(cfg.model.as_str());
+        let system_prompt = build_system_prompt(&cfg.system_prompt, &cfg.language);
         Self {
             system_prompt,
             log_path,
-            extra_args: override_model_in_args(&cfg.codex.extra_args, override_model),
+            base_extra_args: cfg.codex.extra_args.clone(),
+            model: (!cfg.model.is_empty()).then(|| cfg.model.clone()),
+            effort: (!cfg.effort.is_empty()).then(|| cfg.effort.clone()),
             history: Vec::new(),
         }
     }
@@ -74,7 +78,25 @@ impl AiBackend for CodexBackend {
     }
 
     fn model(&self) -> Option<String> {
-        extract_model_from_args(&self.extra_args)
+        self.model
+            .clone()
+            .or_else(|| extract_model_from_args(&self.base_extra_args))
+    }
+
+    fn effort(&self) -> Option<String> {
+        self.effort.clone()
+    }
+
+    fn set_model(&mut self, model: Option<&str>) {
+        self.model = model.map(str::to_string);
+    }
+
+    fn set_effort(&mut self, effort: Option<&str>) {
+        self.effort = effort.map(str::to_string);
+    }
+
+    fn clear_history(&mut self) {
+        self.history.clear();
     }
 
     fn send(&mut self, req: &AiRequest) -> Result<AiResponse, AiError> {
@@ -102,7 +124,15 @@ impl AiBackend for CodexBackend {
             last_msg_path.clone(),
             "-".to_string(),
         ]);
-        args.extend(self.extra_args.iter().cloned());
+        args.extend(self.base_extra_args.iter().cloned());
+        if let Some(m) = &self.model {
+            args.push("--model".to_string());
+            args.push(m.clone());
+        }
+        if let Some(e) = &self.effort {
+            args.push("-c".to_string());
+            args.push(format!("model_reasoning_effort={e}"));
+        }
 
         let stdout_result = run_cli_capture_stdout("codex", &args, &prompt, &self.log_path);
 

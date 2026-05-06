@@ -28,6 +28,11 @@ pub struct AiConfig {
     /// 解決後は選択されたバックエンドの extra_args に `--model <name>` を注入する。
     #[serde(default)]
     pub model: String,
+    /// reasoning effort レベル。空なら指定なし。`--effort` が優先。
+    /// claude → `--effort <level>`、codex → `-c model_reasoning_effort=<level>` に変換。
+    /// gemini / qwen は該当 CLI フラグが無いので無視される。
+    #[serde(default)]
+    pub effort: String,
     /// 空なら Config.system_prompt にフォールバック (Config::load 内でマージ)
     #[serde(default)]
     pub system_prompt: String,
@@ -49,6 +54,7 @@ impl Default for AiConfig {
         Self {
             backend: default_backend(),
             model: String::new(),
+            effort: String::new(),
             system_prompt: String::new(),
             language: String::new(),
             claude: ClaudeBackendConfig::default(),

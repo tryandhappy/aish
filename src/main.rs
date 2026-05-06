@@ -17,6 +17,7 @@ struct AishArgs {
     config_path: Option<String>,
     ai_backend: Option<String>,
     ai_model: Option<String>,
+    ai_effort: Option<String>,
     ssh_args: Vec<String>,
 }
 
@@ -42,6 +43,7 @@ fn parse_args() -> CliAction {
     let mut config_path = None;
     let mut ai_backend = None;
     let mut ai_model = None;
+    let mut ai_effort = None;
     let mut ssh_args = Vec::new();
     let mut i = 0;
 
@@ -107,6 +109,20 @@ fn parse_args() -> CliAction {
                 }
             }
         }
+        // --effort <level> / --effort=<level>
+        if arg == "--effort" || arg.starts_with("--effort=") {
+            match take_value(&args, i, "--effort") {
+                Some((v, adv)) => {
+                    ai_effort = Some(v.to_string());
+                    i += adv;
+                    continue;
+                }
+                None => {
+                    eprintln!("Error: --effort requires a value (low|medium|high など)");
+                    std::process::exit(1);
+                }
+            }
+        }
         ssh_args.push(args[i].clone());
         i += 1;
     }
@@ -115,6 +131,7 @@ fn parse_args() -> CliAction {
         config_path,
         ai_backend,
         ai_model,
+        ai_effort,
         ssh_args,
     })
 }
@@ -206,6 +223,79 @@ fn contains_tui_signature(data: &[u8]) -> bool {
     false
 }
 
+/// aish プロンプト入力が slash command か判定し、該当すれば処理する。
+/// 戻り値:
+///   `None` — slash command ではない (通常の AI プロンプトとして送信せよ)
+///   `Some(message)` — 処理済み。`message` をユーザに表示し AI 送信はスキップ
+fn try_handle_slash_command(
+    input: &str,
+    ai_session: &mut Box<dyn ai::AiBackend>,
+    config: &config::Config,
+    kind: &mut ai::BackendKind,
+) -> Option<String> {
+    let trimmed = input.trim();
+    if !trimmed.starts_with('/') {
+        return None;
+    }
+    let mut parts = trimmed[1..].splitn(2, char::is_whitespace);
+    let cmd = parts.next().unwrap_or("");
+    let value = parts.next().map(str::trim).filter(|s| !s.is_empty());
+    match cmd {
+        "help" => Some(
+            "available slash commands:\n\
+             /help                    show this help\n\
+             /effort [low|medium|high|...]   set reasoning effort (no value = clear)\n\
+             /model  [<name>]         set model (no value = clear, fall back to config/default)\n\
+             /clear                   clear conversation history / session\n\
+             /ai     <claude|codex|gemini|qwen>   switch AI backend"
+                .to_string(),
+        ),
+        "effort" => {
+            ai_session.set_effort(value);
+            let label = value.unwrap_or("(cleared)");
+            Some(format!("effort: {label}"))
+        }
+        "model" => {
+            ai_session.set_model(value);
+            let label = value.unwrap_or("(cleared)");
+            Some(format!("model: {label}"))
+        }
+        "clear" => {
+            ai_session.clear_history();
+            Some("history cleared".to_string())
+        }
+        "ai" => {
+            let Some(v) = value else {
+                return Some("/ai requires a backend (claude|codex|gemini|qwen)".to_string());
+            };
+            let new_kind = match ai::BackendKind::parse(v) {
+                Ok(k) => k,
+                Err(e) => return Some(format!("/ai: {e}")),
+            };
+            if new_kind == *kind {
+                return Some(format!("ai: already using {}", new_kind.as_str()));
+            }
+            if !ai::check_installed(new_kind) {
+                return Some(format!(
+                    "ai: backend `{}` is not installed or not on PATH",
+                    new_kind.as_str()
+                ));
+            }
+            match ai::create_backend(new_kind, &config.ai, &config.log) {
+                Ok(new_session) => {
+                    *ai_session = new_session;
+                    *kind = new_kind;
+                    Some(format!("ai backend switched to {}", new_kind.as_str()))
+                }
+                Err(e) => Some(format!("ai: failed to switch: {e}")),
+            }
+        }
+        other => Some(format!(
+            "unknown slash command: /{other}  (try /help)"
+        )),
+    }
+}
+
 fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     ui::save_terminal_settings();
 
@@ -222,9 +312,16 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
         config.ai.model = m.to_string();
     }
 
+    // effort の決定: --effort > [ai].effort
+    // claude / codex のみ対応、gemini / qwen は CLI 側に該当フラグが無いので無視される。
+    if let Some(e) = args.ai_effort.as_deref() {
+        config.ai.effort = e.to_string();
+    }
+
     // バックエンド種別の決定: --ai > [ai].backend > "claude"
     // どちらの経路でも未知の値はエラーで弾く（CLI と config の挙動を揃える）。
-    let kind = match args.ai_backend.as_deref() {
+    // `/ai` slash command で実行中に切り替えできるよう mut。
+    let mut kind = match args.ai_backend.as_deref() {
         Some(s) => ai::BackendKind::parse(s).map_err(|e| format!("--ai: {e}"))?,
         None => ai::BackendKind::parse(&config.ai.backend)
             .map_err(|e| format!("[ai].backend in config: {e}"))?,
@@ -311,12 +408,14 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // 起動バナー: 1 度だけ画面上部に表示する (status bar は廃止)
-    // backend ごとに色を変える 2 行 ASCII アート + バージョン・モデル・キーヒント。
-    // model 未指定時はモデル欄を省略する。
+    // backend ごとに色を変える 2 行 ASCII アート + バージョン・モデル・effort・キーヒント。
+    // model / effort 未指定時はその欄を省略する。
     let banner_model = ai_session.model();
+    let banner_effort = ai_session.effort();
     ui::print_startup_banner(
         kind.as_str(),
         banner_model.as_deref(),
+        banner_effort.as_deref(),
         env!("CARGO_PKG_VERSION"),
     );
 
@@ -461,6 +560,19 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
             Ok(ui::InputEvent::AiPrompt(prompt)) => {
                 input_idle = true;
                 if prompt.is_empty() {
+                    pending_input = true;
+                    last_pty_output = Instant::now();
+                    continue;
+                }
+                // slash command (/help, /effort, /model, /clear, /ai) はローカルで処理し AI には送らない。
+                if let Some(msg) =
+                    try_handle_slash_command(&prompt, &mut ai_session, &config, &mut kind)
+                {
+                    ui::print_slash_result(&msg);
+                    // shell プロンプトをリフレッシュ。aish プロンプトを開いた時点で minibuffer 側が
+                    // (in-progress 入力があれば) Ctrl+C で行を空にしているので、ここで `\n` を送ると
+                    // 空コマンド扱いで新規プロンプトだけが描画される。
+                    let _ = pty.write(b"\n");
                     pending_input = true;
                     last_pty_output = Instant::now();
                     continue;
@@ -755,6 +867,9 @@ AISH OPTIONS:
                            [ai].backend より優先される
     --model <NAME>         使用モデル名 (例: sonnet, gpt-5, gemini-2.5-pro)
                            [ai].model および extra_args の -m 指定より優先される
+    --effort <LEVEL>       reasoning effort (low | medium | high など)
+                           claude: --effort、codex: -c model_reasoning_effort= に変換
+                           gemini / qwen は CLI 非対応のため無視される
 
 OTHER OPTIONS:
     --version, -V          バージョン表示
@@ -768,6 +883,13 @@ KEYS (起動後):
     a                      残りの提案をすべて自動承認
     Ctrl+C                 提案キャンセル / コマンド中断
 
+SLASH COMMANDS (aish プロンプトに入力):
+    /help                  利用可能な slash command を表示
+    /effort [LEVEL]        reasoning effort を変更 (引数なしでクリア)
+    /model  [NAME]         モデルを変更 (引数なしでクリア)
+    /clear                 会話履歴 / セッションをクリア
+    /ai     <KIND>         AI バックエンドを切り替え (claude|codex|gemini|qwen)
+
 EXAMPLES:
     aish                                # ローカルシェルを Claude で
     aish user@host                      # SSH 接続を Claude で
@@ -775,6 +897,8 @@ EXAMPLES:
     aish --ai gemini user@host          # SSH を Gemini で
     aish --model sonnet                 # Claude を sonnet モデルで起動
     aish --ai codex --model gpt-5
+    aish --effort high                  # Claude を high reasoning で起動
+    aish --ai codex --effort medium
     aish --config /path/to/config.toml --ai codex
 
 CONFIG:

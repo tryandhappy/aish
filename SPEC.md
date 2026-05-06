@@ -51,6 +51,7 @@ CLI SSH + AI (Claude Code) ツール。クライアント側のClaude Codeから
 | `--config <path>` | 設定ファイルのパスを指定（デフォルト `~/.aish/config.toml`）|
 | `--ai <kind>` | AIバックエンドを選択（`claude`/`codex`/`gemini`/`qwen`、既定 `claude`）。設定ファイル `[ai].backend` を上書きする |
 | `--model <name>` | 使用モデル名を指定（例: `sonnet`, `gpt-5`, `gemini-2.5-pro`）。`[ai].model` および各バックエンドの `extra_args` の `-m` より優先 |
+| `--effort <level>` | reasoning effort レベル（例: `low`/`medium`/`high`）。claude → `--effort`、codex → `-c model_reasoning_effort=` に変換。gemini/qwen は CLI 非対応のため無視 |
 | それ以外 | SSH引数としてそのまま `ssh` に渡す |
 
 ---
@@ -139,6 +140,21 @@ Enter / Ctrl+C / 文字入力などいずれの場合も `passthrough_read_raw` 
 ### 5.3 ReadLineモード（確認プロンプト応答時）
 - パススルーモードと同じrawモードで動作するが、矢印↑↓は履歴ナビゲーション、それ以外の編集キーは aishプロンプトと同等。
 - `exit` 入力でaishを終了、それ以外は `UserInput::ShellCommand` としてPTYに送信。
+
+### 5.4 Slash command（aishプロンプト内）
+
+aishプロンプトで先頭が `/` の入力は AI に送らずローカルで処理する。各 backend の `AiBackend` trait のメソッドを呼び、結果を dim grey で表示。
+
+| コマンド | 動作 |
+|---|---|
+| `/help` | 利用可能な slash command 一覧を表示 |
+| `/effort [LEVEL]` | reasoning effort を runtime で変更（次回 send 以降に反映）。引数省略でクリア。gemini/qwen は CLI フラグが無いので保存のみで実リクエストに反映されない |
+| `/model [NAME]` | モデルを runtime で変更（既存 session_id / history は維持）。引数省略でクリア |
+| `/clear` | 会話履歴 / セッションをクリア。claude は session_id を None に、codex/gemini/qwen は内部 history Vec を空にする |
+| `/ai <KIND>` | AI バックエンドを切り替え（`claude`/`codex`/`gemini`/`qwen`）。新しい backend を `create_backend` で構築し、現セッションは破棄される |
+| `/<unknown>` | 警告メッセージ表示、AI には送らない |
+
+スラッシュコマンドはそれぞれ AI CLI 自身の対話モードで提供される `/<cmd>` とは独立に **aish 側で実装**されている（aish は CLI を非対話モードで起動するため、CLI 側の slash command は届かない）。
 
 ### 5.4 シグナル
 | シグナル | ハンドラ | 動作 |
@@ -375,6 +391,7 @@ TOML形式。未指定フィールドはデフォルト値。
 |---|---|---|
 | `backend` | `"claude"` | 使用する AI CLI (`claude`/`codex`/`gemini`/`qwen`)。`--ai` で上書き可能 |
 | `model` | `""` | モデル名（例: `sonnet`, `gpt-5`）。空ならバックエンド CLI 既定。`--model` で上書き可能 |
+| `effort` | `""` | reasoning effort レベル。claude → `--effort`、codex → `-c model_reasoning_effort=` に変換。gemini/qwen は無視。`--effort` で上書き可能 |
 | `system_prompt` | `""` | 空ならトップレベル `system_prompt` にフォールバック |
 | `language` | `""` | 空ならトップレベル `language` にフォールバック |
 

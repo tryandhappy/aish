@@ -1,6 +1,6 @@
 use super::common::{
-    build_system_prompt, check_stdin_cancel, expand_tilde, extract_json, extract_model_from_args,
-    override_model_in_args, shell_join, write_log,
+    build_system_prompt_claude, check_stdin_cancel, expand_tilde, extract_json,
+    extract_model_from_args, shell_join, write_log,
 };
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
 use crate::config::{AiConfig, LogConfig};
@@ -26,7 +26,13 @@ pub struct ClaudeBackend {
     session_id: Option<String>,
     system_prompt: String,
     disallowed_tools: String,
-    extra_args: Vec<String>,
+    /// ユーザの `[ai.claude].extra_args` をそのまま保持。`-m` 等が含まれていてもここでは触らない。
+    /// 最終的な model / effort 指定は `model` / `effort` フィールド経由で send() 時に追記する。
+    base_extra_args: Vec<String>,
+    /// runtime モデル指定 (`/model` で書き換え可能)。`Some` のとき send() 時に `--model <m>` を追加。
+    model: Option<String>,
+    /// runtime effort 指定 (`/effort` で書き換え可能)。`Some` のとき send() 時に `--effort <e>` を追加。
+    effort: Option<String>,
     log_path: Option<String>,
 }
 
@@ -37,13 +43,14 @@ impl ClaudeBackend {
         } else {
             None
         };
-        let system_prompt = build_system_prompt(&cfg.system_prompt, &cfg.language);
-        let override_model = (!cfg.model.is_empty()).then_some(cfg.model.as_str());
+        let system_prompt = build_system_prompt_claude(&cfg.system_prompt, &cfg.language);
         Self {
             session_id: None,
             system_prompt,
             disallowed_tools: cfg.claude.disallowed_tools.clone(),
-            extra_args: override_model_in_args(&cfg.claude.extra_args, override_model),
+            base_extra_args: cfg.claude.extra_args.clone(),
+            model: (!cfg.model.is_empty()).then(|| cfg.model.clone()),
+            effort: (!cfg.effort.is_empty()).then(|| cfg.effort.clone()),
             log_path,
         }
     }
@@ -59,7 +66,26 @@ impl AiBackend for ClaudeBackend {
     }
 
     fn model(&self) -> Option<String> {
-        extract_model_from_args(&self.extra_args)
+        self.model
+            .clone()
+            .or_else(|| extract_model_from_args(&self.base_extra_args))
+    }
+
+    fn effort(&self) -> Option<String> {
+        self.effort.clone()
+    }
+
+    fn set_model(&mut self, model: Option<&str>) {
+        self.model = model.map(str::to_string);
+    }
+
+    fn set_effort(&mut self, effort: Option<&str>) {
+        self.effort = effort.map(str::to_string);
+    }
+
+    fn clear_history(&mut self) {
+        // claude は CLI 側 session で履歴を持つため、resume を切るだけで新規セッションになる。
+        self.session_id = None;
     }
 
     fn send(&mut self, req: &AiRequest) -> Result<AiResponse, AiError> {
@@ -95,7 +121,16 @@ impl AiBackend for ClaudeBackend {
         args.push(self.disallowed_tools.clone());
         args.push("--json-schema".to_string());
         args.push(AI_RESPONSE_SCHEMA.to_string());
-        args.extend(self.extra_args.iter().cloned());
+        args.extend(self.base_extra_args.iter().cloned());
+        // runtime model / effort は base_extra_args の後に追加 (CLI は通常後勝ち)。
+        if let Some(m) = &self.model {
+            args.push("--model".to_string());
+            args.push(m.clone());
+        }
+        if let Some(e) = &self.effort {
+            args.push("--effort".to_string());
+            args.push(e.clone());
+        }
         // prompt は引数ではなく stdin で渡す。
         // ターミナルコンテキストを含む prompt が ARG_MAX (~2MB) を超えると
         // execve() が E2BIG (`Argument list too long`, os error 7) で失敗するため。

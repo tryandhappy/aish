@@ -187,8 +187,14 @@ fn backend_color_code(name: &str) -> u8 {
 
 /// 起動時のバナーを表示する。
 /// ロゴ (aish ASCII アート) は Sunset 配色 (黄→橙→赤橙→マゼンタ) の truecolor。
-/// 続く status 行でバージョン + バックエンド名 (バックエンド別色) + (あれば) モデル名 + キーヒント。
-pub fn print_startup_banner(backend_name: &str, model: Option<&str>, version: &str) {
+/// 続く status 行でバージョン + バックエンド名 (バックエンド別色) + (あれば) モデル名 +
+/// (あれば) effort + キーヒント。
+pub fn print_startup_banner(
+    backend_name: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+    version: &str,
+) {
     // Sunset gradient: A=yellow-orange / I=orange / S=red-orange / H=magenta
     let c_a = "\x1b[38;2;255;200;40m";
     let c_i = "\x1b[38;2;255;140;0m";
@@ -205,6 +211,9 @@ pub fn print_startup_banner(backend_name: &str, model: Option<&str>, version: &s
     print!("  {dim}v{version} · {reset}{backend_color}{backend_name}{reset}");
     if let Some(m) = model {
         print!(" {dim}·{reset} {model_color}{m}{reset}");
+    }
+    if let Some(e) = effort {
+        print!(" {dim}·{reset} {model_color}{e}{reset}");
     }
     println!(" {dim}· (Ctrl+/){reset}");
     let _ = io::stdout().flush();
@@ -272,6 +281,15 @@ pub fn print_ai_message(message: &str, display: &DisplayConfig) {
     let color = build_color_start(&display.ai_color);
     for line in message.lines() {
         println!("{color}{line}\x1b[K\x1b[0m");
+    }
+    io::stdout().flush().ok();
+}
+
+/// slash command (/effort, /model, /ai 等) の処理結果を表示する。
+/// AI 応答とは色を変えて識別しやすくする (dim gray)。
+pub fn print_slash_result(message: &str) {
+    for line in message.lines() {
+        println!("\x1b[38;5;245m{line}\x1b[K\x1b[0m");
     }
     io::stdout().flush().ok();
 }

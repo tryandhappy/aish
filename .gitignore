@@ -8,6 +8,9 @@
 # aish config (contains API keys)
 .aish/
 
+# Codex CLI marker (空ファイル。codex 直接実行時に作られる)
+/.codex
+
 # IDE
 .vscode/
 .idea/

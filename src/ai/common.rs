@@ -148,9 +148,11 @@ pub(crate) fn shell_join(args: &[String]) -> String {
         .join(" ")
 }
 
-/// system_prompt に language 指示を末尾連結する。
-/// language が空なら system_prompt をそのまま返す。
-pub(crate) fn build_system_prompt(prompt: &str, language: &str) -> String {
+/// Claude Code 用の system prompt。
+/// Claude は CLI フラグ (`--disallowedTools` / `--output-format json` 等) で JSON 出力・ツール禁止を
+/// 構造的に指定できるため、prompt 側は base + language の連結のみで足りる。
+/// language が空なら base をそのまま返す。
+pub(crate) fn build_system_prompt_claude(prompt: &str, language: &str) -> String {
     if language.is_empty() {
         prompt.to_string()
     } else {
@@ -158,9 +160,10 @@ pub(crate) fn build_system_prompt(prompt: &str, language: &str) -> String {
     }
 }
 
-/// JSON Schema フラグを持たない backend (codex/gemini/qwen) 向けの system prompt。
-/// JSON 単独出力を強く指示し、aish の信頼原則 (提案ベース・無書き込み・ツール非使用) を埋め込む。
-pub(crate) fn build_proposal_system_prompt(base: &str, language: &str) -> String {
+/// 既定の system prompt。JSON Schema / ツール禁止フラグを持たない backend (codex/gemini/qwen)
+/// 向けに、安全制約と JSON 単独出力指示を埋め込む。
+/// Claude では `build_system_prompt_claude` を使う。
+pub(crate) fn build_system_prompt(base: &str, language: &str) -> String {
     let lang_part = if language.is_empty() {
         String::new()
     } else {
@@ -238,37 +241,6 @@ pub(crate) fn extract_model_from_args(args: &[String]) -> Option<String> {
         }
     }
     None
-}
-
-/// `override_model` が `Some` のときに限り、`extra_args` から既存の `-m` / `--model` 指定
-/// (空白区切り・= 区切り両方) を除去し、末尾に `--model <name>` を追加する。
-/// `None` のときは `extra_args` をそのまま返す (既存の `-m` 指定を尊重)。
-/// `--model` / `[ai].model` で指定された値を最終的に CLI に渡すためのユーティリティ。
-pub(crate) fn override_model_in_args(
-    extra_args: &[String],
-    override_model: Option<&str>,
-) -> Vec<String> {
-    let Some(m) = override_model else {
-        return extra_args.to_vec();
-    };
-    let mut out = Vec::with_capacity(extra_args.len() + 2);
-    let mut i = 0;
-    while i < extra_args.len() {
-        let a = &extra_args[i];
-        if a == "-m" || a == "--model" {
-            i += 2; // フラグ + 値の 2 個をスキップ (値が無くても安全に進む)
-            continue;
-        }
-        if a.starts_with("-m=") || a.starts_with("--model=") {
-            i += 1;
-            continue;
-        }
-        out.push(a.clone());
-        i += 1;
-    }
-    out.push("--model".to_string());
-    out.push(m.to_string());
-    out
 }
 
 /// 子プロセスを spawn し stdin に prompt を流して stdout 全体を返す。
@@ -434,16 +406,16 @@ mod tests {
     }
 
     #[test]
-    fn build_system_prompt_appends_language() {
+    fn build_system_prompt_claude_appends_language() {
         assert_eq!(
-            build_system_prompt("base.", "Japanese"),
+            build_system_prompt_claude("base.", "Japanese"),
             "base. Respond in Japanese."
         );
     }
 
     #[test]
-    fn build_system_prompt_skips_when_empty_language() {
-        assert_eq!(build_system_prompt("base.", ""), "base.");
+    fn build_system_prompt_claude_skips_when_empty_language() {
+        assert_eq!(build_system_prompt_claude("base.", ""), "base.");
     }
 
     #[test]
@@ -482,46 +454,4 @@ mod tests {
         assert_eq!(extract_model_from_args(&args), None);
     }
 
-    #[test]
-    fn override_model_inserts_when_args_have_no_model() {
-        let args: Vec<String> = vec!["-s".into(), "read-only".into()];
-        let out = override_model_in_args(&args, Some("haiku"));
-        assert_eq!(
-            out,
-            vec![
-                "-s".to_string(),
-                "read-only".to_string(),
-                "--model".to_string(),
-                "haiku".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn override_model_replaces_existing_short_separated() {
-        let args: Vec<String> = vec!["-m".into(), "old-model".into(), "-s".into(), "ro".into()];
-        let out = override_model_in_args(&args, Some("new-model"));
-        assert_eq!(
-            out,
-            vec!["-s", "ro", "--model", "new-model"]
-                .into_iter()
-                .map(String::from)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn override_model_replaces_existing_long_eq() {
-        let args: Vec<String> = vec!["--model=old".into(), "--other".into()];
-        let out = override_model_in_args(&args, Some("new"));
-        assert_eq!(out, vec!["--other", "--model", "new"]);
-    }
-
-    #[test]
-    fn override_model_none_passes_through_but_strips_nothing() {
-        let args: Vec<String> = vec!["-m".into(), "keep".into(), "-x".into()];
-        let out = override_model_in_args(&args, None);
-        // None なら extra_args をそのまま素通し (既存の -m は残る)。
-        assert_eq!(out, vec!["-m", "keep", "-x"]);
-    }
 }

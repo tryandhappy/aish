@@ -26,6 +26,19 @@ pub trait AiBackend: Send {
     fn model(&self) -> Option<String> {
         None
     }
+    /// 現在の reasoning effort を返す (起動バナー / `/effort` 表示用)。
+    fn effort(&self) -> Option<String> {
+        None
+    }
+    /// runtime にモデルを差し替える (`/model <name>` 用)。
+    /// 既存セッション (claude の session_id, codex/gemini/qwen の history) は維持する。
+    fn set_model(&mut self, _model: Option<&str>) {}
+    /// runtime に reasoning effort を差し替える (`/effort <level>` 用)。
+    /// 該当 CLI フラグを持たない backend (gemini/qwen) は内部に保存するが
+    /// 実際のリクエストには反映されない。
+    fn set_effort(&mut self, _effort: Option<&str>) {}
+    /// 会話履歴 / セッション ID をリセットする (`/clear` 用)。
+    fn clear_history(&mut self) {}
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
