@@ -14,6 +14,9 @@ impl PtyHandler {
         for arg in ssh_args {
             cmd.arg(arg);
         }
+        // nested 起動検出用。ssh client (ローカルプロセス) は AISH_PID を継承するが、
+        // SSH はデフォルトで環境変数をリモートに転送しないので remote shell 側はクリーン。
+        cmd.env("AISH_PID", std::process::id().to_string());
         Self::spawn_command(cmd, rows, cols)
     }
 
@@ -29,6 +32,8 @@ impl PtyHandler {
         if let Ok(cwd) = std::env::current_dir() {
             cmd.cwd(cwd);
         }
+        // ローカル子シェル (とその子孫) で aish を再起動した場合に nested と判定するためのマーカー。
+        cmd.env("AISH_PID", std::process::id().to_string());
         Self::spawn_command(cmd, rows, cols)
     }
 

@@ -179,12 +179,17 @@ aish は trait `AiBackend` を介して 4 種類の AI CLI に対応する: **Cl
 | プロンプト渡し | stdin | stdin | stdin | stdin |
 | JSON Schema 強制 | `--json-schema` | なし | なし | なし |
 | 危険ツール無効化 | `--disallowedTools` | `-s read-only` (sandbox) | system prompt のみ | system prompt のみ |
-| セッション再開 | `--resume <sid>` | あり (`exec resume`) だが aish は未使用 | なし | なし |
+| セッション再開 | `--resume <sid>` (JSON `session_id` 捕獲) | `exec resume <UUID>` (rollout ファイル名から UUID 捕獲) | best-effort (`--resume latest`) | best-effort (`--continue`) |
 | 実装ファイル | `src/ai/claude.rs` | `src/ai/codex.rs` | `src/ai/gemini.rs` | `src/ai/qwen.rs` |
 
 JSON Schema 強制が無いバックエンドは system prompt で `{"message":..., "commands":[...]}` 単独出力を強く指示し、`extract_json` で抽出する。失敗時は出力全体を `message` として `commands: []` でフォールバック。
 
-session resume は Claude のみで利用。Codex/Gemini/Qwen は session resume 機構を使わず、各 backend 内部で
+**Claude / Codex** は CLI 側 session に履歴を委ねる。
+- Claude: 初回 send で取得した `session_id` を保持し、2 回目以降 `--resume <sid>` で連結。
+- Codex: 初回 send 後 `~/.codex/sessions/YYYY/MM/DD/rollout-...-<UUID>.jsonl` から UUID を捕獲し、
+  2 回目以降 `codex exec resume <UUID>` で連結。`--ephemeral` は付けない。
+
+**Gemini / Qwen** は session resume 機構を非対話モードで安定して使えないため、各 backend 内部で
 直近 8 ターン分の (user_prompt, ai_message) を履歴として保持し、毎回プロンプトに含めて再送する。
 ターミナル差分 (ring buffer) と合わせることで、`mark_sent` 後でも multi-step ワークフローが文脈を保つ。
 
@@ -275,8 +280,13 @@ claude -p --resume <session_id> \
 ### 6.7 キャンセル
 - AIプロセス実行中、stdinをノンブロッキングpollして `0x03` 検知で `child.kill()`。エラー `"Cancelled"` として扱い、`^C` を表示して対話終了。
 
-### 6.8 セッションID表示
-- aish終了時、AIセッションが確立していた場合 `Resume this session with:\nclaude --resume {session_id}` を stderr に表示。
+### 6.8 セッション再開コマンド表示
+- aish 終了時、`AiBackend::resume_command()` が `Some(cmd)` を返す場合 stderr に `Resume this <kind> session with:\n  <cmd>` を出力する。
+  - claude: `claude --resume <UUID>` (session_id が捕獲できた場合)
+  - codex:  `codex resume <UUID>` (rollout ファイルから UUID が捕獲できた場合)
+  - gemini: `gemini --resume latest` (best-effort、1 ターン以上会話があれば)
+  - qwen:   `qwen --continue` (best-effort、1 ターン以上会話があれば)
+- gemini / qwen は非対話モードでの session 永続化が CLI 仕様として保証されていないため、表示はしてもコマンド実行で aish の会話が読み戻せないことがある。
 
 ### 6.9 JSON抽出
 - Claude CLIの出力にJSON前後のテキストが混じる可能性に対応し、`extract_json` で最外の `{...}` をバランス解析で抽出。

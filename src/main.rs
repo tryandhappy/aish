@@ -296,7 +296,36 @@ fn try_handle_slash_command(
     }
 }
 
-fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
+/// 終了時にユーザに表示する情報をまとめた構造体。
+/// 端末を cooked モードに戻した後で表示するために `run()` の戻り値とする。
+struct ExitInfo {
+    /// 各 backend の resume コマンド例 (例: `claude --resume <UUID>`)。
+    resume_command: Option<String>,
+    /// その resume が紐づく backend 識別名 (claude / codex / ...)。
+    backend_name: String,
+}
+
+fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
+    // 二重起動防止 (nested only): aish が起動した子シェルには AISH_PID=<aish_pid> を渡すため、
+    // その子シェル (またはその子孫) から aish を再起動すると環境変数を継承してこのチェックに当たる。
+    // PID が現在も生きていれば nested と判断して refuse。stale (kill -0 失敗) なら無視して続行。
+    // 別ターミナルで起動した場合は環境変数を共有しないので、複数の aish を並行起動できる。
+    if let Ok(pid_str) = std::env::var("AISH_PID") {
+        if let Ok(pid) = pid_str.parse::<i32>() {
+            #[cfg(unix)]
+            let alive = unsafe { libc::kill(pid, 0) == 0 };
+            #[cfg(not(unix))]
+            let alive = false;
+            if alive {
+                return Err(format!(
+                    "aish is already running in this shell (PID {pid}).\n\
+                     Run `exit` to leave the parent aish first, or open a new terminal."
+                )
+                .into());
+            }
+        }
+    }
+
     ui::save_terminal_settings();
 
     #[cfg(unix)]
@@ -841,14 +870,16 @@ fn run(args: AishArgs) -> Result<(), Box<dyn std::error::Error>> {
     // (main loop / 確認ループ内) でそれぞれ \x1b[r を送っているので、
     // 通常の終了経路ではここでリセットしなくても DECSTBM は default のはず。
 
-    // resume コマンドは Claude のものに固定形式。他バックエンドは形式が異なるため出さない。
-    if kind == ai::BackendKind::Claude {
-        if let Some(sid) = ai_session.session_id() {
-            eprintln!("\nResume this session with:\nclaude --resume {sid}");
-        }
-    }
-
-    Ok(())
+    // 終了時に表示する resume 情報は raw モードを抜けた後に main() 側で出す。
+    // backend ごとに resume_command() trait 実装が形式を返す:
+    //   claude → `claude --resume <UUID>`
+    //   codex  → `codex resume <UUID>`
+    //   gemini → `gemini --resume latest` (best-effort)
+    //   qwen   → `qwen --continue`        (best-effort)
+    Ok(ExitInfo {
+        resume_command: ai_session.resume_command(),
+        backend_name: kind.as_str().to_string(),
+    })
 }
 
 fn print_help() {
@@ -873,7 +904,7 @@ AISH OPTIONS:
 
 OTHER OPTIONS:
     --version, -V          バージョン表示
-    --update               GitHub Releases から自己更新
+    --update               GitHub Releases から自己更新 (例: sudo aish --update)
     --help                 このヘルプを表示
 
 KEYS (起動後):
@@ -951,9 +982,20 @@ fn main() {
             // OSC 0/1/2 (タイトル) と OSC 10/11/12 (色) をリセット
             ui::cleanup_terminal_indicator();
             ui::restore_terminal_settings();
-            if let Err(e) = result {
-                eprintln!("Error: {e}");
-                std::process::exit(1);
+            // ↑ ここで cooked モードに戻る。以降の println / eprintln は通常通り改行される。
+            match result {
+                Ok(info) => {
+                    if let Some(cmd) = info.resume_command {
+                        eprintln!(
+                            "\nResume this {} session with:\n  {cmd}",
+                            info.backend_name
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
             }
         }
     }

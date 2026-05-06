@@ -17,9 +17,6 @@ pub trait AiBackend: Send {
     #[allow(dead_code)]
     fn name(&self) -> &'static str;
     fn send(&mut self, req: &AiRequest) -> Result<AiResponse, AiError>;
-    fn session_id(&self) -> Option<&str> {
-        None
-    }
     /// 設定から取得できるモデル名 (起動バナー表示用)。
     /// CLI に問い合わせず `extra_args` 等のローカル情報から判定するので、
     /// 取得できない backend は None を返す。
@@ -39,6 +36,11 @@ pub trait AiBackend: Send {
     fn set_effort(&mut self, _effort: Option<&str>) {}
     /// 会話履歴 / セッション ID をリセットする (`/clear` 用)。
     fn clear_history(&mut self) {}
+    /// aish 終了時に表示する「このセッションを当該 CLI のインタラクティブモードで再開するための
+    /// シェルコマンド例」。session_id を持たない / 永続化されていない場合は None。
+    fn resume_command(&self) -> Option<String> {
+        None
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

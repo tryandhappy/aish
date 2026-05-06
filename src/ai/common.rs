@@ -4,11 +4,13 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-/// stdinからCtrl+C (0x03) が入力されているかノンブロッキングでチェック
+/// stdinからCtrl+C (0x03) が入力されているかノンブロッキングでチェック。
+/// `std::io::stdin().read()` は lock + 内部バッファ経由なので、入力スレッド側との
+/// 競合や 1 byte 取り損ねで Ctrl+C を見逃すことがあった。`libc::read` で生 fd から
+/// 直接 1 byte ずつ読むことで、単発の Ctrl+C でも確実に検出する。
 #[cfg(unix)]
 pub(crate) fn check_stdin_cancel() -> bool {
-    use std::os::unix::io::AsRawFd;
-    let fd = std::io::stdin().as_raw_fd();
+    let fd = libc::STDIN_FILENO;
     let mut found = false;
     loop {
         let mut pfd = libc::pollfd {
@@ -21,9 +23,10 @@ pub(crate) fn check_stdin_cancel() -> bool {
             break;
         }
         let mut buf = [0u8; 1];
-        match std::io::stdin().read(&mut buf) {
-            Ok(1) if buf[0] == 0x03 => found = true,
-            Ok(1) => {} // Ctrl+C以外は破棄
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, 1) };
+        match n {
+            1 if buf[0] == 0x03 => found = true,
+            1 => {} // Ctrl+C 以外の入力は破棄 (キャンセル中のキー入力をシェルへ渡さない)
             _ => break,
         }
     }

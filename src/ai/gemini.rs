@@ -74,6 +74,17 @@ impl AiBackend for GeminiBackend {
         self.history.clear();
     }
 
+    fn resume_command(&self) -> Option<String> {
+        // gemini CLI は非対話 (stdin) 起動でも internal session を保存することがあるが、
+        // 仕様が不安定なので best-effort で `--resume latest` を案内する。1 ターンも会話して
+        // いない場合は資料がないので None。
+        if self.history.is_empty() {
+            None
+        } else {
+            Some("gemini --resume latest".to_string())
+        }
+    }
+
     fn send(&mut self, req: &AiRequest) -> Result<AiResponse, AiError> {
         let prompt = build_full_prompt(
             &self.system_prompt,

@@ -75,6 +75,17 @@ impl AiBackend for QwenBackend {
         self.history.clear();
     }
 
+    fn resume_command(&self) -> Option<String> {
+        // qwen CLI は非対話起動でも session 保存することがあるが仕様が不安定。
+        // `--continue` (= `-c`) で最新セッションを呼ぶ best-effort 案内を返す。
+        // 1 ターンも会話していない場合は None。
+        if self.history.is_empty() {
+            None
+        } else {
+            Some("qwen --continue".to_string())
+        }
+    }
+
     fn send(&mut self, req: &AiRequest) -> Result<AiResponse, AiError> {
         let prompt = build_full_prompt(
             &self.system_prompt,

@@ -61,10 +61,6 @@ impl AiBackend for ClaudeBackend {
         "claude"
     }
 
-    fn session_id(&self) -> Option<&str> {
-        self.session_id.as_deref()
-    }
-
     fn model(&self) -> Option<String> {
         self.model
             .clone()
@@ -86,6 +82,12 @@ impl AiBackend for ClaudeBackend {
     fn clear_history(&mut self) {
         // claude は CLI 側 session で履歴を持つため、resume を切るだけで新規セッションになる。
         self.session_id = None;
+    }
+
+    fn resume_command(&self) -> Option<String> {
+        self.session_id
+            .as_ref()
+            .map(|sid| format!("claude --resume {sid}"))
     }
 
     fn send(&mut self, req: &AiRequest) -> Result<AiResponse, AiError> {
