@@ -7,9 +7,12 @@ mod ui;
 
 use mode::Mode;
 use std::io::{self, Read, Write};
+use std::sync::atomic::AtomicU8;
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use ui::InputEvent;
 
 struct AishArgs {
     config_path: Option<String>,
@@ -58,6 +61,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args();
     let config = config::Config::load(args.config_path.as_deref());
 
+    // rawモード有効化 (Drop時に自動復元)
+    let _raw_mode = ui::enable_raw_mode();
+
+    run_main(args, config)
+}
+
+fn run_main(args: AishArgs, config: config::Config) -> Result<(), Box<dyn std::error::Error>> {
     let mut mode = if args.ssh_args.is_empty() {
         Mode::Local
     } else {
@@ -98,19 +108,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // 入力モードフラグ
+    let input_mode = Arc::new(AtomicU8::new(ui::INPUT_MODE_NORMAL));
+    let input_mode_thread = input_mode.clone();
+
     // ユーザ入力を読み取るスレッド
-    let (input_tx, input_rx) = mpsc::channel::<String>();
+    let (input_tx, input_rx) = mpsc::channel::<InputEvent>();
     thread::spawn(move || {
-        loop {
-            match ui::read_line() {
-                Some(line) => {
-                    if input_tx.send(line).is_err() {
-                        break;
-                    }
-                }
-                None => break,
-            }
-        }
+        ui::run_input_loop(input_tx, input_mode_thread);
     });
 
     // メインループ
@@ -126,8 +131,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if alive_rx.try_recv().is_ok() {
             match mode {
                 Mode::Remote => {
-                    eprintln!("\nSSH session ended.");
+                    print!("\nSSH session ended.\n");
+                    io::stdout().flush()?;
                     mode = Mode::RemoteEnded;
+                    input_mode.store(
+                        ui::INPUT_MODE_LINE,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
                 }
                 Mode::Local => {
                     break;
@@ -138,63 +148,68 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         // ユーザ入力をチェック
         match input_rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(line) => {
-                match ui::parse_input(&line) {
-                    ui::UserInput::Exit => match mode {
-                        Mode::Local | Mode::RemoteEnded => break,
-                        Mode::Remote => {
-                            pty.write(b"exit\n")?;
-                        }
-                    },
-                    ui::UserInput::AiPrompt(prompt) => {
-                        if prompt.is_empty() {
-                            continue;
-                        }
-                        let context = ring_buffer.get_unsent();
-                        ui::print_ai_message("Thinking...");
+            Ok(event) => match event {
+                InputEvent::RawBytes(bytes) => {
+                    if mode.accepts_shell_command() {
+                        let _ = pty.write(&bytes);
+                    }
+                }
+                InputEvent::AiPrompt(prompt) => {
+                    if prompt.is_empty() {
+                        continue;
+                    }
+                    let context = ring_buffer.get_unsent();
 
-                        match ai_session.send(&context, &prompt) {
-                            Ok(response) => {
-                                ring_buffer.mark_sent();
-                                ui::print_ai_message(&response.message);
+                    match ai_session.send(&context, &prompt) {
+                        Ok(response) => {
+                            ring_buffer.mark_sent();
+                            // send()内で思考内容をストリーミング表示済み
+                            // messageは常に表示 (思考内容とは異なる最終回答)
+                            ui::print_ai_message(&response.message);
 
-                                if !response.commands.is_empty()
-                                    && mode.accepts_shell_command()
-                                    && ui::confirm_execution(&response.commands)
-                                {
+                            if !response.commands.is_empty() && mode.accepts_shell_command() {
+                                input_mode.store(
+                                    ui::INPUT_MODE_CONFIRM,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
+                                ui::print_confirm_prompt(&response.commands);
+
+                                // 確認待ち (staleなイベントはスキップ)
+                                let confirmed = loop {
+                                    match input_rx.recv() {
+                                        Ok(InputEvent::Confirmation(c)) => break c,
+                                        Ok(_) => continue,
+                                        Err(_) => break false,
+                                    }
+                                };
+
+                                if confirmed {
                                     for cmd in &response.commands {
                                         pty.write(format!("{}\n", cmd).as_bytes())?;
-                                        // コマンド間に少し待機
                                         thread::sleep(Duration::from_millis(500));
-                                        // 出力を読み取る
                                         while let Ok(data) = pty_rx.try_recv() {
                                             io::stdout().write_all(&data)?;
                                             io::stdout().flush()?;
                                             ring_buffer.append(&data);
                                         }
                                     }
-                                } else if !response.commands.is_empty()
-                                    && !mode.accepts_shell_command()
-                                {
-                                    ui::print_ai_message(
-                                        "(Commands cannot be executed in current mode)",
-                                    );
                                 }
-                            }
-                            Err(e) => {
-                                eprintln!("AI error: {}", e);
+                            } else if !response.commands.is_empty()
+                                && !mode.accepts_shell_command()
+                            {
+                                ui::print_ai_message(
+                                    "(Commands cannot be executed in current mode)",
+                                );
                             }
                         }
-                    }
-                    ui::UserInput::ShellCommand(cmd) => {
-                        if mode.accepts_shell_command() {
-                            pty.write(format!("{}\n", cmd).as_bytes())?;
-                        } else {
-                            eprintln!("Cannot execute commands in {} mode.", mode);
+                        Err(e) => {
+                            eprintln!("AI error: {}", e);
                         }
                     }
                 }
-            }
+                InputEvent::Exit => break,
+                InputEvent::Confirmation(_) => {}
+            },
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }

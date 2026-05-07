@@ -5,6 +5,7 @@ pub struct PtyHandler {
     #[allow(dead_code)]
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
+    #[allow(dead_code)]
     child: Box<dyn Child + Send + Sync>,
     reader: Option<Box<dyn Read + Send>>,
 }
@@ -60,6 +61,7 @@ impl PtyHandler {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn is_alive(&mut self) -> bool {
         self.child
             .try_wait()

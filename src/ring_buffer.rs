@@ -84,6 +84,7 @@ impl RingBuffer {
         self.sent_pos = self.len;
     }
 
+    #[allow(dead_code)]
     pub fn get_all(&self) -> String {
         if self.len == 0 {
             return String::new();
