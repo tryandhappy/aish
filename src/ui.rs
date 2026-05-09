@@ -1093,6 +1093,14 @@ fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &st
                                     _ => break,
                                 }
                             }
+                        } else if seq[0] == b'O' {
+                            // SS3シーケンス (ESC O X): Home/End/F1-F4 等。
+                            // 1バイト追読みして PTY にまとめて送らないと、
+                            // vim 等で ESC O と X が分割解釈されて誤動作する。
+                            let mut tail = [0u8; 1];
+                            if let Ok(1) = stdin.read(&mut tail) {
+                                seq_bytes.push(tail[0]);
+                            }
                         }
                     }
                 }

@@ -180,45 +180,31 @@ fn debug_bytes(data: &[u8], max: usize) -> String {
     s
 }
 
-/// PTY 出力に TUI コマンドが端末状態を変更した形跡があるかを検出する。
-/// 検出すべき変化:
-/// - alt screen 出入り (`\x1b[?1049h/l`、`\x1b[?1047h/l`、`\x1b[?47h/l`)
-/// - DECSTBM (スクロール領域) 変更 (`\x1b[<n>;<m>r` または `\x1b[r`)
-/// - 画面クリア (`\x1b[2J`、`\x1bc` (RIS))
-/// いずれか検出されたら aish のレイアウトが壊れている可能性ありとみなす。
+/// PTY 出力に TUI コマンドが終了した形跡があるかを検出する。
+/// 「終了」のシグナルだけを拾うのが重要: 動作中に発生し得るシーケンス
+/// (`\x1b[2J`, DECSTBM, alt screen 突入) を拾うと、TUI 動作中に
+/// recovery (Ctrl+L) を撃ち、insert モード中のバッファに ^L が紛れ込む等の
+/// 誤動作を引き起こす。
+/// 検出対象:
+/// - alt screen 抜け (`\x1b[?1049l`、`\x1b[?1047l`、`\x1b[?47l`)
+/// - 端末フルリセット (`\x1bc`, RIS)
 fn contains_tui_signature(data: &[u8]) -> bool {
-    // alt screen
-    if data.windows(8).any(|w| w == b"\x1b[?1049h" || w == b"\x1b[?1049l") {
+    // alt screen 終了のみ検出する。
+    // 「TUI が終わった」ことを確実に示すのは alt screen からの抜け (`?1049l` 等)。
+    // \x1b[2J や DECSTBM (\x1b[..r) は vim 等が動作中にも送出するため、
+    // これらを拾うと TUI 内で Ctrl+L を撃ち、insert モード中のバッファに ^L が
+    // 紛れ込むなどの誤動作を引き起こす。
+    if data.windows(8).any(|w| w == b"\x1b[?1049l") {
         return true;
     }
-    if data.windows(8).any(|w| w == b"\x1b[?1047h" || w == b"\x1b[?1047l") {
+    if data.windows(8).any(|w| w == b"\x1b[?1047l") {
         return true;
     }
-    if data.windows(6).any(|w| w == b"\x1b[?47h" || w == b"\x1b[?47l") {
-        return true;
-    }
-    // 画面クリア
-    if data.windows(4).any(|w| w == b"\x1b[2J" || w == b"\x1b[1J") {
+    if data.windows(6).any(|w| w == b"\x1b[?47l") {
         return true;
     }
     if data.windows(2).any(|w| w == b"\x1bc") {
         return true;
-    }
-    // DECSTBM 変更: \x1b[ followed by digits/semicolons followed by 'r'
-    let mut i = 0;
-    while i + 2 < data.len() {
-        if data[i] == 0x1b && data[i + 1] == b'[' {
-            let mut j = i + 2;
-            while j < data.len() && (data[j].is_ascii_digit() || data[j] == b';') {
-                j += 1;
-            }
-            if j < data.len() && data[j] == b'r' {
-                return true;
-            }
-            i = j + 1;
-        } else {
-            i += 1;
-        }
     }
     false
 }
