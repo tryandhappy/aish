@@ -303,11 +303,7 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
             #[cfg(not(unix))]
             let alive = false;
             if alive {
-                return Err(format!(
-                    "aish is already running in this shell (PID {pid}).\n\
-                     Run `exit` to leave the parent aish first, or open a new terminal."
-                )
-                .into());
+                return Err(format!("aish is already running here (PID {pid}).").into());
             }
         }
     }
