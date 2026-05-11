@@ -1,3 +1,5 @@
+use crate::ai::BackendKind;
+
 const DEFAULT_CAPACITY: usize = 1024 * 1024; // 1MB
 
 pub struct RingBuffer {
@@ -6,8 +8,9 @@ pub struct RingBuffer {
     write_pos: usize,
     // 累計書き込みバイト数。リング位置とは独立に単調増加する。
     total_written: u64,
-    // 直近の mark_sent 時点の total_written。
-    sent_written: u64,
+    // backend ごとの「最後に送った位置 (total_written 値)」。
+    // index = BackendKind::ordinal()。初期値 0 = aish 起動時から全部を catch-up 対象に。
+    sent_marks: [u64; BackendKind::COUNT],
 }
 
 impl RingBuffer {
@@ -17,7 +20,7 @@ impl RingBuffer {
             capacity: DEFAULT_CAPACITY,
             write_pos: 0,
             total_written: 0,
-            sent_written: 0,
+            sent_marks: [0u64; BackendKind::COUNT],
         }
     }
 
@@ -30,14 +33,22 @@ impl RingBuffer {
         self.total_written = self.total_written.saturating_add(stripped.len() as u64);
     }
 
-    fn unsent_len(&self) -> usize {
-        let unsent = self.total_written.saturating_sub(self.sent_written);
+    /// AI 注釈など、ANSI escape を含まない前提のテキストを追記する。
+    /// 内部実装は `append` と同じ (strip しても変わらない) が、呼び出し側の意図を明確にする。
+    pub fn append_text(&mut self, text: &str) {
+        self.append(text.as_bytes());
+    }
+
+    fn unsent_len_for(&self, kind: BackendKind) -> usize {
+        let unsent = self
+            .total_written
+            .saturating_sub(self.sent_marks[kind.ordinal()]);
         // 上書きされた古いデータには遡れないので capacity でクランプ。
         (unsent.min(self.capacity as u64)) as usize
     }
 
-    pub fn get_unsent(&self) -> String {
-        let amount = self.unsent_len();
+    pub fn get_unsent_for(&self, kind: BackendKind) -> String {
+        let amount = self.unsent_len_for(kind);
         if amount == 0 {
             return String::new();
         }
@@ -45,8 +56,15 @@ impl RingBuffer {
         String::from_utf8_lossy(&bytes).into_owned()
     }
 
-    pub fn mark_sent(&mut self) {
-        self.sent_written = self.total_written;
+    pub fn mark_sent_for(&mut self, kind: BackendKind) {
+        self.sent_marks[kind.ordinal()] = self.total_written;
+    }
+
+    /// 全 backend の cursor を末尾に進める。`/clear` 用。
+    pub fn mark_sent_all(&mut self) {
+        for slot in self.sent_marks.iter_mut() {
+            *slot = self.total_written;
+        }
     }
 
     /// リング末尾から `amount` バイトを線形バッファとして取り出す。
@@ -78,39 +96,39 @@ impl RingBuffer {
 mod tests {
     use super::*;
 
+    const ANY: BackendKind = BackendKind::Claude;
+
     #[test]
     fn test_append_and_get() {
         let mut buf = RingBuffer::new();
         buf.append(b"hello world");
-        assert_eq!(buf.get_unsent(), "hello world");
+        assert_eq!(buf.get_unsent_for(ANY), "hello world");
     }
 
     #[test]
     fn test_mark_sent() {
         let mut buf = RingBuffer::new();
         buf.append(b"first");
-        buf.mark_sent();
+        buf.mark_sent_for(ANY);
         buf.append(b" second");
-        assert_eq!(buf.get_unsent(), " second");
+        assert_eq!(buf.get_unsent_for(ANY), " second");
     }
 
     #[test]
     fn test_strip_ansi() {
         let mut buf = RingBuffer::new();
         buf.append(b"\x1b[31mred text\x1b[0m");
-        assert_eq!(buf.get_unsent(), "red text");
+        assert_eq!(buf.get_unsent_for(ANY), "red text");
     }
 
     #[test]
     fn test_mark_sent_after_full_does_not_starve() {
-        // 回帰テスト: バッファ満杯状態で mark_sent された後、
-        // 後続の append が必ず未送信として見える。
         let mut buf = RingBuffer::new();
         let chunk = vec![b'x'; buf.capacity];
         buf.append(&chunk);
-        buf.mark_sent();
+        buf.mark_sent_for(ANY);
         buf.append(b"new data");
-        assert_eq!(buf.get_unsent(), "new data");
+        assert_eq!(buf.get_unsent_for(ANY), "new data");
     }
 
     #[test]
@@ -118,7 +136,7 @@ mod tests {
         let mut buf = RingBuffer::new();
         let chunk = vec![b'a'; buf.capacity * 3];
         buf.append(&chunk);
-        let unsent = buf.get_unsent();
+        let unsent = buf.get_unsent_for(ANY);
         assert_eq!(unsent.len(), buf.capacity);
         assert!(unsent.bytes().all(|b| b == b'a'));
     }
@@ -126,25 +144,72 @@ mod tests {
     #[test]
     fn test_wraparound_returns_correct_tail() {
         let mut buf = RingBuffer::new();
-        // capacity 直前まで埋めてから mark_sent する。
         let first = vec![b'A'; buf.capacity - 5];
         buf.append(&first);
-        buf.mark_sent();
-        // ラップアラウンドを跨ぐ書き込み。
+        buf.mark_sent_for(ANY);
         buf.append(b"BBBBBBBB");
-        assert_eq!(buf.get_unsent(), "BBBBBBBB");
+        assert_eq!(buf.get_unsent_for(ANY), "BBBBBBBB");
     }
 
     #[test]
     fn test_repeated_mark_sent_cycles() {
-        // 大量データを何サイクルも流しても、その都度 unsent が見える。
         let mut buf = RingBuffer::new();
         for i in 0..5 {
             let payload = format!("chunk-{}", i);
             buf.append(payload.as_bytes());
-            assert_eq!(buf.get_unsent(), payload);
-            buf.mark_sent();
-            assert_eq!(buf.get_unsent(), "");
+            assert_eq!(buf.get_unsent_for(ANY), payload);
+            buf.mark_sent_for(ANY);
+            assert_eq!(buf.get_unsent_for(ANY), "");
+        }
+    }
+
+    #[test]
+    fn test_per_backend_independence() {
+        // A.mark_sent_for は B に影響しない。
+        let mut buf = RingBuffer::new();
+        buf.append(b"shared-1");
+        buf.mark_sent_for(BackendKind::Claude);
+        // Claude は送信済み、他はまだ全部見える。
+        assert_eq!(buf.get_unsent_for(BackendKind::Claude), "");
+        assert_eq!(buf.get_unsent_for(BackendKind::Codex), "shared-1");
+        assert_eq!(buf.get_unsent_for(BackendKind::Gemini), "shared-1");
+        assert_eq!(buf.get_unsent_for(BackendKind::Qwen), "shared-1");
+
+        buf.append(b"; shared-2");
+        // Claude は差分のみ、他は全部。
+        assert_eq!(buf.get_unsent_for(BackendKind::Claude), "; shared-2");
+        assert_eq!(
+            buf.get_unsent_for(BackendKind::Codex),
+            "shared-1; shared-2"
+        );
+    }
+
+    #[test]
+    fn test_switch_to_unused_backend_gets_full_catchup() {
+        // 初期値 0 なので、まだ使われていない backend は append された全部を受け取る。
+        let mut buf = RingBuffer::new();
+        buf.append(b"hello");
+        buf.mark_sent_for(BackendKind::Claude);
+        buf.append(b" world");
+        // Codex は一度も mark していないので、起動以降の全部が catch-up に乗る。
+        assert_eq!(buf.get_unsent_for(BackendKind::Codex), "hello world");
+    }
+
+    #[test]
+    fn test_mark_sent_all_resets_every_cursor() {
+        let mut buf = RingBuffer::new();
+        buf.append(b"history");
+        // どの backend もまだ何も見ていない状態。
+        for k in BackendKind::all() {
+            assert_eq!(buf.get_unsent_for(k), "history");
+        }
+        buf.mark_sent_all();
+        for k in BackendKind::all() {
+            assert_eq!(buf.get_unsent_for(k), "");
+        }
+        buf.append(b"after-clear");
+        for k in BackendKind::all() {
+            assert_eq!(buf.get_unsent_for(k), "after-clear");
         }
     }
 }

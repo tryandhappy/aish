@@ -1,3 +1,4 @@
+use crate::ai::BackendKind;
 use crate::config::DisplayConfig;
 use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -277,10 +278,21 @@ impl Drop for Spinner {
     }
 }
 
-pub fn print_ai_message(message: &str, display: &DisplayConfig) {
+pub fn print_ai_message(message: &str, kind: BackendKind, display: &DisplayConfig) {
     let color = build_color_start(&display.ai_color);
+    let label = format!("[ai/{}]> ", kind.as_str());
+    let mut first = true;
     for line in message.lines() {
-        println!("{color}{line}\x1b[K\x1b[0m");
+        if first {
+            println!("{color}{label}{line}\x1b[K\x1b[0m");
+            first = false;
+        } else {
+            println!("{color}{line}\x1b[K\x1b[0m");
+        }
+    }
+    if first {
+        // message が空でも ラベルだけは出す。
+        println!("{color}{label}\x1b[K\x1b[0m");
     }
     io::stdout().flush().ok();
 }

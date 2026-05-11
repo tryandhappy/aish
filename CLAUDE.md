@@ -36,6 +36,10 @@ aish は SSH でサーバを管理する道具なので、**ユーザが画面�
 - **AI 提案コマンドの完了判定は `PromptSniffer` による passive 検出**。コマンドはユーザ承認文字列をそのまま PTY に送り、PTY 出力末尾がプロンプト形 (`[$#>%➜❯»][空白]+`) になり 200ms 静音したら完了。
 - **TUI recovery (PTY への `Ctrl+L` 送信) は「TUI 終了」シグナルだけで発火させる**。alt screen 抜け (`\x1b[?1049l` / `\x1b[?1047l` / `\x1b[?47l`) と RIS (`\x1bc`) は安全。alt screen 突入・`\x1b[2J`・DECSTBM (`\x1b[..r`) は vim 等が動作中にも送出するため検出対象に含めてはいけない。混入させると vim insert モード中のバッファに `^L` がリテラル文字として紛れ込む。
 - **パススルーで PTY に転送する ESC シーケンスは完全な形まで読み切ってからまとめて送る**。CSI (`ESC [ ... <0x40-0x7E>`) だけでなく SS3 (`ESC O <1 byte>`) も同様。途中で分割して 2 回の write になると、受信側 (vim 等) は ESC タイムアウトで別キーと解釈する (例: `ESC O` + `H` → `ESC` + `O` (open line above) と誤解)。Home/End や F1〜F4、アプリケーションカーソルモードの矢印キーが該当。
+- **ring_buffer の未送信 cursor は backend ごとに独立**。`sent_marks: [u64; BackendKind::COUNT]` で保持し、`get_unsent_for(kind)` / `mark_sent_for(kind)` を経由する。`/ai` 切替時に新 AI が「これまでの会話の続き」を catch-up できるようにするための仕組み。**新規 backend を追加するときは `BackendKind::ordinal()` / `all()` / `COUNT` を必ず更新する**。
+- **AI 応答受信後は ring_buffer に注釈を append してから `mark_sent_for(current_kind)`** の順序を守る。注釈 (`[aish→<kind>]> ...` / `[ai/<kind>]> ...` / `[ai/<kind> suggests] ...`) は **current AI は再受信せず、他 backend は次回 catch-up で受信する**。逆順にすると current AI が自分の発話をループで受信してしまう。
+- **`/clear` は ring_buffer.mark_sent_all() で全 backend の cursor を末尾に進める**が、AI CLI 内部の session/history は **current backend のみ** リセットする (他 backend の instance は保持していないため)。「全 AI の会話を仕切り直す」セマンティクスを守りつつ、副作用は最小限にする妥協案。
+- **ring_buffer の `[link]` ライクな PTY 文字列と注釈ラベル (`[aish→...]` / `[ai/...]`) は衝突しうる**。AI は文脈で区別する想定。誤検出が頻発したらフォーマットを XML 風 (`<aish to="claude">`) 等に変更する余地あり。
 
 ## 開発フロー
 

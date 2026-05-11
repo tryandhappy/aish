@@ -43,7 +43,7 @@ pub trait AiBackend: Send {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum BackendKind {
     Claude,
     Codex,
@@ -71,6 +71,28 @@ impl BackendKind {
             BackendKind::Gemini => "gemini",
             BackendKind::Qwen => "qwen",
         }
+    }
+
+    /// 固定長配列 (`[T; BackendKind::COUNT]`) のインデックスに使う。
+    pub fn ordinal(self) -> usize {
+        match self {
+            BackendKind::Claude => 0,
+            BackendKind::Codex => 1,
+            BackendKind::Gemini => 2,
+            BackendKind::Qwen => 3,
+        }
+    }
+
+    pub const COUNT: usize = 4;
+
+    #[allow(dead_code)]
+    pub fn all() -> [BackendKind; Self::COUNT] {
+        [
+            BackendKind::Claude,
+            BackendKind::Codex,
+            BackendKind::Gemini,
+            BackendKind::Qwen,
+        ]
     }
 }
 

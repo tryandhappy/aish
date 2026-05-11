@@ -218,6 +218,7 @@ fn try_handle_slash_command(
     ai_session: &mut Box<dyn ai::AiBackend>,
     config: &config::Config,
     kind: &mut ai::BackendKind,
+    ring_buffer: &mut ring_buffer::RingBuffer,
 ) -> Option<String> {
     let trimmed = input.trim();
     if !trimmed.starts_with('/') {
@@ -247,7 +248,10 @@ fn try_handle_slash_command(
             Some(format!("model: {label}"))
         }
         "clear" => {
+            // current AI の session/history はリセット、ring_buffer の cursor は全 backend を末尾へ。
+            // (他 backend の CLI セッション本体は本 phase では触らない — 完全リセットは将来課題)
             ai_session.clear_history();
+            ring_buffer.mark_sent_all();
             Some("history cleared".to_string())
         }
         "ai" => {
@@ -576,9 +580,13 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                     continue;
                 }
                 // slash command (/help, /effort, /model, /clear, /ai) はローカルで処理し AI には送らない。
-                if let Some(msg) =
-                    try_handle_slash_command(&prompt, &mut ai_session, &config, &mut kind)
-                {
+                if let Some(msg) = try_handle_slash_command(
+                    &prompt,
+                    &mut ai_session,
+                    &config,
+                    &mut kind,
+                    &mut ring_buffer,
+                ) {
                     ui::print_slash_result(&msg);
                     // shell プロンプトをリフレッシュ。aish プロンプトを開いた時点で minibuffer 側が
                     // (in-progress 入力があれば) Ctrl+C で行を空にしているので、ここで `\n` を送ると
@@ -588,7 +596,7 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                     last_pty_output = Instant::now();
                     continue;
                 }
-                let context = ring_buffer.get_unsent();
+                let context = ring_buffer.get_unsent_for(kind);
                 let spinner = ui::Spinner::start(&config.display);
                 let mut ai_result = ai_session.send(&ai::AiRequest {
                     terminal_context: &context,
@@ -596,12 +604,34 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                 });
                 spinner.stop();
 
+                // 次ターン以降の send で各 backend に渡す user_prompt 元テキスト。
+                // 初回はユーザ入力、follow-up は aish が生成した要約文。
+                let mut last_prompt_for_annotation = prompt.clone();
+
                 // AIとの対話ループ: コマンド実行→結果をAIに送信→分析→繰り返し
                 loop {
                     match ai_result {
                         Ok(response) => {
-                            ring_buffer.mark_sent();
-                            ui::print_ai_message(&response.message, &config.display);
+                            // 注釈を ring_buffer に積んでから mark_sent_for(kind) で current の cursor を末尾へ。
+                            // この順序により、current は自分の発話を catch-up で受信せず、
+                            // 一方で他 backend は後で切替えられたとき注釈をまとめて受信できる。
+                            let kind_label = kind.as_str();
+                            ring_buffer.append_text(&format!(
+                                "\n[aish→{kind_label}]> {last_prompt_for_annotation}\n"
+                            ));
+                            ring_buffer.append_text(&format!(
+                                "[ai/{kind_label}]> {}\n",
+                                response.message
+                            ));
+                            if !response.commands.is_empty() {
+                                ring_buffer.append_text(&format!(
+                                    "[ai/{kind_label} suggests] {}\n",
+                                    response.commands.join(" ; ")
+                                ));
+                            }
+                            ring_buffer.mark_sent_for(kind);
+
+                            ui::print_ai_message(&response.message, kind, &config.display);
 
                             // コマンド提案がない場合は対話終了
                             if response.commands.is_empty() {
@@ -761,7 +791,7 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                             }
 
                             // 実行結果をAIに送信して分析を継続
-                            let follow_up_context = ring_buffer.get_unsent();
+                            let follow_up_context = ring_buffer.get_unsent_for(kind);
                             println!();
                             let spinner = ui::Spinner::start(&config.display);
                             let follow_up_text = if user_cancelled {
@@ -775,6 +805,7 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                                     executed_summary.join(", ")
                                 )
                             };
+                            last_prompt_for_annotation = follow_up_text.clone();
                             ai_result = ai_session.send(&ai::AiRequest {
                                 terminal_context: &follow_up_context,
                                 user_prompt: &follow_up_text,
