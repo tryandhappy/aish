@@ -105,17 +105,6 @@ fi
 - `command -v aish` — aish が PATH に無いときは exec せず通常の bash に戻ります（誤って端末が開かなくなる事故を防ぐ保険）。
 - `unset PROMPT_COMMAND` — 1 回だけ発火するように自身を外します。
 
-#### なぜ単純な `exec aish` ではダメか（Ubuntu 24 / WSL2）
-
-```bash
-# これだけだと WSL2 や SSH ログインで claude が見つからずエラーになる
-[[ $- == *i* && -z "$AISH_PID" ]] && exec aish
-```
-
-WSL2 や SSH ログインでは bash がログインシェルとして起動し、`~/.profile` 内から `~/.bashrc` が source されます。Ubuntu 既定の `~/.profile` は `.bashrc` を source した **後** に `~/.local/bin`（claude のインストール先）を PATH に追加するため、`.bashrc` の中で直接 `exec aish` すると PATH 未完成のまま aish が起動し、`Error: Please install Claude Code.` になります。
-
-GNOME Terminal などの非ログインシェル経由なら単純な `exec aish` でも動きますが、両対応するには `PROMPT_COMMAND` 方式が確実です。
-
 #### 他ツールとの順序
 
 `starship`、`oh-my-bash`、`conda init`、`direnv` 等は独自に `PROMPT_COMMAND` を書き換えるため、上記スニペットは必ず **`.bashrc` の最終行**（これらの初期化より後）に置いてください。
