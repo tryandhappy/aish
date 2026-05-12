@@ -88,16 +88,41 @@ aish user@example.com   # SSH接続 (sshと同じ引数)
 
 ## 対話シェルを常に aish にする
 
-ターミナルを開いた瞬間から aish に入りたい場合は、`~/.bashrc` の末尾に以下を追加してください。
+ターミナルを開いた瞬間から aish に入りたい場合は、`~/.bashrc` の **末尾** に以下を追加してください。
 
 ```bash
+if [[ $- == *i* && -z "$AISH_PID" ]]; then
+    PROMPT_COMMAND='unset PROMPT_COMMAND; command -v aish >/dev/null && exec aish'
+fi
+```
+
+`PROMPT_COMMAND` は bash が最初のプロンプトを描く直前に発火するフックです。`.bashrc` と `.profile` がすべて完走した状態で `exec aish` するため、`~/.local/bin/claude` などのパスが通った状態で確実に aish に切り替わります。
+
+#### 各要素の意味
+
+- `$- == *i*` — 対話シェルのときだけ動作。`bash -c "..."`（git, make, vim `:!` 等の非対話呼び出し）には影響しません。
+- `-z "$AISH_PID"` — aish 配下の子シェルでは再起動しません（aish は子シェルに `AISH_PID` を渡し、自身の二重起動も拒否します）。
+- `command -v aish` — aish が PATH に無いときは exec せず通常の bash に戻ります（誤って端末が開かなくなる事故を防ぐ保険）。
+- `unset PROMPT_COMMAND` — 1 回だけ発火するように自身を外します。
+
+#### なぜ単純な `exec aish` ではダメか（Ubuntu 24 / WSL2）
+
+```bash
+# これだけだと WSL2 や SSH ログインで claude が見つからずエラーになる
 [[ $- == *i* && -z "$AISH_PID" ]] && exec aish
 ```
 
-- `$- == *i*` で対話シェルのときだけ動作。`bash -c "..."`（git, make, vim `:!` 等の非対話呼び出し）には影響しません。
-- `-z "$AISH_PID"` で aish 配下の子シェルでは再起動しません（aish は子シェルに `AISH_PID` を渡し、自身の二重起動も拒否します）。
+WSL2 や SSH ログインでは bash がログインシェルとして起動し、`~/.profile` 内から `~/.bashrc` が source されます。Ubuntu 既定の `~/.profile` は `.bashrc` を source した **後** に `~/.local/bin`（claude のインストール先）を PATH に追加するため、`.bashrc` の中で直接 `exec aish` すると PATH 未完成のまま aish が起動し、`Error: Please install Claude Code.` になります。
 
-なお `chsh` で aish 自体をログインシェルに設定するのは **非推奨** です。aish は内部で `$SHELL` を起動するラッパであり、`-c` オプションも持たない（未知の引数は ssh に転送される）ため、非対話呼び出しが破綻します。
+GNOME Terminal などの非ログインシェル経由なら単純な `exec aish` でも動きますが、両対応するには `PROMPT_COMMAND` 方式が確実です。
+
+#### 他ツールとの順序
+
+`starship`、`oh-my-bash`、`conda init`、`direnv` 等は独自に `PROMPT_COMMAND` を書き換えるため、上記スニペットは必ず **`.bashrc` の最終行**（これらの初期化より後）に置いてください。
+
+#### chsh による設定は非推奨
+
+`chsh` で aish 自体をログインシェルに設定するのは **非推奨** です。aish は内部で `$SHELL` を起動するラッパであり、`-c` オプションも持たない（未知の引数は ssh に転送される）ため、非対話呼び出しが破綻します。
 
 
 
