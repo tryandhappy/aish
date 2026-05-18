@@ -88,7 +88,11 @@ aish user@example.com   # SSH接続 (sshと同じ引数)
 
 ## 対話シェルを常に aish にする
 
-ターミナルを開いた瞬間から aish に入りたい場合は、`~/.bashrc` の **末尾** に以下を追加してください。
+ターミナルを開いた瞬間から aish に入りたい場合は、`~/.bashrc` の **末尾** に以下のいずれかを追加してください。挙動の好みで方式 A / B を選びます。
+
+### 方式 A: ターミナル = aish
+
+aish 内で `exit` するとターミナルウィンドウもそのまま閉じます。「ターミナルを開く == aish を開く」という感覚にしたい場合はこちら。
 
 ```bash
 if [[ $- == *i* && -z "$AISH_PID" ]]; then
@@ -96,13 +100,29 @@ if [[ $- == *i* && -z "$AISH_PID" ]]; then
 fi
 ```
 
-`PROMPT_COMMAND` は bash が最初のプロンプトを描く直前に発火するフックです。`.bashrc` と `.profile` がすべて完走した状態で `exec aish` するため、`~/.local/bin/claude` などのパスが通った状態で確実に aish に切り替わります。
+`exec` で bash プロセスを aish に置き換えるため、aish 終了 = bash 終了 = ターミナル終了になります。
+
+### 方式 B: exit すると bash に戻る
+
+aish 内で `exit` すると元の bash プロンプトに戻ります。bash で何か作業した後にもう一度 aish に入りたいときは `aish` と打ち直せます。端末を閉じるときはその bash でもう一度 `exit` します。
+
+```bash
+if [[ $- == *i* && -z "$AISH_PID" ]]; then
+    PROMPT_COMMAND='unset PROMPT_COMMAND; command -v aish >/dev/null && aish'
+fi
+```
+
+方式 A との違いは `exec` を付けないことだけです。aish は bash の子プロセスとして起動し、終了すると bash が制御を取り戻します。`unset PROMPT_COMMAND` が先頭にあるので、aish 終了後に再度自動起動することはありません。
+
+### 動作のしくみ
+
+`PROMPT_COMMAND` は bash が最初のプロンプトを描く直前に発火するフックです。`.bashrc` と `.profile` がすべて完走した状態で aish を起動するため、`~/.local/bin/claude` などのパスが通った状態で確実に aish に入ります。
 
 #### 各要素の意味
 
 - `$- == *i*` — 対話シェルのときだけ動作。`bash -c "..."`（git, make, vim `:!` 等の非対話呼び出し）には影響しません。
 - `-z "$AISH_PID"` — aish 配下の子シェルでは再起動しません（aish は子シェルに `AISH_PID` を渡し、自身の二重起動も拒否します）。
-- `command -v aish` — aish が PATH に無いときは exec せず通常の bash に戻ります（誤って端末が開かなくなる事故を防ぐ保険）。
+- `command -v aish` — aish が PATH に無いときは起動せず通常の bash に戻ります（誤って端末が開かなくなる事故を防ぐ保険）。
 - `unset PROMPT_COMMAND` — 1 回だけ発火するように自身を外します。
 
 #### 他ツールとの順序
