@@ -144,9 +144,23 @@ pub fn save_terminal_settings() {
     let fd = io::stdin().as_raw_fd();
     if let Some(t) = termios_get(fd) {
         let _ = ORIG_TERMIOS.set(t);
-        // セッション全体でrawモードを維持する
+        // セッション全体でrawモードを維持する。
+        // cfmakeraw 相当: 端末→aish への入力を完全に raw 化する。
+        // 特に ICRNL を落とさないと CR が NL に変換されて PTY に届き、
+        // prompt_toolkit 系の選択ピッカー (`<c-m>` のみを Enter にバインド) で
+        // Enter が効かなくなる (aws configure sso のアカウント選択画面で再現)。
+        // OPOST (c_oflag) は触らない: aish 自身が writeln!(stdout) で `\n` だけ
+        // 書く箇所があり、端末側の NL→CRLF 変換に依存しているため。
         let mut raw = t;
-        raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG);
+        raw.c_iflag &= !(libc::IGNBRK
+            | libc::BRKINT
+            | libc::PARMRK
+            | libc::ISTRIP
+            | libc::INLCR
+            | libc::IGNCR
+            | libc::ICRNL
+            | libc::IXON);
+        raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG | libc::IEXTEN);
         raw.c_cc[libc::VMIN] = 1;
         raw.c_cc[libc::VTIME] = 0;
         unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) };

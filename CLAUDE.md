@@ -28,6 +28,7 @@ aish は SSH でサーバを管理する道具なので、**ユーザが画面�
 コードから直ちに読み取れない、間違えやすいポイント：
 
 - **rawモードはセッション全体で維持**する（`save_terminal_settings` で設定）。`read_line` / `passthrough` 個別での再設定・復元は不要。
+- **stdin の termios は `c_lflag` の `ICANON|ECHO|ISIG|IEXTEN` に加えて `c_iflag` の raw 化フラグ群 (`IGNBRK|BRKINT|PARMRK|ISTRIP|INLCR|IGNCR|ICRNL|IXON`) も落とす**。ICRNL を残すと、ユーザの Enter (`\r`) が端末 driver の段階で `\n` に変換され PTY に届く。`prompt_toolkit` 系の選択ピッカー (`Application` / `questionary` 等) は `Keys.ControlM` (= `\r`) のみを「選択確定」にバインドしているため、CR→NL 変換がかかると Enter が無反応になる (`aws configure sso` のアカウント選択画面で再現)。`c_oflag` (OPOST) は触らない: `show_minibuffer` 等で `writeln!(stdout)` が `\n` のみを書く箇所があり、端末側の NL→CRLF 変換に依存している。
 - **AI対話終了後は `input_idle = true` を明示的に設定**すること。確認プロンプトの ReadLine で false になったまま戻ると入力リクエストが再送されずハングする。
 - **aishプロンプト表示中は PTY出力の画面描画を抑制**（`MINIBUFFER_ACTIVE` フラグ）。ただしリングバッファへの記録は継続する。
 - **通常動作中は PTY出力に aish 独自の文字列を一切挿入しない**（パススルーに徹する）。ステータスバーは DECSTBM の外に描画する。
