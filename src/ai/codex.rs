@@ -2,6 +2,7 @@ use super::common::{
     build_full_prompt, build_system_prompt, expand_tilde, extract_model_from_args,
     parse_ai_response_lossy, run_cli_capture_stdout, unique_tmp_path, write_log,
 };
+use super::sandbox::ResolvedSandbox;
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
 use crate::config::{AiConfig, LogConfig};
 
@@ -48,10 +49,11 @@ pub struct CodexBackend {
     /// codex 側 session UUID。初回 send 後に `~/.codex/sessions/` 配下から捕獲する。
     /// `Some` のときは `codex exec resume <UUID>` で連結し、aish 側からは履歴を再送しない。
     session_id: Option<String>,
+    sandbox: ResolvedSandbox,
 }
 
 impl CodexBackend {
-    pub fn new(cfg: &AiConfig, log: &LogConfig) -> Self {
+    pub fn new(cfg: &AiConfig, log: &LogConfig, sandbox: ResolvedSandbox) -> Self {
         let log_path = if log.enabled {
             Some(expand_tilde(&log.path))
         } else {
@@ -65,6 +67,7 @@ impl CodexBackend {
             model: (!cfg.model.is_empty()).then(|| cfg.model.clone()),
             effort: (!cfg.effort.is_empty()).then(|| cfg.effort.clone()),
             session_id: None,
+            sandbox,
         }
     }
 }
@@ -152,7 +155,8 @@ impl AiBackend for CodexBackend {
             args.push(format!("model_reasoning_effort={e}"));
         }
 
-        let stdout_result = run_cli_capture_stdout("codex", &args, &prompt, &self.log_path);
+        let stdout_result =
+            run_cli_capture_stdout("codex", &args, &prompt, &self.log_path, Some(&self.sandbox));
 
         let last_msg_content = std::fs::read_to_string(&last_msg_path).ok();
         let _ = std::fs::remove_file(&last_msg_path);

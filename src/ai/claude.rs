@@ -2,6 +2,7 @@ use super::common::{
     build_system_prompt_claude, check_stdin_cancel, expand_tilde, extract_json,
     extract_model_from_args, shell_join, write_log,
 };
+use super::sandbox::ResolvedSandbox;
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
 use crate::config::{AiConfig, LogConfig};
 use std::io::{Read, Write};
@@ -34,10 +35,11 @@ pub struct ClaudeBackend {
     /// runtime effort 指定 (`/effort` で書き換え可能)。`Some` のとき send() 時に `--effort <e>` を追加。
     effort: Option<String>,
     log_path: Option<String>,
+    sandbox: ResolvedSandbox,
 }
 
 impl ClaudeBackend {
-    pub fn new(cfg: &AiConfig, log: &LogConfig) -> Self {
+    pub fn new(cfg: &AiConfig, log: &LogConfig, sandbox: ResolvedSandbox) -> Self {
         let log_path = if log.enabled {
             Some(expand_tilde(&log.path))
         } else {
@@ -52,6 +54,7 @@ impl ClaudeBackend {
             model: (!cfg.model.is_empty()).then(|| cfg.model.clone()),
             effort: (!cfg.effort.is_empty()).then(|| cfg.effort.clone()),
             log_path,
+            sandbox,
         }
     }
 }
@@ -137,14 +140,26 @@ impl AiBackend for ClaudeBackend {
         // ターミナルコンテキストを含む prompt が ARG_MAX (~2MB) を超えると
         // execve() が E2BIG (`Argument list too long`, os error 7) で失敗するため。
 
-        let mut child = Command::new("claude")
-            .args(&args)
+        // sandbox 用ホストディレクトリは spawn 直前に作成 (lazy mkdir)。
+        self.sandbox
+            .ensure_home_dir()
+            .map_err(|e| AiError::Other(format!("sandbox dir: {e}")))?;
+        let (real_program, real_args) = self.sandbox.wrap("claude", &args);
+
+        let mut child = Command::new(&real_program)
+            .args(&real_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
 
         write_log(&self.log_path, &format!("claude {}", shell_join(&args)));
+        if real_program != "claude" {
+            write_log(
+                &self.log_path,
+                &format!("[sandboxed via {}] {}", real_program, shell_join(&real_args)),
+            );
+        }
         write_log(&self.log_path, &format!("[prompt via stdin]\n{prompt}"));
 
         // prompt を子プロセスの stdin に書き込み、EOF を伝えるために close する。

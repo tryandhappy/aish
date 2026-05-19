@@ -86,6 +86,106 @@ aish user@example.com   # SSH接続 (sshと同じ引数)
 
 
 
+## サンドボックス (bwrap で AI CLI を隔離する)
+
+aish は AI CLI (Claude Code / Codex / Gemini / Qwen) をローカルで起動するので、デフォルトではホストの `~/.ssh/`、`~/.aws/`、他プロジェクトのソースコード等を AI が無制限に読み書きできます。これが気になる場合は **Linux namespace** (`bwrap`) で AI ごとに別 HOME に閉じ込められます。
+
+### できること
+
+- 各 AI ごとに **独立した HOME** (`~/.aish/sandbox/{claude,codex,gemini,qwen}/`) を割り当てる
+- AI A が AI B の認証情報を読み出せない
+- ホストの `~/.ssh` / `~/.aws` / 他プロジェクトは見えない (`--unshare-all`)
+- API 呼び出し用のネットワークだけ残す (`--share-net`)
+- 必要なファイル (`~/.gitconfig` 等) だけ `ro_binds` で個別に渡す
+- AI ごとの HOME ディレクトリは **その AI を初めて使う直前** に lazy に作られる
+
+### 動作要件
+
+- **Linux 限定** (Ubuntu 24.04 / Debian 12+ / WSL2 + Ubuntu 24 を想定)
+- merged-usr (`/lib` `/bin` 等が `/usr/...` への symlink) を前提
+- macOS は namespace 非対応。`mode = "bwrap"` を指定すると起動時にエラーになります。Lima/OrbStack 等の Linux VM 内で aish を動かす運用は可能
+
+### セットアップ
+
+```bash
+# 1. bwrap をインストール
+sudo apt install bubblewrap
+
+# 2. (Ubuntu 24.04 のみ) AppArmor の unprivileged user namespace 制限を解除
+sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0
+# 恒久化: /etc/sysctl.d/00-aish.conf に同じ行を追記
+
+# 3. (WSL2 のみ) subuid / subgid を埋める
+sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $USER
+
+# 4. ~/.aish/config.toml に sandbox 設定を書く (下記)
+```
+
+### config 例
+
+```toml
+[ai.sandbox]
+mode = "none"                    # 全体デフォルト
+
+[ai.claude.sandbox]
+mode = "bwrap"
+# git/gh を AI から使いたいなら必要なファイルだけ ro で渡す
+ro_binds = [
+  "~/.gitconfig:~/.gitconfig",
+  "~/.config/gh:~/.config/gh",
+]
+unsetenv = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
+
+[ai.codex.sandbox]
+mode = "bwrap"
+```
+
+### 設定可能項目
+
+| キー | 既定 | 説明 |
+|---|---|---|
+| `mode` | `"none"` | `"none"` (素直に exec) または `"bwrap"` (bwrap で隔離) |
+| `home_root` | `"~/.aish/sandbox"` | AI ごとの HOME を作る親ディレクトリ |
+| `share_net` | `true` | `--share-net` (API 通信のため共有)。`false` で完全遮断 |
+| `binds` | `[]` | 追加 rw bind。`"src:dst"` 形式または `"src"` のみ |
+| `ro_binds` | `[]` | 追加 read-only bind |
+| `setenv` | `{}` | サンドボックス内で設定する環境変数 |
+| `unsetenv` | `[]` | サンドボックス内で削除する環境変数 (`SSH_AUTH_SOCK` は常に削除) |
+| `extra_bwrap_args` | `[]` | bwrap の末尾に生で追加する引数。エスケープハッチで、誤用すると隔離が壊れます |
+
+`[ai.sandbox]` がグローバルデフォルト、`[ai.<name>.sandbox]` で AI ごとに上書き。スカラ値は per-backend が勝ち、配列・setenv は append/override されます。
+
+### 初回ログイン
+
+サンドボックス内には認証情報を持ち込まないので、各 AI で **1 回ずつ手動ログイン**してください。
+
+```bash
+aish              # claude を選択して /ai claude
+                  # → sandbox 内で初回認証フローが走る
+                  # → ~/.aish/sandbox/claude/ に token が保存される
+```
+
+### sandbox 内で AI バイナリが見つからないとき
+
+`claude` バイナリが nvm / asdf / Volta 経由で `~/.nvm/...` 等にある場合、`--tmpfs $HOME` で消えてしまうので個別に bind が必要です。
+
+```toml
+[ai.claude.sandbox]
+mode = "bwrap"
+ro_binds = ["~/.nvm:~/.nvm"]
+```
+
+### 検証コマンド
+
+```bash
+# sandbox 内で何が見えるか確認
+which claude
+ls -la ~              # AI 専用の HOME しか見えないはず
+cat ~/.ssh/id_rsa     # "No such file" が出れば OK
+```
+
+
+
 ## 対話シェルを常に aish にする
 
 ターミナルを開いた瞬間から aish に入りたい場合は、`~/.bashrc` の **末尾** に以下のいずれかを追加してください。挙動の好みで方式 A / B を選びます。

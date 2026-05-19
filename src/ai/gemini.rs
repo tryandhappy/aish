@@ -2,6 +2,7 @@ use super::common::{
     build_full_prompt, build_system_prompt, expand_tilde, extract_model_from_args,
     parse_ai_response_lossy, run_cli_capture_stdout, trim_history,
 };
+use super::sandbox::ResolvedSandbox;
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
 use crate::config::{AiConfig, LogConfig};
 
@@ -25,10 +26,11 @@ pub struct GeminiBackend {
     /// runtime effort 指定 (`/effort`)。Gemini CLI には該当フラグが無いので保存のみで適用しない。
     effort: Option<String>,
     history: Vec<(String, String)>,
+    sandbox: ResolvedSandbox,
 }
 
 impl GeminiBackend {
-    pub fn new(cfg: &AiConfig, log: &LogConfig) -> Self {
+    pub fn new(cfg: &AiConfig, log: &LogConfig, sandbox: ResolvedSandbox) -> Self {
         let log_path = if log.enabled {
             Some(expand_tilde(&log.path))
         } else {
@@ -42,6 +44,7 @@ impl GeminiBackend {
             model: (!cfg.model.is_empty()).then(|| cfg.model.clone()),
             effort: (!cfg.effort.is_empty()).then(|| cfg.effort.clone()),
             history: Vec::new(),
+            sandbox,
         }
     }
 }
@@ -100,7 +103,13 @@ impl AiBackend for GeminiBackend {
             args.push(m.clone());
         }
 
-        let stdout = run_cli_capture_stdout("gemini", &args, &prompt, &self.log_path)?;
+        let stdout = run_cli_capture_stdout(
+            "gemini",
+            &args,
+            &prompt,
+            &self.log_path,
+            Some(&self.sandbox),
+        )?;
         let response = parse_ai_response_lossy(&stdout);
         self.history
             .push((req.user_prompt.to_string(), response.message.clone()));

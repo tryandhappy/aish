@@ -1,3 +1,4 @@
+use super::sandbox::ResolvedSandbox;
 use super::types::{AiError, AiResponse};
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
@@ -248,20 +249,37 @@ pub(crate) fn extract_model_from_args(args: &[String]) -> Option<String> {
 
 /// 子プロセスを spawn し stdin に prompt を流して stdout 全体を返す。
 /// Ctrl+C でキャンセル、stderr はログに記録。
+/// `sandbox` が `Some` で `mode = bwrap` のときは bwrap で wrap する。
+/// wrap 前の `(program, args)` はログ用、wrap 後は実 spawn 用に使う。
 pub(crate) fn run_cli_capture_stdout(
     program: &str,
     args: &[String],
     stdin_input: &str,
     log_path: &Option<String>,
+    sandbox: Option<&ResolvedSandbox>,
 ) -> Result<String, AiError> {
-    let mut child = Command::new(program)
-        .args(args)
+    if let Some(sb) = sandbox {
+        sb.ensure_home_dir()
+            .map_err(|e| AiError::Other(format!("sandbox dir: {e}")))?;
+    }
+    let (real_program, real_args) = match sandbox {
+        Some(sb) => sb.wrap(program, args),
+        None => (program.to_string(), args.to_vec()),
+    };
+    let mut child = Command::new(&real_program)
+        .args(&real_args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
 
     write_log(log_path, &format!("{program} {}", shell_join(args)));
+    if sandbox.is_some() && real_program != program {
+        write_log(
+            log_path,
+            &format!("[sandboxed via {}] {}", real_program, shell_join(&real_args)),
+        );
+    }
     write_log(log_path, &format!("[prompt via stdin]\n{stdin_input}"));
 
     {

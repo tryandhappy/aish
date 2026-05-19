@@ -41,6 +41,14 @@ aish は SSH でサーバを管理する道具なので、**ユーザが画面�
 - **AI 応答受信後は ring_buffer に注釈を append してから `mark_sent_for(current_kind)`** の順序を守る。注釈 (`[aish→<kind>]> ...` / `[ai/<kind>]> ...` / `[ai/<kind> suggests] ...`) は **current AI は再受信せず、他 backend は次回 catch-up で受信する**。逆順にすると current AI が自分の発話をループで受信してしまう。
 - **`/clear` は ring_buffer.mark_sent_all() で全 backend の cursor を末尾に進める**が、AI CLI 内部の session/history は **current backend のみ** リセットする (他 backend の instance は保持していないため)。「全 AI の会話を仕切り直す」セマンティクスを守りつつ、副作用は最小限にする妥協案。
 - **ring_buffer の `[link]` ライクな PTY 文字列と注釈ラベル (`[aish→...]` / `[ai/...]`) は衝突しうる**。AI は文脈で区別する想定。誤検出が頻発したらフォーマットを XML 風 (`<aish to="claude">`) 等に変更する余地あり。
+- **sandbox 用ホスト HOME (`~/.aish/sandbox/<backend>/`) は spawn 直前に lazy に作る**。aish 起動時には作らない (`ResolvedSandbox::ensure_home_dir`)。`mode = "none"` の AI のディレクトリは永遠に作られない。`fs::create_dir_all` は冪等なので spawn のたびに呼んでも問題ない。
+- **bwrap の `--share-net` 既定は `true`**。AI が API 通信するため。完全遮断したい場合は config で `share_net = false` 明示。逆に「ネットワークを塞ぐデフォルト」にすると見えない通信エラーで AI が無反応に見えるので避ける。
+- **bwrap 引数組み立ては merged-usr 前提**。`/usr` を ro-bind して `/lib` `/bin` `/lib64` `/sbin` を `--symlink usr/...` で生やす。非 merged-usr distro (旧 Debian 等) は対応外。
+- **`SSH_AUTH_SOCK` は常に `--unsetenv`** にハードコード。`unsetenv` 設定とは別。agent forward を sandbox に持ち込ませない安全側のデフォルトで、これは config で切れない (隔離意義のため)。
+- **sandbox 内の HOME 配下マッピングは backend ごとに固定**:`claude → $HOME/.claude`, `codex → $HOME/.codex`, `gemini → $HOME/.config/gemini-cli`, `qwen → $HOME/.qwen`。`sandbox.rs::sandbox_home_subpath` で定義。CLI 側のデフォルトが変わったらここを更新する。
+- **`mode = "bwrap"` は Linux 限定**。`sandbox::resolve` で `cfg!(target_os = "linux")` を確認し、それ以外では `AiError::Other` でエラー終了する。macOS では `mode = "none"` を強制。
+- **`extra_bwrap_args` はエスケープハッチ**。`--share-pid` や `--bind /` 等で隔離が壊れる可能性がある。ユーザ責任で、aish 側は中身を検証しない。
+- **nvm / asdf / Volta で AI binary が HOME 配下にある場合は `--tmpfs $HOME` で消える**。ユーザが `ro_binds = ["~/.nvm:~/.nvm"]` 等で明示的に救済する必要がある。aish 側でハードコードした try-bind は持たない (どこに入れるかはユーザ次第のため)。
 
 ## 開発フロー
 

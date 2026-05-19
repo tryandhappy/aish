@@ -69,3 +69,43 @@ extra_args = []                                                # e.g. ["-m", "ge
 
 [ai.qwen]
 extra_args = []
+
+# Sandbox settings (Linux only; macOS unsupported, see README)
+# Each AI CLI can be confined to a Linux namespace via bwrap (`bubblewrap`).
+# - "none" (default): run the AI CLI directly on the host (legacy behavior)
+# - "bwrap": run via `bwrap --unshare-all --share-net ...` with an isolated $HOME
+#
+# Global defaults live in [ai.sandbox]; per-backend overrides in [ai.<name>.sandbox]
+# merge field-by-field (scalars: per-backend wins; arrays/setenv: per-backend appends/overrides).
+#
+# Each AI gets its own host dir at <home_root>/<backend>/ (created lazily right before
+# the AI is first spawned). The dir is mounted at the conventional path inside the sandbox:
+#   claude → $HOME/.claude
+#   codex  → $HOME/.codex
+#   gemini → $HOME/.config/gemini-cli
+#   qwen   → $HOME/.qwen
+[ai.sandbox]
+mode = "none"                                                  # default: "none" — "none" | "bwrap"
+home_root = "~/.aish/sandbox"                                  # default: "~/.aish/sandbox"
+share_net = true                                               # default: true — keep net namespace shared (required for API calls)
+binds = []                                                     # default: [] — extra rw bind mounts. Format: "src" or "src:dst"
+ro_binds = []                                                  # default: [] — extra read-only bind mounts
+setenv = {}                                                    # default: {} — env vars to set inside sandbox
+unsetenv = []                                                  # default: [] — env vars to drop inside sandbox (SSH_AUTH_SOCK is always dropped)
+extra_bwrap_args = []                                          # default: [] — raw bwrap args appended at end. Escape hatch — misuse can weaken isolation.
+
+# Per-AI override examples (uncomment to enable):
+#
+# [ai.claude.sandbox]
+# mode = "bwrap"
+# ro_binds = ["~/.gitconfig:~/.gitconfig", "~/.config/gh:~/.config/gh"]
+# unsetenv = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
+#
+# [ai.codex.sandbox]
+# mode = "bwrap"
+#
+# [ai.gemini.sandbox]
+# mode = "bwrap"
+#
+# [ai.qwen.sandbox]
+# mode = "none"                                                # leave qwen unsandboxed, etc.
