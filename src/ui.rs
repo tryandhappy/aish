@@ -703,13 +703,25 @@ fn redraw_minibuffer(
 
     let new_rows_used = visible_count as u16;
 
-    // DECSTBM を更新（シュリンクする場合は不要になった行を消去）
+    // DECSTBM を更新（シュリンク時は不要行を消去、グロー時は bash 出力を scroll 退避）
     if new_rows_used != *rows_used {
         if new_rows_used < *rows_used {
             let clear_from = term_rows - *rows_used + 1;
             let clear_to = term_rows - new_rows_used;
             for r in clear_from..=clear_to {
                 let _ = write!(stdout, "\x1b[{r};1H\x1b[2K");
+            }
+        } else if *rows_used > 0 {
+            // grow: 現 DECSTBM の bottom に cursor を置いて \n を delta 個出し、
+            // 現 scroll 領域内で bash 出力を上に退避してから minibuffer の伸長を許す。
+            // *rows_used == 0 (初回) は show_minibuffer 側で既に 1 行確保済みなので
+            // スキップ (= 画面上半分しか使っていないケースで上端を削らないため)。
+            // stdout 専用、PTY には送らない。
+            let delta = new_rows_used - *rows_used;
+            let current_bottom = term_rows.saturating_sub(*rows_used).max(1);
+            let _ = write!(stdout, "\x1b[{current_bottom};1H");
+            for _ in 0..delta {
+                let _ = write!(stdout, "\n");
             }
         }
         let scroll_bottom = term_rows.saturating_sub(new_rows_used).max(1);
@@ -998,6 +1010,12 @@ fn show_minibuffer(
 
     // カーソル保存
     let _ = write!(stdout, "\x1b7");
+    let _ = stdout.flush();
+    // aish プロンプト用の空き行を画面下に確保する。
+    // stdout 専用 LF: PTY には送らないので bash の入力バッファや実行状態に
+    // 影響しない。cursor が画面最終行なら scroll で退避、それ以外なら cursor
+    // が下に降りるだけで上端は失われない。\x1b8 復元で元位置 (絶対座標) に戻る。
+    let _ = write!(stdout, "\n");
     let _ = stdout.flush();
 
     let (result, rows_used) = read_minibuffer_line(
