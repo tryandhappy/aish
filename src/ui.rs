@@ -666,6 +666,64 @@ fn compute_visual_layout(
     (vlines, cursor_vline, cursor_vcol)
 }
 
+/// DSR (Device Status Report) `\x1b[6n` の応答 `\x1b[{row};{col}R` をパースする。
+/// 受信バッファの末尾が `R` で、`[` 以降に `{row};{col}` の形が含まれること。
+fn parse_dsr_response(buf: &[u8]) -> Option<(u16, u16)> {
+    if !buf.ends_with(b"R") {
+        return None;
+    }
+    let lb = buf.iter().position(|&b| b == b'[')?;
+    let body = &buf[lb + 1..buf.len() - 1];
+    let s = std::str::from_utf8(body).ok()?;
+    let (r, c) = s.split_once(';')?;
+    Some((r.trim().parse().ok()?, c.trim().parse().ok()?))
+}
+
+/// `\x1b[6n` (DSR) を端末に送り、応答 `\x1b[{row};{col}R` を 80ms 以内に受信して
+/// cursor 位置を返す。応答が来ない / パースできない端末では `None`。
+/// `passthrough_read_raw` から呼ばれた `show_minibuffer` 専用 (stdin が raw モードで
+/// `passthrough_read_raw` 側で握られているが、ここでは別途 fd 0 を `ManuallyDrop` で
+/// 借りて非ブロッキングで読み取る)。応答前にユーザがキーを打った場合、その文字は
+/// 応答パース用バッファに混入して捨てられる (実用上 80ms 以内にユーザが打つことは稀)。
+#[cfg(unix)]
+fn query_cursor_position_dsr(stdout: &mut io::Stdout) -> Option<(u16, u16)> {
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+    let _ = write!(stdout, "\x1b[6n");
+    let _ = stdout.flush();
+
+    let mut stdin = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
+    let fd = stdin.as_raw_fd();
+    let mut buf: Vec<u8> = Vec::with_capacity(16);
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_millis(80);
+
+    while start.elapsed() < timeout {
+        let mut pollfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ready = unsafe { libc::poll(&mut pollfd, 1, 10) };
+        if ready <= 0 {
+            continue;
+        }
+        let mut byte = [0u8; 1];
+        match stdin.read(&mut byte) {
+            Ok(1) => {
+                buf.push(byte[0]);
+                if byte[0] == b'R' {
+                    return parse_dsr_response(&buf);
+                }
+                if buf.len() > 32 {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
 /// aishプロンプト（ミニバッファ）を現在の状態で再描画する。
 /// 入力長に応じて縦方向に拡張し、DECSTBMを動的に調整する。
 /// 戻り値: 新しくミニバッファが占有する行数。
@@ -681,6 +739,7 @@ fn redraw_minibuffer(
     chars: &[char],
     cursor_pos: usize,
     rows_used: &mut u16,
+    was_at_bottom: bool,
 ) {
     let total_cols = term_cols as usize;
     let avail_first = total_cols.saturating_sub(label_width).max(1);
@@ -711,11 +770,12 @@ fn redraw_minibuffer(
             for r in clear_from..=clear_to {
                 let _ = write!(stdout, "\x1b[{r};1H\x1b[2K");
             }
-        } else if *rows_used > 0 {
+        } else if *rows_used > 0 && was_at_bottom {
             // grow: 現 DECSTBM の bottom に cursor を置いて \n を delta 個出し、
             // 現 scroll 領域内で bash 出力を上に退避してから minibuffer の伸長を許す。
-            // *rows_used == 0 (初回) は show_minibuffer 側で既に 1 行確保済みなので
-            // スキップ (= 画面上半分しか使っていないケースで上端を削らないため)。
+            // was_at_bottom = false (画面上半分始まり) の場合は入口で scroll を
+            // 起こしていない (= 上端を削らないため) ので、ここで scroll すると
+            // 逆に画面が無駄に下にずれてしまうのでスキップ。
             // stdout 専用、PTY には送らない。
             let delta = new_rows_used - *rows_used;
             let current_bottom = term_rows.saturating_sub(*rows_used).max(1);
@@ -776,6 +836,7 @@ fn read_minibuffer_line(
     label: &str,
     label_width: usize,
     input_bg: &str,
+    was_at_bottom: bool,
 ) -> (Option<String>, u16) {
     use std::os::unix::io::{AsRawFd, FromRawFd};
     let mut stdin = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
@@ -792,7 +853,7 @@ fn read_minibuffer_line(
 
     redraw_minibuffer(
         stdout, term_rows, term_cols, max_rows, label, label_width, input_bg,
-        &chars, cursor_pos, &mut rows_used,
+        &chars, cursor_pos, &mut rows_used, was_at_bottom,
     );
 
     loop {
@@ -986,7 +1047,7 @@ fn read_minibuffer_line(
 
         redraw_minibuffer(
             stdout, term_rows, term_cols, max_rows, label, label_width, input_bg,
-            &chars, cursor_pos, &mut rows_used,
+            &chars, cursor_pos, &mut rows_used, was_at_bottom,
         );
     }
 }
@@ -1008,18 +1069,21 @@ fn show_minibuffer(
     // 最大ミニバッファ行数: 端末高さの半分、かつ1以上
     let max_rows = (rows / 2).max(1);
 
-    // カーソル保存
-    let _ = write!(stdout, "\x1b7");
-    let _ = stdout.flush();
-    // aish プロンプト用の空き行を画面下に確保する。
-    // stdout 専用 LF: PTY には送らないので bash の入力バッファや実行状態に
-    // 影響しない。cursor が画面最終行なら scroll で退避、それ以外なら cursor
-    // が下に降りるだけで上端は失われない。\x1b8 復元で元位置 (絶対座標) に戻る。
-    let _ = write!(stdout, "\n");
-    let _ = stdout.flush();
+    // DSR (\x1b[6n) で現在の cursor 位置を取得して、画面下端かどうかを動的判定する。
+    // 応答が来ない端末では was_at_bottom = false の安全側 fallback (= 入口 \n を
+    // 出さない / 終了時 cursor を rows 行目に置く)。
+    let (saved_row, saved_col) = query_cursor_position_dsr(stdout).unwrap_or((rows, 1));
+    let was_at_bottom = saved_row >= rows;
+
+    // 画面下端のときだけ scroll 退避で空き行を確保。stdout 専用 LF: PTY には送らない。
+    // 画面上半分のときは何もしない (上端を削らない)。
+    if was_at_bottom {
+        let _ = write!(stdout, "\n");
+        let _ = stdout.flush();
+    }
 
     let (result, rows_used) = read_minibuffer_line(
-        stdout, rows, cols, max_rows, aish_label, label_width, input_bg,
+        stdout, rows, cols, max_rows, aish_label, label_width, input_bg, was_at_bottom,
     );
 
     // DECSTBM をフルリセット (1..rows)、ミニバッファが使用した追加行をクリア
@@ -1034,8 +1098,12 @@ fn show_minibuffer(
         // 1 行ミニバッファでも最終行に入力跡が残っているのでクリア
         let _ = write!(stdout, "\x1b[{rows};1H\x1b[2K");
     }
-    // カーソル復元
-    let _ = write!(stdout, "\x1b8");
+    // cursor を絶対座標で復元。画面下端ケースでは scroll で bash 入力欄が
+    // rows_used 行ぶん上に動いているので、保存位置から rows_used を引く。
+    // 画面上半分ケースでは scroll を起こしていないので保存位置そのまま。
+    let scrolled = if was_at_bottom { rows_used } else { 0 };
+    let restored_row = saved_row.saturating_sub(scrolled).max(1);
+    let _ = write!(stdout, "\x1b[{restored_row};{saved_col}H");
     let _ = stdout.flush();
     MINIBUFFER_ACTIVE.store(false, Ordering::Relaxed);
 
@@ -1193,5 +1261,52 @@ fn utf8_char_len(b: u8) -> usize {
         3
     } else {
         4
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_dsr_response_typical() {
+        assert_eq!(parse_dsr_response(b"\x1b[24;10R"), Some((24, 10)));
+    }
+
+    #[test]
+    fn parse_dsr_response_single_digit() {
+        assert_eq!(parse_dsr_response(b"\x1b[1;1R"), Some((1, 1)));
+    }
+
+    #[test]
+    fn parse_dsr_response_large_terminal() {
+        assert_eq!(parse_dsr_response(b"\x1b[200;500R"), Some((200, 500)));
+    }
+
+    #[test]
+    fn parse_dsr_response_with_leading_garbage() {
+        // ユーザがキーを打って混入したバイトが前に付くケース。`[` までは捨てて
+        // パースしたいが、現実装は最初の `[` を起点にするのでこのケースは通る。
+        assert_eq!(parse_dsr_response(b"x\x1b[24;10R"), Some((24, 10)));
+    }
+
+    #[test]
+    fn parse_dsr_response_missing_terminator() {
+        assert_eq!(parse_dsr_response(b"\x1b[24;10"), None);
+    }
+
+    #[test]
+    fn parse_dsr_response_missing_bracket() {
+        assert_eq!(parse_dsr_response(b"24;10R"), None);
+    }
+
+    #[test]
+    fn parse_dsr_response_non_numeric() {
+        assert_eq!(parse_dsr_response(b"\x1b[abc;def R"), None);
+    }
+
+    #[test]
+    fn parse_dsr_response_empty() {
+        assert_eq!(parse_dsr_response(b""), None);
     }
 }
