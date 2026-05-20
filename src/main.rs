@@ -629,6 +629,16 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                                     continue;
                                 }
 
+                                // 最初に実行する AI 提案コマンドの直前で、bash の打ちかけ
+                                // 入力を Ctrl+A (行頭へ) + Ctrl+K (行末までキル) で消去する。
+                                // SIGINT は発火させないので vim/top 等の子プロセスを意図せず
+                                // kill しない。bash プロンプト直後 (打ちかけなし) でも no-op
+                                // で害なし。後続コマンドは前のコマンドが完了して bash
+                                // プロンプトに戻った状態で送られるので、追加不要。
+                                if !any_executed {
+                                    pty.write(&[0x01, 0x0b])?;
+                                }
+
                                 any_executed = true;
 
                                 // ユーザが承認したコマンドをそのまま PTY に送る。ラップしない。

@@ -1061,7 +1061,6 @@ fn show_minibuffer(
     tx: &Sender<InputEvent>,
     input_bg: &str,
     aish_label: &str,
-    cancel_shell: bool,
 ) {
     MINIBUFFER_ACTIVE.store(true, Ordering::Relaxed);
     let (rows, cols) = terminal_size();
@@ -1129,14 +1128,10 @@ fn show_minibuffer(
             }
             let _ = writeln!(stdout);
             let _ = stdout.flush();
-            if cancel_shell {
-                // bash の打ちかけを Ctrl+A (行頭へ) + Ctrl+K (行末までキル) で消す。
-                // Ctrl+C (0x03) と違い SIGINT を発火させないので、vim/top 等の
-                // 子プロセスが PTY を握っていても意図せず kill しない。bash
-                // readline 以外に届くと ^A^K がリテラル文字として流れる副作用は
-                // 残るが、SIGINT 直撃よりは穏当な失敗モード。
-                let _ = tx.send(InputEvent::PtyData(vec![0x01, 0x0b]));
-            }
+            // bash の打ちかけ入力消去 (Ctrl+A + Ctrl+K) はここでは送らない。
+            // ユーザが AI 提案コマンドの実行を承認した直前 (main.rs 側) で初回 1 回
+            // だけ送る。これにより「AI に質問はしたが提案を拒否」したケースで
+            // bash の打ちかけが温存される。
             let _ = tx.send(InputEvent::AiPrompt(text));
         }
         None => {
@@ -1157,7 +1152,6 @@ fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &st
     let mut stdin = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
     let mut stdout = io::stdout();
     let mut buf = [0u8; 1];
-    let mut at_line_start = true;
 
     loop {
         match stdin.read(&mut buf) {
@@ -1170,17 +1164,15 @@ fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &st
         match b {
             0x1f => {
                 // Ctrl+/ → aishプロンプトを開く
-                show_minibuffer(&mut stdout, tx, input_bg, aish_label, !at_line_start);
+                show_minibuffer(&mut stdout, tx, input_bg, aish_label);
                 return;
             }
             0x03 => {
                 // Ctrl+C: PTYに送信
                 let _ = tx.send(InputEvent::PtyData(vec![b]));
-                at_line_start = true;
             }
             b'\r' | b'\n' => {
                 let _ = tx.send(InputEvent::PtyData(vec![b]));
-                at_line_start = true;
             }
             0x1b => {
                 // ESC: 後続バイトをpollで時間制限つきに読み取る。
@@ -1223,7 +1215,6 @@ fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &st
                     && (seq_bytes[2] == b'I' || seq_bytes[2] == b'O');
                 if !is_focus {
                     let _ = tx.send(InputEvent::PtyData(seq_bytes));
-                    at_line_start = false;
                 }
             }
             _ => {
@@ -1243,7 +1234,6 @@ fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &st
                 } else {
                     let _ = tx.send(InputEvent::PtyData(vec![b]));
                 }
-                at_line_start = false;
             }
         }
     }
