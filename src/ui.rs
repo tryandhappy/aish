@@ -1041,10 +1041,7 @@ fn show_minibuffer(
 
     match result {
         Some(text) if text.trim().is_empty() => {
-            // 空Enter → 何もしない（ステータスバーは復元済み）
-            if cancel_shell {
-                let _ = tx.send(InputEvent::PtyData(vec![0x03]));
-            }
+            // 空 Enter → 何もしない。打ちかけがあれば画面に残す (ユーザが手で消す)。
         }
         Some(text) => {
             // 履歴に追加（重複は追加しない）
@@ -1065,15 +1062,19 @@ fn show_minibuffer(
             let _ = writeln!(stdout);
             let _ = stdout.flush();
             if cancel_shell {
-                let _ = tx.send(InputEvent::PtyData(vec![0x03]));
+                // bash の打ちかけを Ctrl+A (行頭へ) + Ctrl+K (行末までキル) で消す。
+                // Ctrl+C (0x03) と違い SIGINT を発火させないので、vim/top 等の
+                // 子プロセスが PTY を握っていても意図せず kill しない。bash
+                // readline 以外に届くと ^A^K がリテラル文字として流れる副作用は
+                // 残るが、SIGINT 直撃よりは穏当な失敗モード。
+                let _ = tx.send(InputEvent::PtyData(vec![0x01, 0x0b]));
             }
             let _ = tx.send(InputEvent::AiPrompt(text));
         }
         None => {
-            // キャンセル (ESC/Ctrl+C/Ctrl+//exit) — ステータスバーは復元済み
-            if cancel_shell {
-                let _ = tx.send(InputEvent::PtyData(vec![0x03]));
-            }
+            // キャンセル (ESC/Ctrl+C/Ctrl+//exit) → 何もしない。
+            // 打ちかけは画面に残る。Ctrl+/ を誤って押した後でも shell 入力中の
+            // テキストが失われない。
         }
     }
 }
