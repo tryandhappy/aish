@@ -60,6 +60,16 @@ sudo curl -fsSL -o /usr/bin/aish https://github.com/tryandhappy/aish/releases/la
 sudo chmod 755 /usr/bin/aish
 ```
 
+### ソースからビルド (開発版を /usr/bin/aish に上書き)
+
+リポジトリをクローン済みの環境で、ローカル変更を試したいとき:
+
+```bash
+cargo build --release && sudo install -m 755 target/release/aish /usr/bin/aish
+```
+
+`sudo cargo install ...` だと `sudo` がユーザ PATH を引き継がず `cargo` が見つからないことがあるため、build と install を分離している。
+
 
 
 ## アップデート
