@@ -35,7 +35,7 @@ aish は SSH でサーバを管理する道具なので、**ユーザが画面�
 - **Shift+Enter による改行は非対応**。ターミナル間で CSI u / legacy の扱いが揃わないため。改行は `Alt+Enter` のみサポート。
 - **入力中コマンドがある状態で aishプロンプトをキャンセル / 確定した場合**、PTY に `Ctrl+C` (0x03) を送って部分入力を破棄する。
 - **AI 提案コマンドの完了判定は `PromptSniffer` による passive 検出**。コマンドはユーザ承認文字列をそのまま PTY に送り、PTY 出力末尾がプロンプト形 (`[$#>%➜❯»][空白]+`) になり 200ms 静音したら完了。
-- **TUI recovery (PTY への `Ctrl+L` 送信) は「TUI 終了」シグナルだけで発火させる**。alt screen 抜け (`\x1b[?1049l` / `\x1b[?1047l` / `\x1b[?47l`) と RIS (`\x1bc`) は安全。alt screen 突入・`\x1b[2J`・DECSTBM (`\x1b[..r`) は vim 等が動作中にも送出するため検出対象に含めてはいけない。混入させると vim insert モード中のバッファに `^L` がリテラル文字として紛れ込む。
+- **TUI アプリ (vim / less / top 等) 終了後は aish 側から何も出さない**。bash 単体と同じ「alt screen から戻った状態」に任せる。元はステータスバー復旧のため `Ctrl+L` を撃っていたが、ステータスバー廃止 (commit 7d13700) で動機が消えたため一律全廃した経緯がある。再導入する場合は vim insert モード中の誤発火 (バッファに `^L` がリテラル混入) を避けるため、PTY 出力の passive 検出だけで一意に「終了」と判定できる根拠を用意すること。`\x1b[2J`・DECSTBM (`\x1b[..r`)・alt screen 突入 (`\x1b[?1049h` 等) は TUI 動作中にも出るので終了判定には使えない。
 - **パススルーで PTY に転送する ESC シーケンスは完全な形まで読み切ってからまとめて送る**。CSI (`ESC [ ... <0x40-0x7E>`) だけでなく SS3 (`ESC O <1 byte>`) も同様。途中で分割して 2 回の write になると、受信側 (vim 等) は ESC タイムアウトで別キーと解釈する (例: `ESC O` + `H` → `ESC` + `O` (open line above) と誤解)。Home/End や F1〜F4、アプリケーションカーソルモードの矢印キーが該当。
 - **ring_buffer の未送信 cursor は backend ごとに独立**。`sent_marks: [u64; BackendKind::COUNT]` で保持し、`get_unsent_for(kind)` / `mark_sent_for(kind)` を経由する。`/ai` 切替時に新 AI が「これまでの会話の続き」を catch-up できるようにするための仕組み。**新規 backend を追加するときは `BackendKind::ordinal()` / `all()` / `COUNT` を必ず更新する**。
 - **AI 応答受信後は ring_buffer に注釈を append してから `mark_sent_for(current_kind)`** の順序を守る。注釈 (`[aish→<kind>]> ...` / `[ai/<kind>]> ...` / `[ai/<kind> suggests] ...`) は **current AI は再受信せず、他 backend は次回 catch-up で受信する**。逆順にすると current AI が自分の発話をループで受信してしまう。

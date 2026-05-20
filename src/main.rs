@@ -180,35 +180,6 @@ fn debug_bytes(data: &[u8], max: usize) -> String {
     s
 }
 
-/// PTY 出力に TUI コマンドが終了した形跡があるかを検出する。
-/// 「終了」のシグナルだけを拾うのが重要: 動作中に発生し得るシーケンス
-/// (`\x1b[2J`, DECSTBM, alt screen 突入) を拾うと、TUI 動作中に
-/// recovery (Ctrl+L) を撃ち、insert モード中のバッファに ^L が紛れ込む等の
-/// 誤動作を引き起こす。
-/// 検出対象:
-/// - alt screen 抜け (`\x1b[?1049l`、`\x1b[?1047l`、`\x1b[?47l`)
-/// - 端末フルリセット (`\x1bc`, RIS)
-fn contains_tui_signature(data: &[u8]) -> bool {
-    // alt screen 終了のみ検出する。
-    // 「TUI が終わった」ことを確実に示すのは alt screen からの抜け (`?1049l` 等)。
-    // \x1b[2J や DECSTBM (\x1b[..r) は vim 等が動作中にも送出するため、
-    // これらを拾うと TUI 内で Ctrl+L を撃ち、insert モード中のバッファに ^L が
-    // 紛れ込むなどの誤動作を引き起こす。
-    if data.windows(8).any(|w| w == b"\x1b[?1049l") {
-        return true;
-    }
-    if data.windows(8).any(|w| w == b"\x1b[?1047l") {
-        return true;
-    }
-    if data.windows(6).any(|w| w == b"\x1b[?47l") {
-        return true;
-    }
-    if data.windows(2).any(|w| w == b"\x1bc") {
-        return true;
-    }
-    false
-}
-
 /// aish プロンプト入力が slash command か判定し、該当すれば処理する。
 /// 戻り値:
 ///   `None` — slash command ではない (通常の AI プロンプトとして送信せよ)
@@ -480,9 +451,6 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
     let mut pending_input = true; // 入力スレッド起動待ち
     let mut input_idle = true;
     let mut last_pty_output = Instant::now();
-    // passthrough モードで TUI コマンド (top/vim/less 等) が走った形跡。
-    // 検出されると PTY 出力が落ち着いたタイミングで Ctrl+L 復旧を実行する。
-    let mut tui_recovery_pending = false;
 
     // メインループ
     'main_loop: loop {
@@ -500,37 +468,6 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
             }
             ring_buffer.append(&data);
             last_pty_output = Instant::now();
-            if !tui_recovery_pending && contains_tui_signature(&data) {
-                tui_recovery_pending = true;
-                debug_log(&format!(
-                    "[main loop] tui_signature detected: {}",
-                    debug_bytes(&data, 200)
-                ));
-            }
-        }
-
-        // PTY出力が落ち着いたら TUI コマンド (top 等) からの復帰処理を行う。
-        // shell に Ctrl+L を送って画面クリア + プロンプト再描画を **shell 自身に** 任せる。
-        // aish 側で escape を組み立てるよりも端末固有のクセに強い。
-        if tui_recovery_pending && last_pty_output.elapsed() > Duration::from_millis(50) {
-            debug_log("[main loop] tui recovery: Ctrl+L to shell");
-            io::stdout().write_all(b"\x1b[r")?;
-            io::stdout().flush()?;
-            pty.write(b"\x0c")?;
-            thread::sleep(Duration::from_millis(200));
-            let mut response = Vec::new();
-            while let Ok(data) = pty_rx.try_recv() {
-                response.extend_from_slice(&data);
-                io::stdout().write_all(&data)?;
-                ring_buffer.append(&data);
-            }
-            io::stdout().flush()?;
-            debug_log(&format!(
-                "[main loop] Ctrl+L response: {} bytes: {}",
-                response.len(),
-                debug_bytes(&response, 300)
-            ));
-            tui_recovery_pending = false;
         }
 
         // PTY出力が落ち着いたら入力スレッドを起動
@@ -703,11 +640,9 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                                 // - stdin → PTY 転送（パスワード入力・Ctrl+C 中断・対話応答）
                                 // - SIGWINCH 検知（リサイズ追従）
                                 // - 完了判定: PTY 出力末尾がプロンプト形 + 200ms 静音
-                                // - alt screen 利用検知: top/vim 等が DECSTBM を破壊することへの備え
                                 let quiet_threshold = Duration::from_millis(200);
                                 let mut sniffer = prompt_sniffer::PromptSniffer::new();
                                 let mut last_pty_activity = Instant::now();
-                                let mut tui_detected = false;
                                 let mut chunk_count = 0usize;
                                 loop {
                                     // 子プロセス (ssh / shell) が死んだら待っても意味がない。
@@ -742,10 +677,6 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                                         io::stdout().flush()?;
                                         ring_buffer.append(&data);
                                         sniffer.feed(&data);
-                                        if !tui_detected && contains_tui_signature(&data) {
-                                            tui_detected = true;
-                                            debug_log("tui_detected = true");
-                                        }
                                         got_pty = true;
                                     }
                                     if got_pty {
@@ -764,24 +695,7 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                                     thread::sleep(Duration::from_millis(20));
                                 }
 
-                                // 完了後、TUI が DECSTBM や origin mode を残したまま抜けた
-                                // 可能性があるなら shell に Ctrl+L を送って復旧する。
-                                debug_log(&format!(
-                                    "exec end: tui_detected={}, chunks={}",
-                                    tui_detected, chunk_count
-                                ));
-                                if tui_detected {
-                                    debug_log("[wait loop] tui recovery: Ctrl+L to shell");
-                                    io::stdout().write_all(b"\x1b[r")?;
-                                    io::stdout().flush()?;
-                                    pty.write(b"\x0c")?;
-                                    thread::sleep(Duration::from_millis(200));
-                                    while let Ok(data) = pty_rx.try_recv() {
-                                        io::stdout().write_all(&data)?;
-                                        ring_buffer.append(&data);
-                                    }
-                                    io::stdout().flush()?;
-                                }
+                                debug_log(&format!("exec end: chunks={}", chunk_count));
 
                                 executed_summary.push(format!("`{cmd}`"));
                             }
