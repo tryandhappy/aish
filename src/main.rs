@@ -807,6 +807,16 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
     // (main loop / 確認ループ内) でそれぞれ \x1b[r を送っているので、
     // 通常の終了経路ではここでリセットしなくても DECSTBM は default のはず。
 
+    // aish 終了メッセージ。raw モードのまま出すので CRLF を明示する。
+    // bash の "exit" echo の直後に、この行が画面に追加される形になる。
+    // header_color が空文字なら色なしのプレーン表示。
+    let _ = write!(
+        io::stdout(),
+        "{}aish session ended.\x1b[0m\r\n",
+        config.display.header_color
+    );
+    let _ = io::stdout().flush();
+
     // 終了時に表示する resume 情報は raw モードを抜けた後に main() 側で出す。
     // backend ごとに resume_command() trait 実装が形式を返す:
     //   claude → `claude --resume <UUID>`
