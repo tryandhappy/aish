@@ -71,10 +71,19 @@ extra_args = []                                                # e.g. ["-m", "ge
 [ai.qwen]
 extra_args = []
 
-# Cursor Agent CLI (`cursor-agent`). aish は `-p --output-format json` で都度呼び出す。
+# Cursor Agent CLI (`cursor-agent`). aish は `-p --output-format json --trust` で都度呼び出す。
+# --trust は headless モードで必須なので aish が常に自動で付与する (config からは指定不可)。
+#
 # cursor-agent はファイル編集 / shell 実行ツールを内蔵しているが、aish は codex のような
-# 個別ツール無効化フラグを使えないため、ツール抑制は system prompt の best-effort 指示に頼る。
-# `sandbox` で `--sandbox <mode>` を渡せる。安全側に倒すなら "enabled" を推奨。
+# 個別ツール無効化フラグを使えないため、ツール抑制は次の二段構えで行う:
+#   1. `mode = "plan"`  — cursor-agent の read-only / planning モード (no edits)。aish の用途と一致する安全プリミティブ
+#   2. system prompt の best-effort 指示 (build_system_prompt が自動付与)
+#
+# `sandbox` で `--sandbox enabled` を渡せば OS レベルの defense-in-depth が追加できる (任意)。
+#
+# 注意: cursor-agent free プランでは Named models が使えないため、`model = "auto"` 設定 (もしくは
+# 起動時の `--model auto`) が必須。paid プランなら "sonnet-4" 等の named model を指定できる。
 [ai.cursor]
-extra_args = []                                                # e.g. ["--model", "auto"]
-sandbox = "enabled"                                            # default: "" (未指定) — "enabled" / "disabled" 等を cursor-agent --sandbox にそのまま渡す
+extra_args = []                                                # e.g. ["--model", "auto"] (paid plan なら不要)
+mode = "plan"                                                  # default: "plan" — "plan" (read-only) / "ask" (Q&A only) / "" (通常モード = 危険)
+sandbox = ""                                                   # default: "" — "enabled" / "disabled" を cursor-agent --sandbox にそのまま渡す。defense-in-depth

@@ -99,17 +99,36 @@ pub struct GenericBackendConfig {
     pub extra_args: Vec<String>,
 }
 
-/// cursor-agent 用設定。`sandbox` は cursor-agent の `--sandbox <mode>` 値を
-/// そのまま渡す (`on` / `off` 等)。`extra_args` に `--sandbox` を直接書いてもよいが、
-/// 専用フィールドの方が typo しにくいので両方サポートする (extra_args が後勝ち)。
-/// 未指定なら cursor-agent 既定に任せる。
-#[derive(Debug, Deserialize, Default, Clone)]
+/// cursor-agent 用設定。
+/// - `mode`: `--mode <value>` の値 (`"plan"` / `"ask"`)。aish 用途では `"plan"` (read-only / propose-only) が推奨。
+/// - `sandbox`: `--sandbox <value>` の値 (`"enabled"` / `"disabled"`)。defense-in-depth。
+/// - `extra_args`: その他追加引数 (`--sandbox` 等を直接書いてもよい; 重複時は CLI の挙動次第)。
+/// なお `--trust` は cursor-agent の headless モードで必須なので config からは指定不可で常に付与される。
+#[derive(Debug, Deserialize, Clone)]
 pub struct CursorBackendConfig {
     #[serde(default)]
     pub extra_args: Vec<String>,
+    /// `--mode` に渡す値。空 / 未指定なら何も渡さない (= 通常モード)。aish では `"plan"` 推奨。
+    #[serde(default = "default_cursor_mode")]
+    pub mode: String,
     /// `--sandbox` に渡す値。空 / 未指定なら何も渡さない。
     #[serde(default)]
     pub sandbox: String,
+}
+
+impl Default for CursorBackendConfig {
+    fn default() -> Self {
+        Self {
+            extra_args: Vec::new(),
+            mode: default_cursor_mode(),
+            sandbox: String::new(),
+        }
+    }
+}
+
+fn default_cursor_mode() -> String {
+    // plan = read-only / propose-only。aish の「提案のみ」セマンティクスと合致する安全側既定。
+    "plan".to_string()
 }
 
 #[derive(Debug, Deserialize, Clone)]

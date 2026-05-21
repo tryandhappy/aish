@@ -150,7 +150,7 @@ aishプロンプトで先頭が `/` の入力は AI に送らずローカルで�
 | `/help` | 利用可能な slash command 一覧を表示 |
 | `/effort [LEVEL]` | reasoning effort を runtime で変更（次回 send 以降に反映）。引数省略でクリア。gemini/qwen/cursor は CLI フラグが無いので保存のみで実リクエストに反映されない |
 | `/model [NAME]` | モデルを runtime で変更（既存 session_id / history は維持）。引数省略でクリア |
-| `/clear` | 会話履歴 / セッションをクリア。claude / codex は session_id を None に、gemini/qwen/cursor は内部 history Vec を空にする (cursor は最終 session_id も None に戻す) |
+| `/clear` | 会話履歴 / セッションをクリア。claude / codex / cursor は session_id を None に、gemini / qwen は内部 history Vec を空にする |
 | `/ai <KIND>` | AI バックエンドを切り替え（`claude`/`codex`/`gemini`/`qwen`/`cursor`）。新しい backend を `create_backend` で構築し、現セッションは破棄される |
 | `/<unknown>` | 警告メッセージ表示、AI には送らない |
 
@@ -176,24 +176,25 @@ aish は trait `AiBackend` を介して 5 種類の AI CLI に対応する: **Cl
 | 機能 | Claude | Codex | Gemini | Qwen | Cursor |
 |---|---|---|---|---|---|
 | 実行ファイル | `claude` | `codex` | `gemini` | `qwen` | `cursor-agent` |
-| 非対話モード | `claude -p` | `codex exec -` | `gemini` (stdin) | `qwen` (stdin) | `cursor-agent -p` (stdin) |
+| 非対話モード | `claude -p` | `codex exec -` | `gemini` (stdin) | `qwen` (stdin) | `cursor-agent -p --trust` (stdin) |
 | プロンプト渡し | stdin | stdin | stdin | stdin | stdin |
-| JSON 出力強制 | `--json-schema` | なし | なし | なし | `--output-format json` (ラッパのみ) |
-| 危険ツール無効化 | `--disallowedTools` | `-s read-only` + `--disable` 12 種 | system prompt のみ | system prompt のみ | `--sandbox <mode>` + system prompt |
-| セッション再開 | `--resume <sid>` (JSON `session_id` 捕獲) | `exec resume <UUID>` (rollout ファイル名から UUID 捕獲) | best-effort (`--resume latest`) | best-effort (`--continue`) | best-effort (`--resume <sid>`、内部 history と併用) |
+| JSON 出力強制 | `--json-schema` | なし | なし | なし | `--output-format json` (外側ラッパのみ) |
+| 危険ツール無効化 | `--disallowedTools` | `-s read-only` + `--disable` 12 種 | system prompt のみ | system prompt のみ | `--mode plan` + `--sandbox <mode>` + system prompt |
+| セッション再開 | `--resume <sid>` (JSON `session_id` 捕獲) | `exec resume <UUID>` (rollout ファイル名から UUID 捕獲) | best-effort (`--resume latest`) | best-effort (`--continue`) | `--resume <sid>` (JSON `session_id` 捕獲、claude と同形) |
 | 実装ファイル | `src/ai/claude.rs` | `src/ai/codex.rs` | `src/ai/gemini.rs` | `src/ai/qwen.rs` | `src/ai/cursor.rs` |
 
 JSON Schema 強制が無いバックエンドは system prompt で `{"message":..., "commands":[...]}` 単独出力を強く指示し、`extract_json` で抽出する。失敗時は出力全体を `message` として `commands: []` でフォールバック。
 
-**Claude / Codex** は CLI 側 session に履歴を委ねる。
+**Claude / Codex / Cursor** は CLI 側 session に履歴を委ねる。
 - Claude: 初回 send で取得した `session_id` を保持し、2 回目以降 `--resume <sid>` で連結。
 - Codex: 初回 send 後 `~/.codex/sessions/YYYY/MM/DD/rollout-...-<UUID>.jsonl` から UUID を捕獲し、
   2 回目以降 `codex exec resume <UUID>` で連結。`--ephemeral` は付けない。
+- Cursor: 初回 send で取得した `session_id` (応答 JSON の `session_id` フィールド) を保持し、
+  2 回目以降 `--resume <sid>` で連結。`--append-system-prompt` 相当が無いので system prompt は
+  初回プロンプト先頭に焼き込む (resume 後は cursor-agent 側が記憶しているので再送しない)。
 
-**Gemini / Qwen / Cursor** は session resume 機構を非対話モードで安定して使えない / 安全性検証が
-未完なため、各 backend 内部で直近 8 ターン分の (user_prompt, ai_message) を履歴として保持し、
-毎回プロンプトに含めて再送する。Cursor は応答 JSON から `session_id` を捕獲して終了時の
-resume_command 案内には使うが、send() 時には参照しない (純粋に資料表示用)。
+**Gemini / Qwen** は session resume 機構を非対話モードで安定して使えないため、各 backend 内部で
+直近 8 ターン分の (user_prompt, ai_message) を履歴として保持し、毎回プロンプトに含めて再送する。
 ターミナル差分 (ring buffer) と合わせることで、`mark_sent` 後でも multi-step ワークフローが文脈を保つ。
 
 #### 安全性の差
@@ -206,10 +207,11 @@ resume_command 案内には使うが、send() 時には参照しない (純粋�
   `tool_call_mcp_elicitation`)。さらに defense-in-depth として `-s read-only` sandbox を併用。
   この設定で codex は提案 JSON だけを返す純粋な LLM として動作する。
 - **Gemini / Qwen**: フラグレベルの制約は無く、system prompt の「ツール禁止」指示のみ。
-- **Cursor**: codex 相当の個別ツール無効化フラグは無いので、tool 抑制は system prompt の
-  best-effort 指示に頼る (gemini / qwen と同等)。defense-in-depth として `[ai.cursor].sandbox` で
-  `--sandbox enabled` を渡せる (cursor-agent 側のサンドボックス機構)。`disabled` を渡すと
-  サンドボックスは外れるが、aish 側の「提案のみ実行」確認 UI は同じく機能する。
+- **Cursor**: 個別ツール無効化フラグは無いが、`--mode plan` (read-only / planning モード、no edits) を
+  既定で付与する。これは aish の「提案のみ、実行は aish 側で確認」セマンティクスと方針が一致する
+  安全プリミティブ。さらに defense-in-depth として `[ai.cursor].sandbox` で `--sandbox enabled` を
+  渡せる (OS レベルサンドボックス)。`--trust` は headless モードで必須のため毎回自動付与する。
+  ツール抑制最終層として system prompt の「ツール禁止」指示も載せる (gemini / qwen と同じ best-effort)。
 - 最大限の安全性が必要な場合は `--ai claude` を使うこと。
 
 ### 6.1 起動
@@ -293,8 +295,9 @@ claude -p --resume <session_id> \
   - codex:  `codex resume <UUID>` (rollout ファイルから UUID が捕獲できた場合)
   - gemini: `gemini --resume latest` (best-effort、1 ターン以上会話があれば)
   - qwen:   `qwen --continue` (best-effort、1 ターン以上会話があれば)
-  - cursor: `cursor-agent --resume <UUID>` (best-effort、1 ターン以上会話があれば。直近応答 JSON の `session_id` を保持)
-- gemini / qwen / cursor は非対話モードでの session 永続化が CLI 仕様として保証されていないため、表示はしてもコマンド実行で aish の会話が読み戻せないことがある。
+  - cursor: `cursor-agent --resume <UUID>` (応答 JSON の `session_id` を捕獲できた場合)
+- gemini / qwen は非対話モードでの session 永続化が CLI 仕様として保証されていないため、表示はしてもコマンド実行で aish の会話が読み戻せないことがある。
+- cursor は `--resume` が非対話モードでも安定動作することを実機で確認済み (token キャッシュも効く)。
 
 ### 6.9 JSON抽出
 - Claude CLIの出力にJSON前後のテキストが混じる可能性に対応し、`extract_json` で最外の `{...}` をバランス解析で抽出。
@@ -427,8 +430,15 @@ TOML形式。未指定フィールドはデフォルト値。
 #### `[ai.cursor]`
 | キー | 既定値 | 説明 |
 |---|---|---|
-| `extra_args` | `[]` | `cursor-agent` への追加引数。aish ビルトイン引数 (`-p --output-format json`、`--sandbox <mode>`) の後ろに追記される |
-| `sandbox` | `""` | `--sandbox <mode>` に渡す値 (`"enabled"` / `"disabled"`)。空 / 未指定なら `--sandbox` を付けない (cursor-agent 既定に従う)。安全側に倒すなら `"enabled"` を推奨 |
+| `extra_args` | `[]` | `cursor-agent` への追加引数。aish ビルトイン引数 (`-p --output-format json --trust`、`--mode <m>`、`--sandbox <s>`、`--resume <sid>`) の後ろに追記される |
+| `mode` | `"plan"` | `--mode <value>` に渡す値 (`"plan"` / `"ask"` / `""`)。`"plan"` は read-only / propose-only の cursor-agent モードで aish の用途に合致する安全側既定。`""` で `--mode` を付けない (= 通常モード、危険) |
+| `sandbox` | `""` | `--sandbox <value>` に渡す値 (`"enabled"` / `"disabled"`)。空 / 未指定なら `--sandbox` を付けない (cursor-agent 既定に従う)。defense-in-depth |
+
+`--trust` は cursor-agent headless モードで必須のため、aish が常に自動付与する (config からは指定不可)。
+未指定だと `Workspace Trust Required` で実行が拒否される。
+
+Free プランの cursor-agent では Named models が使えず `auto` のみ指定可能なので、無料アカウントでは
+`[ai].model = "auto"` または起動時 `--model auto` を指定する。
 
 トップレベル `system_prompt` / `language` は後方互換のため残す。`[ai]` セクションが省略されたり
 そのフィールドが空文字なら、トップレベルの値が `[ai]` 側にコピーされる。

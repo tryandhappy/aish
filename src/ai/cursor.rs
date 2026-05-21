@@ -1,46 +1,45 @@
 use super::common::{
     build_full_prompt, build_system_prompt, expand_tilde, extract_json,
-    extract_model_from_args, parse_ai_response_lossy, run_cli_capture_stdout, trim_history,
+    extract_model_from_args, parse_ai_response_lossy, run_cli_capture_stdout,
 };
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
 use crate::config::{AiConfig, LogConfig};
 
-const MAX_HISTORY_TURNS: usize = 8;
-
 /// Cursor CLI (`cursor-agent`) backend。
 ///
-/// 戦略 (gemini と同等のスタンス):
-/// - `cursor-agent -p --output-format json` を都度 spawn し、prompt は stdin に流す。
-/// - cursor-agent には codex の `--disable shell_tool ...` に相当する「全ツール無効化」フラグが
-///   無いので、ツール非使用は **system prompt の best-effort 指示頼み** にする。
-///   sandbox は `--sandbox enabled` / `disabled` をユーザ設定で渡せるようにする。
-///   (`[ai.cursor].sandbox = "enabled"` 推奨)
-/// - JSON Schema 強制も無いので system prompt で `{message, commands}` 出力を指示。
-/// - session resume は使わず、内部で履歴 (user_prompt, ai_message) を保持して毎回再送する
-///   (gemini / qwen と同じ方式)。cursor-agent 自身は `--resume <chatId>` を持つが、
-///   session 維持の安定性 / ツール挙動への影響を慎重に切り分けるため初版では使わない。
+/// 実機調査 (2026 年版 `cursor-agent --help`):
+/// - `-p, --print` — headless 出力モード
+/// - `--output-format json` — 1 行 JSON `{"type":"result","result":"<text>","session_id":"<uuid>", ...}` 形式
+/// - `--trust` — **headless モードで必須**。未指定だと "Workspace Trust Required" で実行を拒否される
+/// - `--mode plan` — read-only / planning モード (no edits)。aish の「提案のみ」と方針が一致する安全プリミティブ
+/// - `--mode ask` — Q&A モード (read-only)、`plan` よりさらに厳格
+/// - `--sandbox enabled|disabled` — OS レベルサンドボックス (別軸の defense-in-depth)
+/// - `--resume <chatId>` — 既存 session の継続。`--output-format json` 応答内 `session_id` をそのまま渡せる
+/// - `--model <name>` — モデル指定 (Free プランでは `auto` のみ)
 ///
-/// 出力パース:
-/// - cursor-agent の `--output-format json` は外側に `{"type":"result","subtype":"success",
-///   "is_error":false,"result":"<assistant text>","session_id":"<uuid>",...}` というラッパを
-///   返す。assistant text (= 我々が欲しい `{message, commands}` JSON) は `result` フィールドの
-///   中に入っている。
-/// - 外側 JSON を抽出 → `result` 文字列を取り出して中身を `parse_ai_response_lossy` に流す。
-///   外側 JSON が見つからなければ全文をそのまま `parse_ai_response_lossy` に渡すフォールバック。
+/// 戦略:
+/// - 必須フラグ (`-p --output-format json --trust`) と config 由来の `--mode` / `--sandbox` を毎回付ける。
+/// - 初回 send 後、応答 JSON から `session_id` を捕獲し、2 回目以降は `--resume <sid>` で連結する
+///   (claude / codex と同様の native resume 方式)。これで terminal context を再送する負担と
+///   token 消費を抑える。`--append-system-prompt` 相当が無いので system prompt は初回プロンプト先頭に
+///   `build_full_prompt` で焼き込む。resume 後は terminal context + user prompt のみ送る。
+/// - 個別ツール無効化フラグ (codex の `--disable shell_tool` 相当) は cursor-agent には無いので、
+///   ツール抑制は `--mode plan` (デフォルト) + system prompt の best-effort 指示の二段構え。
+/// - reasoning effort フラグは cursor-agent 側に無いので保存のみで実リクエストには反映しない。
 pub struct CursorBackend {
     system_prompt: String,
     log_path: Option<String>,
     base_extra_args: Vec<String>,
-    /// `[ai.cursor].sandbox` の値。空でなければ `--sandbox <value>` として send 時に追加。
+    /// `[ai.cursor].mode`。空でなければ `--mode <value>` を毎回追加。"plan" を推奨。
+    mode: String,
+    /// `[ai.cursor].sandbox`。空でなければ `--sandbox <value>` を毎回追加。
     sandbox: String,
     /// runtime モデル指定 (`/model`)。`Some` のとき send() 時に `--model <m>` を追加。
     model: Option<String>,
     /// runtime effort 指定 (`/effort`)。cursor-agent には該当フラグが無いので保存のみで適用しない。
     effort: Option<String>,
-    /// 直近のレスポンスに含まれていた cursor-agent 側 session_id (UUID)。
-    /// 履歴ベースで動くので送信時には参照しないが、aish 終了時の resume_command 案内に使う。
-    last_session_id: Option<String>,
-    history: Vec<(String, String)>,
+    /// 初回 send で捕獲した session_id。2 回目以降は `--resume <sid>` で連結する。
+    session_id: Option<String>,
 }
 
 impl CursorBackend {
@@ -55,11 +54,11 @@ impl CursorBackend {
             system_prompt,
             log_path,
             base_extra_args: cfg.cursor.extra_args.clone(),
+            mode: cfg.cursor.mode.clone(),
             sandbox: cfg.cursor.sandbox.clone(),
             model: (!cfg.model.is_empty()).then(|| cfg.model.clone()),
             effort: (!cfg.effort.is_empty()).then(|| cfg.effort.clone()),
-            last_session_id: None,
-            history: Vec::new(),
+            session_id: None,
         }
     }
 }
@@ -84,39 +83,57 @@ impl AiBackend for CursorBackend {
     }
 
     fn set_effort(&mut self, effort: Option<&str>) {
-        // cursor-agent には reasoning effort フラグが無いので保存のみ (実リクエストには反映されない)。
+        // cursor-agent には reasoning effort フラグが無いので保存のみ。
         self.effort = effort.map(str::to_string);
     }
 
     fn clear_history(&mut self) {
-        self.history.clear();
-        self.last_session_id = None;
+        // 次回 send は session_id を None のままで新規セッションを開始する
+        // (system prompt も再注入される)。
+        self.session_id = None;
     }
 
     fn resume_command(&self) -> Option<String> {
-        // cursor-agent はレスポンスごとに session_id を返す。最後に捕獲した ID で resume を案内。
-        self.last_session_id
+        self.session_id
             .as_ref()
             .map(|sid| format!("cursor-agent --resume {sid}"))
     }
 
     fn send(&mut self, req: &AiRequest) -> Result<AiResponse, AiError> {
-        let prompt = build_full_prompt(
-            &self.system_prompt,
-            &self.history,
-            req.terminal_context,
-            req.user_prompt,
-        );
+        // 初回: system prompt + terminal context + user prompt を全部焼き込む。
+        // 2 回目以降: cursor-agent 側が system + 履歴を持っているので、
+        //             terminal context (差分) + user prompt のみ。
+        let prompt = if self.session_id.is_some() {
+            if req.terminal_context.is_empty() {
+                req.user_prompt.to_string()
+            } else {
+                format!(
+                    "```terminal\n{}\n```\n\n{}",
+                    req.terminal_context, req.user_prompt
+                )
+            }
+        } else {
+            build_full_prompt(&self.system_prompt, &[], req.terminal_context, req.user_prompt)
+        };
 
-        // 必須フラグ + ユーザ指定。stdin から prompt を流すので positional arg は付けない。
         let mut args: Vec<String> = vec![
             "-p".to_string(),
             "--output-format".to_string(),
             "json".to_string(),
+            // headless では --trust が無いと workspace trust 確認で実行拒否される。
+            "--trust".to_string(),
         ];
+        if !self.mode.is_empty() {
+            args.push("--mode".to_string());
+            args.push(self.mode.clone());
+        }
         if !self.sandbox.is_empty() {
             args.push("--sandbox".to_string());
             args.push(self.sandbox.clone());
+        }
+        if let Some(sid) = &self.session_id {
+            args.push("--resume".to_string());
+            args.push(sid.clone());
         }
         args.extend(self.base_extra_args.iter().cloned());
         if let Some(m) = &self.model {
@@ -128,21 +145,24 @@ impl AiBackend for CursorBackend {
 
         // 外側ラッパ `{"type":"result", "result":"<text>", "session_id":"..."}` を剥がす。
         let (assistant_text, session_id) = unwrap_cursor_envelope(&stdout);
+
+        // 初回応答で session_id を捕獲。以降は --resume <sid> で連結。
+        // resume 中も応答に同じ session_id が返るが、上書きしても挙動は変わらない。
         if let Some(sid) = session_id {
-            self.last_session_id = Some(sid);
+            if self.session_id.is_none() {
+                self.session_id = Some(sid);
+            }
         }
+
         // assistant_text が取れなければ生 stdout を渡してフォールバック解析。
         let response = parse_ai_response_lossy(assistant_text.as_deref().unwrap_or(&stdout));
-
-        self.history
-            .push((req.user_prompt.to_string(), response.message.clone()));
-        trim_history(&mut self.history, MAX_HISTORY_TURNS);
         Ok(response)
     }
 }
 
 /// cursor-agent の `--output-format json` 出力から `(result text, session_id)` を取り出す。
-/// 外側 JSON が見つからない / `result` が無い場合は `(None, None)` を返す (呼び出し側で生 stdout フォールバック)。
+/// 外側 JSON が見つからない / `result` が無い場合は `(None, None)` を返す
+/// (呼び出し側で生 stdout フォールバック)。
 fn unwrap_cursor_envelope(raw: &str) -> (Option<String>, Option<String>) {
     let Some(envelope_str) = extract_json(raw) else {
         return (None, None);
