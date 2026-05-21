@@ -1,11 +1,16 @@
 # aish configuration file
 # Default path: ~/.aish/config.toml
+#
+# このサンプルの設定値はすべて aish の既定値と一致しています。必要に応じて
+# 該当行のコメント `#` を外して上書きしてください。section ヘッダ (`[display]` 等) は
+# キーがどの table に属するかが分かるように **コメントアウトせず残してあります**。
+# section の中身を一切上書きしないなら、section ヘッダ自体は無くても aish は動きます。
 
 # Global system prompt (default)
-system_prompt = "あなたはLinuxサーバ管理の専門家です。SSHセッションの内容を把握しています。"
+# system_prompt = "あなたはLinuxサーバ管理の専門家です。SSHセッションの内容を把握しています。"
 
 # AI response language (default: "Japanese", empty to disable)
-language = "Japanese"
+# language = "Japanese"
 
 # Display settings
 # Colors: ANSI escape sequences (use \u001B for ESC in TOML)
@@ -13,30 +18,30 @@ language = "Japanese"
 #         fg+bg combined: "\u001B[38;5;208;48;5;238m"
 #         or "" (empty) for terminal default
 [display]
-shell_prefix_label = "[aish]"                                  # default: "[aish]" — status bar label
-header_color = "\u001B[38;5;208m"                              # default: "\u001B[38;5;208m" (orange) — status bar / banner
-prompt_label = "[aish]"                                        # default: "[aish]" — aish prompt (Ctrl+/) label
-prompt_color = "\u001B[38;5;208;48;2;50;35;20m"                # default: orange text, dark brown bg
-thinking_message = "Thinking..."                               # default: "Thinking..."
-thinking_color = "\u001B[38;5;208m"                            # default: "\u001B[38;5;208m" (orange)
-ai_color = "\u001B[38;5;216m"                                  # default: "\u001B[38;5;216m" (light orange)
-input_color = ""                                               # default: "" (terminal default)
-confirm_color = "\u001B[38;5;228;48;5;239m"                    # default: pale yellow text, gray bg
+# shell_prefix_label = "[aish]"                                  # default: "[aish]" — status bar label
+# header_color = "\u001B[38;5;208m"                              # default: "\u001B[38;5;208m" (orange) — status bar / banner
+# prompt_label = "[aish]"                                        # default: "[aish]" — aish prompt (Ctrl+/) label
+# prompt_color = "\u001B[38;5;208;48;2;50;35;20m"                # default: orange text, dark brown bg
+# thinking_message = "Thinking..."                               # default: "Thinking..."
+# thinking_color = "\u001B[38;5;208m"                            # default: "\u001B[38;5;208m" (orange)
+# ai_color = "\u001B[38;5;216m"                                  # default: "\u001B[38;5;216m" (light orange)
+# input_color = ""                                               # default: "" (terminal default)
+# confirm_color = "\u001B[38;5;228;48;5;239m"                    # default: pale yellow text, gray bg
 
 # Terminal-level "aish is running" indicators (OSC 10/11/12).
 # Format: "#rrggbb" or "rgb:rr/gg/bb" — color specs sent to the terminal itself, NOT ANSI SGR.
 # Empty string disables that channel (terminal default is kept).
 # These do NOT consume any screen rows/cols, so they don't conflict with fullscreen apps,
 # scroll regions, or `clear`.
-term_fg_color = ""                                             # default: "" — OSC 10 default foreground
-term_bg_color = ""                                             # default: "" — OSC 11 default background
-term_cursor_color = "#ff8800"                                  # default: "#ff8800" (orange) — OSC 12 cursor color
+# term_fg_color = ""                                             # default: "" — OSC 10 default foreground
+# term_bg_color = ""                                             # default: "" — OSC 11 default background
+# term_cursor_color = "#ff8800"                                  # default: "#ff8800" (orange) — OSC 12 cursor color
 
 # Logging settings
 # Log Claude Code CLI commands and responses
 [log]
-enabled = false                                                # default: false
-path = "~/.aish/logs/claude-code.log"                          # default: "~/.aish/logs/claude-code.log"
+# enabled = false                                                # default: false
+# path = "~/.aish/logs/claude-code.log"                          # default: "~/.aish/logs/claude-code.log"
 
 # AI backend settings
 # `backend` selects which CLI to drive. `--ai <kind>` (CLI flag) overrides this.
@@ -46,32 +51,32 @@ path = "~/.aish/logs/claude-code.log"                          # default: "~/.ai
 # `system_prompt` / `language` here override the top-level values; if empty, the
 # top-level values above are used (backward compatibility).
 [ai]
-backend = "claude"                                             # default: "claude" — claude|codex|gemini|qwen|cursor|copilot, or any [[ai.providers]].name
-model = ""                                                     # default: "" — モデル名 (例: "sonnet", "gpt-5", "gemini-2.5-pro")
+# backend = "claude"                                             # default: "claude" — claude|codex|gemini|qwen|cursor|copilot, or any [[ai.providers]].name
+# model = ""                                                     # default: "" — モデル名 (例: "sonnet", "gpt-5", "gemini-2.5-pro")
                                                                # `--model <NAME>` (CLI) > [ai].model > extra_args の -m 指定 の順で優先
                                                                # 空のときはバックエンド CLI 既定のモデルが使われる
-effort = ""                                                    # default: "" — reasoning effort レベル (例: "low" | "medium" | "high")
+# effort = ""                                                    # default: "" — reasoning effort レベル (例: "low" | "medium" | "high")
                                                                # `--effort <LEVEL>` (CLI) > [ai].effort の順で優先
                                                                # claude → `--effort <level>`, codex → `-c model_reasoning_effort=<level>` に変換
                                                                # copilot → `--effort <level>` (native 対応、none/low/medium/high/xhigh/max)
                                                                # gemini / qwen / cursor は該当 CLI フラグが無いので無視される
-system_prompt = ""                                             # default: "" — falls back to top-level system_prompt
-language = ""                                                  # default: "" — falls back to top-level language
+# system_prompt = ""                                             # default: "" — falls back to top-level system_prompt
+# language = ""                                                  # default: "" — falls back to top-level language
 
 [ai.claude]
-disallowed_tools = "Bash,Edit,Write,Read"                      # default: "Bash,Edit,Write,Read"
-extra_args = []                                                # default: [] — extra args appended to `claude -p ...`
+# disallowed_tools = "Bash,Edit,Write,Read"                      # default: "Bash,Edit,Write,Read"
+# extra_args = []                                                # default: [] — extra args appended to `claude -p ...`
 
 # Codex / Gemini / Qwen / Cursor don't have JSON-schema flags, so JSON output is enforced via system prompt.
 # Use extra_args for model selection or other CLI-specific flags.
 [ai.codex]
-extra_args = []                                                # e.g. ["-m", "gpt-5.5"]
+# extra_args = []                                                # e.g. ["-m", "gpt-5.5"]
 
 [ai.gemini]
-extra_args = []                                                # e.g. ["-m", "gemini-2.5-pro"]
+# extra_args = []                                                # e.g. ["-m", "gemini-2.5-pro"]
 
 [ai.qwen]
-extra_args = []
+# extra_args = []
 
 # Cursor Agent CLI (`cursor-agent`). aish は `-p --output-format json --trust` で都度呼び出す。
 # --trust は headless モードで必須なので aish が常に自動で付与する (config からは指定不可)。
@@ -86,9 +91,9 @@ extra_args = []
 # 注意: cursor-agent free プランでは Named models が使えないため、`model = "auto"` 設定 (もしくは
 # 起動時の `--model auto`) が必須。paid プランなら "sonnet-4" 等の named model を指定できる。
 [ai.cursor]
-extra_args = []                                                # e.g. ["--model", "auto"] (paid plan なら不要)
-mode = "plan"                                                  # default: "plan" — "plan" (read-only) / "ask" (Q&A only) / "" (通常モード = 危険)
-sandbox = ""                                                   # default: "" — "enabled" / "disabled" を cursor-agent --sandbox にそのまま渡す。defense-in-depth
+# extra_args = []                                                # e.g. ["--model", "auto"] (paid plan なら不要)
+# mode = "plan"                                                  # default: "plan" — "plan" (read-only) / "ask" (Q&A only) / "" (通常モード = 危険)
+# sandbox = ""                                                   # default: "" — "enabled" / "disabled" を cursor-agent --sandbox にそのまま渡す。defense-in-depth
 
 # ===========================================================================
 # [[ai.providers]] — config 駆動の追加 CLI backend (ollama 等を Rust コード変更なしで追加可能)
@@ -153,5 +158,5 @@ sandbox = ""                                                   # default: "" —
 # GH_TOKEN / GITHUB_TOKEN env のいずれか。所属組織の Copilot ポリシーで CLI 利用が
 # 許可されている必要がある。
 [ai.copilot]
-extra_args = []                                                # e.g. ["--disable-builtin-mcps"]
-mode = "plan"                                                  # default: "plan" — "plan" / "interactive" / "autopilot" / "" (mode 指定なし)
+# extra_args = []                                                # e.g. ["--disable-builtin-mcps"]
+# mode = "plan"                                                  # default: "plan" — "plan" / "interactive" / "autopilot" / "" (mode 指定なし)
