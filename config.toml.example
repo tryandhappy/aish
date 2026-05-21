@@ -90,6 +90,54 @@ extra_args = []                                                # e.g. ["--model"
 mode = "plan"                                                  # default: "plan" — "plan" (read-only) / "ask" (Q&A only) / "" (通常モード = 危険)
 sandbox = ""                                                   # default: "" — "enabled" / "disabled" を cursor-agent --sandbox にそのまま渡す。defense-in-depth
 
+# ===========================================================================
+# [[ai.providers]] — config 駆動の generic CLI backend (ollama 等を Rust コード変更なしで追加可能)
+# ===========================================================================
+# 配列形式で複数 provider を登録できる (上限 256 個)。各エントリは固有 `name` で参照され、
+# `--ai generic:<name>` / `/ai generic:<name>` で切替可能。
+#
+# 安全性は aish 側からは強制しない (claude/copilot のような自動 deny フラグ無し)。
+# **登録する CLI が信頼できることを利用者が確認した上で使うこと**。必要なら `args` に
+# `--mode plan` 等の安全フラグを明示的に含める。
+#
+# フィールド:
+#   name              : 一意な識別子 (例 "ollama-llama")
+#   binary            : 実行ファイル (PATH 検索 or 絶対パス)
+#   args              : 固定引数 (動的引数は後ろに追加される)
+#   prompt_delivery   : "stdin" (推奨) | "arg" (末尾 positional) | "flag" (prompt_flag の値として)
+#   prompt_flag       : prompt_delivery="flag" のときのフラグ名 (例 "-p")
+#   parse             : "lossy" | "extract_json" | "jsonl"
+#   jsonl_content_path: parse="jsonl" のとき "type:dot.path" 形式 (例 "assistant.message:data.content")
+#   jsonl_session_path: parse="jsonl" のとき session_id 用 "type:dot.path"
+#   session_id_path   : parse="extract_json" のとき抽出 JSON 内の session_id フィールド名
+#   resume_flag       : session_id 捕獲時に再開で渡す引数 (例 "--resume"). 空なら native resume なし
+#   model_flag        : model 指定引数名 (例 "--model" / "-m"). 空なら model 渡しなし
+#   effort_flag       : reasoning effort 引数名. 空なら保存のみで反映しない
+#   color             : 256-color の数値 (default 208 = orange)
+#   system_prompt_inline: true=初回 prompt 先頭に焼き込む (default), false=毎回履歴ベースで再送
+#   history_turns     : native resume 無し時に保持する (user, ai) ターン数 (default 8)
+#
+# 例 1: ollama 経由のローカル LLM (内部 history fallback)
+# [[ai.providers]]
+# name = "ollama-llama"
+# binary = "ollama"
+# args = ["run", "llama3.2"]
+# prompt_delivery = "stdin"
+# parse = "lossy"
+# color = 42
+#
+# 例 2: 仮想的な native-resume 対応 CLI
+# [[ai.providers]]
+# name = "local-llm"
+# binary = "local-llm-cli"
+# args = ["chat", "--format", "json"]
+# prompt_delivery = "stdin"
+# parse = "extract_json"
+# session_id_path = "session_id"
+# resume_flag = "--resume"
+# model_flag = "--model"
+# color = 39
+
 # GitHub Copilot CLI (`copilot`). aish は以下の必須安全フラグを常に自動付与する (config 指定不可):
 #   --output-format json   (JSONL 形式の応答)
 #   --allow-all-tools      (非対話モードで必須)

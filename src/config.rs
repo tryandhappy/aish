@@ -51,6 +51,11 @@ pub struct AiConfig {
     pub cursor: CursorBackendConfig,
     #[serde(default)]
     pub copilot: CopilotBackendConfig,
+    /// `[[ai.providers]]` 配列。Config 駆動の generic CLI backend。
+    /// 各エントリは固有 name で参照され `/ai generic:<name>` で切替可能。
+    /// 配列インデックスは `BackendKind::Generic(u8)` に詰める都合上 0..=255 まで。
+    #[serde(default)]
+    pub providers: Vec<ProviderRecipe>,
 }
 
 impl Default for AiConfig {
@@ -67,6 +72,7 @@ impl Default for AiConfig {
             qwen: GenericBackendConfig::default(),
             cursor: CursorBackendConfig::default(),
             copilot: CopilotBackendConfig::default(),
+            providers: Vec::new(),
         }
     }
 }
@@ -163,6 +169,139 @@ impl Default for CopilotBackendConfig {
 
 fn default_copilot_mode() -> String {
     "plan".to_string()
+}
+
+/// `[[ai.providers]]` の 1 エントリ。Config 駆動 generic CLI backend のレシピ。
+///
+/// 必須フィールド: `name`, `binary`。それ以外は default あり。
+/// `parse` / `prompt_delivery` は文字列 enum 形式で受け取り、不正値は起動時に検出する
+/// (`AiConfig::validate_providers` で実装)。
+#[derive(Debug, Deserialize, Clone)]
+pub struct ProviderRecipe {
+    /// `/ai generic:<name>` で参照される識別子。providers 内で一意。
+    pub name: String,
+    /// 実行ファイル名 (PATH 検索) または絶対パス。
+    pub binary: String,
+    /// 固定引数。aish が動的引数 (`--model`, `--resume <sid>` 等) を後ろに追加する。
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// `"stdin"` (推奨) | `"arg"` (最後に positional 追加) | `"flag"` (`prompt_flag` の値として渡す)。
+    #[serde(default = "default_prompt_delivery")]
+    pub prompt_delivery: String,
+    /// `prompt_delivery = "flag"` のときの prompt フラグ名 (例 `"-p"`)。
+    #[serde(default)]
+    pub prompt_flag: String,
+    /// `"lossy"` | `"extract_json"` | `"jsonl"`。
+    #[serde(default = "default_parse")]
+    pub parse: String,
+    /// `parse = "jsonl"` のとき、最終応答テキストを取り出す `"type:dot.path"` 形式の指定。
+    /// 例: `"assistant.message:data.content"`
+    #[serde(default)]
+    pub jsonl_content_path: String,
+    /// `parse = "jsonl"` のとき、session_id を取り出す `"type:dot.path"` 形式。
+    /// 例: `"result:sessionId"`
+    #[serde(default)]
+    pub jsonl_session_path: String,
+    /// `parse = "extract_json"` のとき、抽出した JSON 内の session_id フィールド名 (top-level key)。
+    /// 空なら native resume を使わず内部 history fallback になる。
+    #[serde(default)]
+    pub session_id_path: String,
+    /// session_id 捕獲時の resume 引数名 (例 `"--resume"`)。
+    /// 空なら native resume なし。
+    #[serde(default)]
+    pub resume_flag: String,
+    /// model 指定引数名 (例 `"--model"` / `"-m"`)。空なら model 指定を渡さない。
+    #[serde(default)]
+    pub model_flag: String,
+    /// reasoning effort 指定引数名 (例 `"--effort"`)。空なら effort は保存のみで反映しない。
+    #[serde(default)]
+    pub effort_flag: String,
+    /// `/ai/<name>` ラベル / banner の 256-color。
+    #[serde(default = "default_provider_color")]
+    pub color: u8,
+    /// `true`: system prompt を初回プロンプト先頭に焼き込む (resume 後は再送しない)。
+    /// `false`: 毎回先頭に system prompt + history を再送する (gemini/qwen 互換)。
+    #[serde(default = "default_true")]
+    pub system_prompt_inline: bool,
+    /// `session_id_path` が空のとき (= native resume 無し)、内部 history で保持するターン数。
+    #[serde(default = "default_history_turns")]
+    pub history_turns: usize,
+}
+
+fn default_prompt_delivery() -> String {
+    "stdin".to_string()
+}
+
+fn default_parse() -> String {
+    "lossy".to_string()
+}
+
+fn default_provider_color() -> u8 {
+    // claude 既定色と同じ orange。provider 設定で上書き想定。
+    208
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_history_turns() -> usize {
+    8
+}
+
+impl AiConfig {
+    /// `[[ai.providers]]` を起動時に検証。
+    /// - 個数 <= 256 (BackendKind::Generic(u8) が u8 を埋めるため)
+    /// - name の一意性
+    /// - parse / prompt_delivery の値が許可リスト内
+    ///
+    /// 不正があれば Err(String) を返す。Config::load 後に呼ぶ。
+    pub fn validate_providers(&self) -> Result<(), String> {
+        if self.providers.len() > 256 {
+            return Err(format!(
+                "[[ai.providers]] entries exceed 256 (got {})",
+                self.providers.len()
+            ));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for p in &self.providers {
+            if p.name.is_empty() {
+                return Err("[[ai.providers]] entry has empty `name`".to_string());
+            }
+            if p.binary.is_empty() {
+                return Err(format!(
+                    "[[ai.providers]] `{}` has empty `binary`",
+                    p.name
+                ));
+            }
+            if !seen.insert(p.name.clone()) {
+                return Err(format!(
+                    "[[ai.providers]] has duplicate name `{}`",
+                    p.name
+                ));
+            }
+            if !matches!(p.parse.as_str(), "lossy" | "extract_json" | "jsonl") {
+                return Err(format!(
+                    "[[ai.providers]] `{}`: parse=`{}` is not one of: lossy, extract_json, jsonl",
+                    p.name, p.parse
+                ));
+            }
+            if !matches!(p.prompt_delivery.as_str(), "stdin" | "arg" | "flag") {
+                return Err(format!(
+                    "[[ai.providers]] `{}`: prompt_delivery=`{}` is not one of: stdin, arg, flag",
+                    p.name, p.prompt_delivery
+                ));
+            }
+            if p.prompt_delivery == "flag" && p.prompt_flag.is_empty() {
+                return Err(format!(
+                    "[[ai.providers]] `{}`: prompt_delivery=\"flag\" requires non-empty `prompt_flag`",
+                    p.name
+                ));
+            }
+        }
+        Ok(())
+    }
+
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -317,6 +456,15 @@ impl Config {
         match toml::from_str::<Config>(&content) {
             Ok(mut config) => {
                 config.merge_ai_fallbacks();
+                if let Err(e) = config.ai.validate_providers() {
+                    // providers の validation 失敗は常にエラー (explicit 不問)。
+                    // recipe 不整合のまま起動すると runtime に意味不明な失敗を起こすため。
+                    return Err(format!(
+                        "Invalid [[ai.providers]] in {}: {}",
+                        path.display(),
+                        e
+                    ));
+                }
                 Ok(config)
             }
             Err(e) => {
@@ -405,4 +553,108 @@ language = "Japanese"
         assert_eq!(cfg.disallowed_tools, "Bash,Edit,Write,Read");
         assert!(cfg.extra_args.is_empty());
     }
+
+    #[test]
+    fn providers_default_empty() {
+        let cfg = AiConfig::default();
+        assert!(cfg.providers.is_empty());
+        assert!(cfg.validate_providers().is_ok());
+    }
+
+    #[test]
+    fn provider_recipe_parses_minimal() {
+        let toml_str = r#"
+[[ai.providers]]
+name = "ollama-llama"
+binary = "ollama"
+args = ["run", "llama3.2"]
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let p = &config.ai.providers[0];
+        assert_eq!(p.name, "ollama-llama");
+        assert_eq!(p.binary, "ollama");
+        assert_eq!(p.args, vec!["run".to_string(), "llama3.2".to_string()]);
+        // defaults
+        assert_eq!(p.prompt_delivery, "stdin");
+        assert_eq!(p.parse, "lossy");
+        assert!(p.system_prompt_inline);
+        assert_eq!(p.history_turns, 8);
+        assert_eq!(p.color, 208);
+        config.ai.validate_providers().unwrap();
+    }
+
+    #[test]
+    fn provider_recipe_parses_full() {
+        let toml_str = r#"
+[[ai.providers]]
+name = "fancy"
+binary = "fancy-cli"
+args = ["chat"]
+prompt_delivery = "flag"
+prompt_flag = "-p"
+parse = "jsonl"
+jsonl_content_path = "assistant.message:data.content"
+jsonl_session_path = "result:sessionId"
+session_id_path = "session_id"
+resume_flag = "--resume"
+model_flag = "--model"
+effort_flag = "--effort"
+color = 42
+system_prompt_inline = false
+history_turns = 4
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let p = &config.ai.providers[0];
+        assert_eq!(p.prompt_delivery, "flag");
+        assert_eq!(p.prompt_flag, "-p");
+        assert_eq!(p.parse, "jsonl");
+        assert_eq!(p.resume_flag, "--resume");
+        assert_eq!(p.color, 42);
+        assert!(!p.system_prompt_inline);
+        assert_eq!(p.history_turns, 4);
+        config.ai.validate_providers().unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_name() {
+        let toml_str = r#"
+[[ai.providers]]
+name = "a"
+binary = "x"
+
+[[ai.providers]]
+name = "a"
+binary = "y"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let err = config.ai.validate_providers().unwrap_err();
+        assert!(err.contains("duplicate name"));
+    }
+
+    #[test]
+    fn validate_rejects_bad_parse_value() {
+        let toml_str = r#"
+[[ai.providers]]
+name = "a"
+binary = "x"
+parse = "yaml"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let err = config.ai.validate_providers().unwrap_err();
+        assert!(err.contains("parse"));
+    }
+
+    #[test]
+    fn validate_rejects_flag_delivery_without_flag_name() {
+        let toml_str = r#"
+[[ai.providers]]
+name = "a"
+binary = "x"
+prompt_delivery = "flag"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let err = config.ai.validate_providers().unwrap_err();
+        assert!(err.contains("prompt_flag"));
+    }
+
 }

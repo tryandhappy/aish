@@ -1,4 +1,5 @@
 use crate::ai::BackendKind;
+use std::collections::HashMap;
 
 const DEFAULT_CAPACITY: usize = 1024 * 1024; // 1MB
 
@@ -9,8 +10,10 @@ pub struct RingBuffer {
     // 累計書き込みバイト数。リング位置とは独立に単調増加する。
     total_written: u64,
     // backend ごとの「最後に送った位置 (total_written 値)」。
-    // index = BackendKind::ordinal()。初期値 0 = aish 起動時から全部を catch-up 対象に。
-    sent_marks: [u64; BackendKind::COUNT],
+    // キー = BackendKind::ordinal()。entry が無いキー = 0 (起動以降全部を catch-up 対象)。
+    // 旧 `[u64; BackendKind::COUNT]` から HashMap 化したのは Generic backend を
+    // ordinal=6+ で可変個数サポートするため。
+    sent_marks: HashMap<usize, u64>,
 }
 
 impl RingBuffer {
@@ -20,7 +23,7 @@ impl RingBuffer {
             capacity: DEFAULT_CAPACITY,
             write_pos: 0,
             total_written: 0,
-            sent_marks: [0u64; BackendKind::COUNT],
+            sent_marks: HashMap::new(),
         }
     }
 
@@ -40,9 +43,8 @@ impl RingBuffer {
     }
 
     fn unsent_len_for(&self, kind: BackendKind) -> usize {
-        let unsent = self
-            .total_written
-            .saturating_sub(self.sent_marks[kind.ordinal()]);
+        let sent = self.sent_marks.get(&kind.ordinal()).copied().unwrap_or(0);
+        let unsent = self.total_written.saturating_sub(sent);
         // 上書きされた古いデータには遡れないので capacity でクランプ。
         (unsent.min(self.capacity as u64)) as usize
     }
@@ -57,13 +59,19 @@ impl RingBuffer {
     }
 
     pub fn mark_sent_for(&mut self, kind: BackendKind) {
-        self.sent_marks[kind.ordinal()] = self.total_written;
+        self.sent_marks.insert(kind.ordinal(), self.total_written);
     }
 
     /// 全 backend の cursor を末尾に進める。`/clear` 用。
+    /// native (`all_native()`) と `all_generics()` 両方を更新する。
+    /// まだ HashMap に entry が無い backend にも entry を作って総書き込み量と同期させる
+    /// (= 次回 send 時に「過去ログ無し」状態でスタート)。
     pub fn mark_sent_all(&mut self) {
-        for slot in self.sent_marks.iter_mut() {
-            *slot = self.total_written;
+        for k in BackendKind::all_native() {
+            self.sent_marks.insert(k.ordinal(), self.total_written);
+        }
+        for k in BackendKind::all_generics() {
+            self.sent_marks.insert(k.ordinal(), self.total_written);
         }
     }
 
@@ -199,17 +207,43 @@ mod tests {
     fn test_mark_sent_all_resets_every_cursor() {
         let mut buf = RingBuffer::new();
         buf.append(b"history");
-        // どの backend もまだ何も見ていない状態。
-        for k in BackendKind::all() {
+        // どの native backend もまだ何も見ていない状態。
+        for k in BackendKind::all_native() {
             assert_eq!(buf.get_unsent_for(k), "history");
         }
         buf.mark_sent_all();
-        for k in BackendKind::all() {
+        for k in BackendKind::all_native() {
             assert_eq!(buf.get_unsent_for(k), "");
         }
         buf.append(b"after-clear");
-        for k in BackendKind::all() {
+        for k in BackendKind::all_native() {
             assert_eq!(buf.get_unsent_for(k), "after-clear");
         }
+    }
+
+    #[test]
+    fn test_generic_backend_independent_cursors() {
+        // Generic(0) と Generic(1) が独立して catch-up 履歴を持つことを検証。
+        // init_generics は呼ばない (registry を介さず ordinal だけで動作)。
+        let mut buf = RingBuffer::new();
+        buf.append(b"alpha");
+        buf.mark_sent_for(BackendKind::Generic(0));
+        // Generic(0) は送信済み、Generic(1) はまだ全部見える。
+        assert_eq!(buf.get_unsent_for(BackendKind::Generic(0)), "");
+        assert_eq!(buf.get_unsent_for(BackendKind::Generic(1)), "alpha");
+
+        buf.append(b"-beta");
+        assert_eq!(buf.get_unsent_for(BackendKind::Generic(0)), "-beta");
+        assert_eq!(buf.get_unsent_for(BackendKind::Generic(1)), "alpha-beta");
+    }
+
+    #[test]
+    fn test_native_and_generic_share_no_state() {
+        // native の Claude と Generic(0) は独立。
+        let mut buf = RingBuffer::new();
+        buf.append(b"shared");
+        buf.mark_sent_for(BackendKind::Claude);
+        assert_eq!(buf.get_unsent_for(BackendKind::Claude), "");
+        assert_eq!(buf.get_unsent_for(BackendKind::Generic(0)), "shared");
     }
 }

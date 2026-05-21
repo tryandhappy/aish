@@ -1,6 +1,6 @@
 use super::common::{
     build_full_prompt, build_system_prompt, expand_tilde, extract_model_from_args,
-    parse_ai_response_lossy, run_cli_capture_stdout,
+    parse_ai_response_lossy, parse_jsonl_with_paths, run_cli_capture_stdout,
 };
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
 use crate::config::{AiConfig, LogConfig};
@@ -145,7 +145,13 @@ impl AiBackend for CopilotBackend {
 
         let stdout = run_cli_capture_stdout("copilot", &args, &prompt, &self.log_path)?;
 
-        let (assistant_text, session_id) = parse_jsonl_envelope(&stdout);
+        // copilot の JSONL は assistant.message 行の data.content が最終応答、
+        // result 行の sessionId が session UUID。共通 parser に委譲。
+        let (assistant_text, session_id) = parse_jsonl_with_paths(
+            &stdout,
+            "assistant.message:data.content",
+            "result:sessionId",
+        );
         if let Some(sid) = session_id {
             if self.session_id.is_none() {
                 self.session_id = Some(sid);
@@ -158,125 +164,5 @@ impl AiBackend for CopilotBackend {
     }
 }
 
-/// copilot の JSONL 出力 (`--output-format json`) を行ごとに走査し、
-/// `(最終 assistant.message.data.content, result.sessionId)` を取り出す。
-///
-/// JSONL 中の関心オブジェクト:
-/// - `{"type":"assistant.message", "data":{"content":"...","toolRequests":[]}}` (non-ephemeral)
-///   `content` が最終応答テキスト。複数ターンが含まれる場合は最後のものを採用。
-/// - `{"type":"result", "sessionId":"<uuid>", "exitCode":0}` (1 行だけ末尾に出る)
-///
-/// 無関係な type (session.*, assistant.message_start/delta (ephemeral=true), assistant.reasoning,
-/// assistant.turn_start/end, user.message, ...) は無視する。
-/// 行が JSON として parse できなければスキップ (連続スペースで分断された壊れ行への防御)。
-fn parse_jsonl_envelope(raw: &str) -> (Option<String>, Option<String>) {
-    let mut content: Option<String> = None;
-    let mut session_id: Option<String> = None;
-    for line in raw.lines() {
-        let line = line.trim();
-        if line.is_empty() || !line.starts_with('{') {
-            continue;
-        }
-        let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        let type_str = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        match type_str {
-            "assistant.message" => {
-                // ephemeral な delta 等は別 type なのでここでは見ない。
-                if let Some(c) = obj
-                    .get("data")
-                    .and_then(|d| d.get("content"))
-                    .and_then(|v| v.as_str())
-                {
-                    if !c.is_empty() {
-                        content = Some(c.to_string());
-                    }
-                }
-            }
-            "result" => {
-                if let Some(sid) = obj.get("sessionId").and_then(|v| v.as_str()) {
-                    session_id = Some(sid.to_string());
-                }
-            }
-            _ => {}
-        }
-    }
-    (content, session_id)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_assistant_message_and_session_id() {
-        let jsonl = concat!(
-            r#"{"type":"session.mcp_server_status_changed","data":{"serverName":"github-mcp-server","status":"connected"},"ephemeral":true}"#,
-            "\n",
-            r#"{"type":"user.message","data":{"content":"hi"}}"#,
-            "\n",
-            r#"{"type":"assistant.message","data":{"messageId":"x","content":"hello world","toolRequests":[]}}"#,
-            "\n",
-            r#"{"type":"result","sessionId":"abc-123","exitCode":0}"#,
-            "\n",
-        );
-        let (content, sid) = parse_jsonl_envelope(jsonl);
-        assert_eq!(content.as_deref(), Some("hello world"));
-        assert_eq!(sid.as_deref(), Some("abc-123"));
-    }
-
-    #[test]
-    fn last_assistant_message_wins_when_multiple() {
-        let jsonl = concat!(
-            r#"{"type":"assistant.message","data":{"content":"first"}}"#,
-            "\n",
-            r#"{"type":"assistant.message","data":{"content":"second"}}"#,
-            "\n",
-            r#"{"type":"result","sessionId":"sid","exitCode":0}"#,
-            "\n",
-        );
-        let (content, sid) = parse_jsonl_envelope(jsonl);
-        assert_eq!(content.as_deref(), Some("second"));
-        assert_eq!(sid.as_deref(), Some("sid"));
-    }
-
-    #[test]
-    fn skips_malformed_lines() {
-        let jsonl = concat!(
-            "garbage line\n",
-            r#"{"type":"assistant.message","data":{"content":"ok"}}"#,
-            "\n",
-            "{not json\n",
-            r#"{"type":"result","sessionId":"sid"}"#,
-            "\n",
-        );
-        let (content, sid) = parse_jsonl_envelope(jsonl);
-        assert_eq!(content.as_deref(), Some("ok"));
-        assert_eq!(sid.as_deref(), Some("sid"));
-    }
-
-    #[test]
-    fn returns_none_when_no_assistant_message() {
-        let jsonl = concat!(
-            r#"{"type":"session.mcp_servers_loaded","data":{}}"#,
-            "\n",
-            r#"{"type":"result","sessionId":"sid"}"#,
-            "\n",
-        );
-        let (content, sid) = parse_jsonl_envelope(jsonl);
-        assert!(content.is_none());
-        assert_eq!(sid.as_deref(), Some("sid"));
-    }
-
-    #[test]
-    fn ignores_empty_content() {
-        // 空文字 content は採用せず None のまま (フォールバックで生 stdout に流れる)。
-        let jsonl = concat!(
-            r#"{"type":"assistant.message","data":{"content":""}}"#,
-            "\n",
-        );
-        let (content, _) = parse_jsonl_envelope(jsonl);
-        assert!(content.is_none());
-    }
-}
+// copilot の JSONL parser (`assistant.message:data.content` + `result:sessionId`) は
+// `common::parse_jsonl_with_paths` に一般化済み。テストは common.rs 側に集約。

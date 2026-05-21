@@ -338,6 +338,81 @@ pub(crate) fn parse_ai_response_lossy(raw: &str) -> AiResponse {
     }
 }
 
+/// JSONL (1 行 1 JSON object) 形式の出力から、指定 type のオブジェクトの指定パスの文字列を抽出する。
+///
+/// `content_spec` / `session_spec` はいずれも `"<type>:<dot-path>"` 形式:
+/// - `"assistant.message:data.content"` → `type` が `"assistant.message"` の行で、`data.content` を取得
+/// - `"result:sessionId"` → `type` が `"result"` の行で、`sessionId` を取得
+///
+/// content は **最後にマッチした** non-empty 値を採用 (multi-turn JSONL に備える)。
+/// session は最後にマッチした値を採用。
+/// spec が空文字なら該当パスは探さず `None` を返す。
+///
+/// 行が JSON として parse できなかった / `type` が一致しない / パス先が文字列でない場合はスキップ。
+///
+/// 戻り値: `(content, session_id)` どちらも `Option<String>`。
+pub(crate) fn parse_jsonl_with_paths(
+    raw: &str,
+    content_spec: &str,
+    session_spec: &str,
+) -> (Option<String>, Option<String>) {
+    let content_split = split_type_path(content_spec);
+    let session_split = split_type_path(session_spec);
+    let mut content: Option<String> = None;
+    let mut session_id: Option<String> = None;
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() || !line.starts_with('{') {
+            continue;
+        }
+        let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let type_str = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if let Some((want_type, path)) = &content_split {
+            if type_str == want_type {
+                if let Some(s) = get_str_at_dot_path(&obj, path) {
+                    if !s.is_empty() {
+                        content = Some(s.to_string());
+                    }
+                }
+            }
+        }
+        if let Some((want_type, path)) = &session_split {
+            if type_str == want_type {
+                if let Some(s) = get_str_at_dot_path(&obj, path) {
+                    if !s.is_empty() {
+                        session_id = Some(s.to_string());
+                    }
+                }
+            }
+        }
+    }
+    (content, session_id)
+}
+
+/// `"type:dot.path"` を `("type", "dot.path")` に分割。空文字なら None。
+fn split_type_path(spec: &str) -> Option<(String, String)> {
+    if spec.is_empty() {
+        return None;
+    }
+    let (t, p) = spec.split_once(':')?;
+    if t.is_empty() || p.is_empty() {
+        return None;
+    }
+    Some((t.to_string(), p.to_string()))
+}
+
+/// `serde_json::Value` から `"a.b.c"` 形式のパスをたどって `&str` を取り出す。
+/// 途中でオブジェクトでなくなった / 終端が文字列でない場合は None。
+fn get_str_at_dot_path<'a>(obj: &'a serde_json::Value, path: &str) -> Option<&'a str> {
+    let mut cur = obj;
+    for segment in path.split('.') {
+        cur = cur.get(segment)?;
+    }
+    cur.as_str()
+}
+
 /// `~/.aish/tmp/` 以下にユニークな一時ファイルパスを生成する。実ファイルは作らない。
 /// codex の `--output-last-message` 用。プロセスID + 単調カウンタで衝突回避。
 pub(crate) fn unique_tmp_path(suffix: &str) -> String {
@@ -457,4 +532,83 @@ mod tests {
         assert_eq!(extract_model_from_args(&args), None);
     }
 
+    #[test]
+    fn jsonl_extracts_content_and_session() {
+        let jsonl = concat!(
+            r#"{"type":"session.start","data":{}}"#, "\n",
+            r#"{"type":"user.message","data":{"content":"hi"}}"#, "\n",
+            r#"{"type":"assistant.message","data":{"content":"hello world"}}"#, "\n",
+            r#"{"type":"result","sessionId":"abc-123"}"#, "\n",
+        );
+        let (content, sid) = parse_jsonl_with_paths(
+            jsonl,
+            "assistant.message:data.content",
+            "result:sessionId",
+        );
+        assert_eq!(content.as_deref(), Some("hello world"));
+        assert_eq!(sid.as_deref(), Some("abc-123"));
+    }
+
+    #[test]
+    fn jsonl_last_content_wins() {
+        let jsonl = concat!(
+            r#"{"type":"assistant.message","data":{"content":"first"}}"#, "\n",
+            r#"{"type":"assistant.message","data":{"content":"second"}}"#, "\n",
+        );
+        let (content, _) = parse_jsonl_with_paths(jsonl, "assistant.message:data.content", "");
+        assert_eq!(content.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn jsonl_skips_malformed_lines() {
+        let jsonl = concat!(
+            "garbage\n",
+            r#"{"type":"assistant.message","data":{"content":"ok"}}"#, "\n",
+            "{broken\n",
+            r#"{"type":"result","sessionId":"sid"}"#, "\n",
+        );
+        let (content, sid) =
+            parse_jsonl_with_paths(jsonl, "assistant.message:data.content", "result:sessionId");
+        assert_eq!(content.as_deref(), Some("ok"));
+        assert_eq!(sid.as_deref(), Some("sid"));
+    }
+
+    #[test]
+    fn jsonl_empty_spec_returns_none_for_that_field() {
+        let jsonl = r#"{"type":"assistant.message","data":{"content":"ok"}}"#;
+        let (content, sid) = parse_jsonl_with_paths(jsonl, "", "result:sessionId");
+        assert!(content.is_none());
+        assert!(sid.is_none());
+    }
+
+    #[test]
+    fn jsonl_empty_content_not_adopted() {
+        let jsonl = r#"{"type":"assistant.message","data":{"content":""}}"#;
+        let (content, _) = parse_jsonl_with_paths(jsonl, "assistant.message:data.content", "");
+        assert!(content.is_none());
+    }
+
+    #[test]
+    fn jsonl_dot_path_traverses_nested() {
+        let jsonl = r#"{"type":"x","a":{"b":{"c":"deep"}}}"#;
+        let (content, _) = parse_jsonl_with_paths(jsonl, "x:a.b.c", "");
+        assert_eq!(content.as_deref(), Some("deep"));
+    }
+
+    #[test]
+    fn jsonl_path_missing_returns_none() {
+        let jsonl = r#"{"type":"x","a":{}}"#;
+        let (content, _) = parse_jsonl_with_paths(jsonl, "x:a.missing", "");
+        assert!(content.is_none());
+    }
+
+    #[test]
+    fn jsonl_malformed_spec_silently_ignored() {
+        // ":" 無い spec / 片側空 / 全部空 はそれぞれ None 扱い (panic しない)。
+        let jsonl = r#"{"type":"x","a":"v"}"#;
+        assert_eq!(parse_jsonl_with_paths(jsonl, "no_colon", "").0, None);
+        assert_eq!(parse_jsonl_with_paths(jsonl, ":a", "").0, None);
+        assert_eq!(parse_jsonl_with_paths(jsonl, "x:", "").0, None);
+        assert_eq!(parse_jsonl_with_paths(jsonl, "", "").0, None);
+    }
 }

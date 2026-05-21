@@ -5,6 +5,7 @@ mod copilot;
 mod cursor;
 mod factory;
 mod gemini;
+mod generic;
 mod qwen;
 mod types;
 

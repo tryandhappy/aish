@@ -205,7 +205,7 @@ fn try_handle_slash_command(
              /effort [low|medium|high|...]   set reasoning effort (no value = clear)\n\
              /model  [<name>]         set model (no value = clear, fall back to config/default)\n\
              /clear                   clear conversation history / session\n\
-             /ai     <claude|codex|gemini|qwen|cursor|copilot>   switch AI backend"
+             /ai     <claude|codex|gemini|qwen|cursor|copilot|generic:<NAME>>   switch AI backend"
                 .to_string(),
         ),
         "effort" => {
@@ -228,7 +228,7 @@ fn try_handle_slash_command(
         "ai" => {
             let Some(v) = value else {
                 return Some(
-                    "/ai requires a backend (claude|codex|gemini|qwen|cursor|copilot)".to_string(),
+                    "/ai requires a backend (claude|codex|gemini|qwen|cursor|copilot|generic:<NAME>)".to_string(),
                 );
             };
             let new_kind = match ai::BackendKind::parse(v) {
@@ -294,6 +294,11 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
 
     let mut config = config::Config::load(args.config_path.as_deref())?;
 
+    // `[[ai.providers]]` の registry を leak ベースで初期化。これ以降
+    // `BackendKind::parse("generic:<name>")` が解決できるようになる。
+    // 一度きりの呼び出し (OnceLock) なので nested aish 起動でも安全。
+    ai::BackendKind::init_generics(&config.ai.providers);
+
     // モデル名の決定: --model > [ai].model > 既存 extra_args の -m
     // CLI 指定があれば config.ai.model を上書きし、各 backend の new() で extra_args に注入される。
     if let Some(m) = args.ai_model.as_deref() {
@@ -301,7 +306,8 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
     }
 
     // effort の決定: --effort > [ai].effort
-    // claude / codex のみ対応、gemini / qwen は CLI 側に該当フラグが無いので無視される。
+    // claude / codex / copilot のみ native 対応、gemini / qwen / cursor は CLI 側に該当
+    // フラグが無いので無視される。generic は recipe.effort_flag 次第。
     if let Some(e) = args.ai_effort.as_deref() {
         config.ai.effort = e.to_string();
     }
@@ -401,7 +407,7 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
     let banner_model = ai_session.model();
     let banner_effort = ai_session.effort();
     ui::print_startup_banner(
-        kind.as_str(),
+        kind,
         banner_model.as_deref(),
         banner_effort.as_deref(),
         env!("CARGO_PKG_VERSION"),

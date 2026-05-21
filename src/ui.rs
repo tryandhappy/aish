@@ -190,6 +190,9 @@ pub fn build_color_start(color: &str) -> String {
 }
 
 /// AI バックエンド種別ごとの識別色 (256-color)。未知名は orange にフォールバック。
+/// Generic backend は `name = "generic:<provider-name>"` 形式で渡される想定で、
+/// 表からは引かず、呼び出し側 (`backend_color_for_kind`) が
+/// `BackendKind::generic_meta()` を直接見て recipe.color を取り出す。
 fn backend_color_code(name: &str) -> u8 {
     match name {
         "claude" => 208,    // orange (Anthropic 寄り)
@@ -202,12 +205,20 @@ fn backend_color_code(name: &str) -> u8 {
     }
 }
 
+/// `BackendKind` から 256-color コードを引く。Generic は recipe.color を返す。
+fn backend_color_for_kind(kind: BackendKind) -> u8 {
+    if let Some(meta) = kind.generic_meta() {
+        return meta.recipe.color;
+    }
+    backend_color_code(kind.as_str())
+}
+
 /// 起動時のバナーを表示する。
 /// ロゴ (aish ASCII アート) は Sunset 配色 (黄→橙→赤橙→マゼンタ) の truecolor。
 /// 続く status 行でバージョン + バックエンド名 (バックエンド別色) + (あれば) モデル名 +
 /// (あれば) effort + キーヒント。
 pub fn print_startup_banner(
-    backend_name: &str,
+    kind: BackendKind,
     model: Option<&str>,
     effort: Option<&str>,
     version: &str,
@@ -217,8 +228,9 @@ pub fn print_startup_banner(
     let c_i = "\x1b[38;2;255;140;0m";
     let c_s = "\x1b[38;2;255;80;40m";
     let c_h = "\x1b[38;2;220;40;100m";
-    let backend_col = backend_color_code(backend_name);
+    let backend_col = backend_color_for_kind(kind);
     let backend_color = format!("\x1b[1;38;5;{backend_col}m");
+    let backend_name = kind.as_str();
     let dim = "\x1b[38;5;245m";
     let model_color = "\x1b[38;5;250m";
     let reset = "\x1b[0m";

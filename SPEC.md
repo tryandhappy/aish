@@ -49,7 +49,7 @@ CLI SSH + AI (Claude Code) ツール。クライアント側のClaude Codeから
 | `--update` | GitHub Releases から最新バイナリをダウンロードして自己更新 |
 | `--help` | ヘルプを表示して終了 |
 | `--config <path>` | 設定ファイルのパスを指定（デフォルト `~/.aish/config.toml`）|
-| `--ai <kind>` | AIバックエンドを選択（`claude`/`codex`/`gemini`/`qwen`/`cursor`/`copilot`、既定 `claude`）。設定ファイル `[ai].backend` を上書きする |
+| `--ai <kind>` | AIバックエンドを選択（`claude`/`codex`/`gemini`/`qwen`/`cursor`/`copilot`/`generic:<NAME>`、既定 `claude`）。設定ファイル `[ai].backend` を上書きする。`generic:<NAME>` は `[[ai.providers]]` に登録した CLI を指す |
 | `--model <name>` | 使用モデル名を指定（例: `sonnet`, `gpt-5`, `gemini-2.5-pro`）。`[ai].model` および各バックエンドの `extra_args` の `-m` より優先 |
 | `--effort <level>` | reasoning effort レベル（例: `low`/`medium`/`high`）。claude → `--effort`、codex → `-c model_reasoning_effort=`、copilot → `--effort` に変換。gemini/qwen/cursor は CLI 非対応のため無視 |
 | それ以外 | SSH引数としてそのまま `ssh` に渡す |
@@ -150,8 +150,8 @@ aishプロンプトで先頭が `/` の入力は AI に送らずローカルで�
 | `/help` | 利用可能な slash command 一覧を表示 |
 | `/effort [LEVEL]` | reasoning effort を runtime で変更（次回 send 以降に反映）。引数省略でクリア。gemini/qwen/cursor は CLI フラグが無いので保存のみで実リクエストに反映されない。claude/codex/copilot は native 反映 |
 | `/model [NAME]` | モデルを runtime で変更（既存 session_id / history は維持）。引数省略でクリア |
-| `/clear` | 会話履歴 / セッションをクリア。claude / codex / cursor / copilot は session_id を None に、gemini / qwen は内部 history Vec を空にする |
-| `/ai <KIND>` | AI バックエンドを切り替え（`claude`/`codex`/`gemini`/`qwen`/`cursor`/`copilot`）。新しい backend を `create_backend` で構築し、現セッションは破棄される |
+| `/clear` | 会話履歴 / セッションをクリア。claude / codex / cursor / copilot / generic (native resume 設定時) は session_id を None に、gemini / qwen / generic (native resume 未設定時) は内部 history Vec を空にする |
+| `/ai <KIND>` | AI バックエンドを切り替え（`claude`/`codex`/`gemini`/`qwen`/`cursor`/`copilot`/`generic:<NAME>`）。新しい backend を `create_backend` で構築し、現セッションは破棄される |
 | `/<unknown>` | 警告メッセージ表示、AI には送らない |
 
 スラッシュコマンドはそれぞれ AI CLI 自身の対話モードで提供される `/<cmd>` とは独立に **aish 側で実装**されている（aish は CLI を非対話モードで起動するため、CLI 側の slash command は届かない）。
@@ -167,7 +167,12 @@ aishプロンプトで先頭が `/` の入力は AI に送らずローカルで�
 
 ## 6. AI連携
 
-aish は trait `AiBackend` を介して 6 種類の AI CLI に対応する: **Claude Code / OpenAI Codex CLI / Google Gemini CLI / Alibaba Qwen Code / Cursor Agent CLI / GitHub Copilot CLI**。各バックエンドは JSON で `{message, commands[]}` 相当を返し、aish は提案ベースで動作する。CLI 非依存の原則 (透明性・サーバ無書き込み) は trait 実装側で守る責任を負う。
+aish は trait `AiBackend` を介して以下に対応する:
+
+- 個別実装の **native backend 6 種**: **Claude Code / OpenAI Codex CLI / Google Gemini CLI / Alibaba Qwen Code / Cursor Agent CLI / GitHub Copilot CLI** (`src/ai/<name>.rs` に bespoke 実装)
+- 設定駆動の **Generic CLI backend**: `[[ai.providers]]` に登録した任意の CLI を `--ai generic:<NAME>` で使う。Rust コード変更なしで provider 追加可能 (`src/ai/generic.rs` の単一 driver が recipe を読んで動的に振る舞いを決定)
+
+各バックエンドは JSON で `{message, commands[]}` 相当を返し、aish は提案ベースで動作する。CLI 非依存の原則 (透明性・サーバ無書き込み) は trait 実装側で守る責任を負う。
 
 選択優先順位: `--ai` (CLI) > `[ai].backend` (設定) > `claude` (既定)。
 
@@ -305,6 +310,7 @@ claude -p --resume <session_id> \
   - qwen:   `qwen --continue` (best-effort、1 ターン以上会話があれば)
   - cursor: `cursor-agent --resume <UUID>` (応答 JSON の `session_id` を捕獲できた場合)
   - copilot: `copilot --resume <UUID>` (JSONL `result.sessionId` を捕獲できた場合)
+  - generic: `<binary> <resume_flag> <sid>` (recipe.resume_flag が設定済み + session_id 捕獲済みのとき)
 - gemini / qwen は非対話モードでの session 永続化が CLI 仕様として保証されていないため、表示はしてもコマンド実行で aish の会話が読み戻せないことがある。
 - cursor / copilot は `--resume` が非対話モードでも安定動作することを実機で確認済み (copilot は cache token も効く)。
 
@@ -465,6 +471,46 @@ Free プランの cursor-agent では Named models が使えず `auto` のみ指
 認証は `gh auth login` か `copilot login`、もしくは `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` /
 `GITHUB_TOKEN` env のいずれか。所属組織の Copilot ポリシーで CLI 利用が許可されている必要がある
 (`Access denied by policy settings` が出る場合は組織側の許可が必要)。
+
+#### `[[ai.providers]]` (Generic CLI backend のレシピ配列)
+
+`src/ai/generic.rs::GenericCliBackend` が読む config 駆動レシピ。`--ai generic:<NAME>` /
+`/ai generic:<NAME>` でアクティブ化する。配列なので複数同時に登録可能 (上限 256 個)。
+
+| キー | 既定値 | 説明 |
+|---|---|---|
+| `name` | (必須) | provider 一意識別子 (`/ai generic:<NAME>` の `<NAME>` 部分) |
+| `binary` | (必須) | 実行ファイル名 (PATH 検索) または絶対パス |
+| `args` | `[]` | 固定引数。aish が動的引数 (resume/model/effort/prompt-as-flag) を後ろに追加する |
+| `prompt_delivery` | `"stdin"` | `"stdin"` / `"arg"` (positional 末尾) / `"flag"` (`prompt_flag` の値として渡す) |
+| `prompt_flag` | `""` | `prompt_delivery="flag"` のとき必須 (例 `"-p"`) |
+| `parse` | `"lossy"` | `"lossy"` / `"extract_json"` / `"jsonl"` |
+| `jsonl_content_path` | `""` | `parse="jsonl"` のとき `"type:dot.path"` 形式で最終応答テキストのパスを指定 |
+| `jsonl_session_path` | `""` | `parse="jsonl"` のとき同形式で session_id 用 |
+| `session_id_path` | `""` | `parse="extract_json"` のとき抽出 JSON 内の session_id フィールド名 (top-level key) |
+| `resume_flag` | `""` | session_id 捕獲時の resume 引数 (例 `"--resume"`)。空 + session_id_path 空なら native resume なし |
+| `model_flag` | `""` | model 引数名 (例 `"--model"` / `"-m"`)。空なら model 渡しなし |
+| `effort_flag` | `""` | reasoning effort 引数名。空なら保存のみで実リクエストに反映しない |
+| `color` | `208` | 256-color (`/ai/<name>` ラベル・banner 色) |
+| `system_prompt_inline` | `true` | `true`: 初回プロンプト先頭に焼き込む。`false`: 毎回プロンプトを history + system + context で再構築 |
+| `history_turns` | `8` | native resume 無効時に内部保持する (user, ai) ターン数 |
+
+起動時に `AiConfig::validate_providers()` で以下を検証:
+- 配列長 <= 256
+- `name` 一意
+- `parse` / `prompt_delivery` 値の妥当性
+- `prompt_delivery="flag"` のとき `prompt_flag` が非空
+
+不正があれば config 読み込みエラーで起動拒否する (`Invalid [[ai.providers]] in <path>: ...`)。
+
+**安全性**: aish 側からは native backend (claude / copilot 等) と違って `--deny-tool` 相当の
+強制フラグは付けない。利用者が `args` に `--mode plan` / `--sandbox` 等を明示的に含める想定。
+**信頼できる CLI のみ登録すること**。aish の確認 UI (提案コマンドの Y/n) は generic backend でも
+同じく機能するが、CLI 側が独自にツール実行を始める可能性は config 著者の責任で抑える。
+
+**メモリ**: `[[ai.providers]]` 各エントリは起動時に `Box::leak` され `&'static str` 化される。
+プロセス全期間で生存するため、reload 機構はサポートしていない (aish 再起動で反映)。
+ordinal は `6 + index` (native の後ろに連番) で、ring_buffer の sent_marks HashMap キーに使う。
 
 トップレベル `system_prompt` / `language` は後方互換のため残す。`[ai]` セクションが省略されたり
 そのフィールドが空文字なら、トップレベルの値が `[ai]` 側にコピーされる。
