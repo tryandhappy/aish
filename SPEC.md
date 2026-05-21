@@ -49,7 +49,7 @@ CLI SSH + AI (Claude Code) ツール。クライアント側のClaude Codeから
 | `--update` | GitHub Releases から最新バイナリをダウンロードして自己更新 |
 | `--help` | ヘルプを表示して終了 |
 | `--config <path>` | 設定ファイルのパスを指定（デフォルト `~/.aish/config.toml`）|
-| `--ai <kind>` | AIバックエンドを選択（`claude`/`codex`/`gemini`/`qwen`/`cursor`/`copilot`/`generic:<NAME>`、既定 `claude`）。設定ファイル `[ai].backend` を上書きする。`generic:<NAME>` は `[[ai.providers]]` に登録した CLI を指す |
+| `--ai <name>` | AIバックエンドを選択（built-in: `claude`/`codex`/`gemini`/`qwen`/`cursor`/`copilot`、または `[[ai.providers]]` の任意 `name`、既定 `claude`）。設定ファイル `[ai].backend` を上書きする。built-in 名は予約語で `[[ai.providers]]` 側に同名は登録不可 |
 | `--model <name>` | 使用モデル名を指定（例: `sonnet`, `gpt-5`, `gemini-2.5-pro`）。`[ai].model` および各バックエンドの `extra_args` の `-m` より優先 |
 | `--effort <level>` | reasoning effort レベル（例: `low`/`medium`/`high`）。claude → `--effort`、codex → `-c model_reasoning_effort=`、copilot → `--effort` に変換。gemini/qwen/cursor は CLI 非対応のため無視 |
 | それ以外 | SSH引数としてそのまま `ssh` に渡す |
@@ -151,7 +151,7 @@ aishプロンプトで先頭が `/` の入力は AI に送らずローカルで�
 | `/effort [LEVEL]` | reasoning effort を runtime で変更（次回 send 以降に反映）。引数省略でクリア。gemini/qwen/cursor は CLI フラグが無いので保存のみで実リクエストに反映されない。claude/codex/copilot は native 反映 |
 | `/model [NAME]` | モデルを runtime で変更（既存 session_id / history は維持）。引数省略でクリア |
 | `/clear` | 会話履歴 / セッションをクリア。claude / codex / cursor / copilot / generic (native resume 設定時) は session_id を None に、gemini / qwen / generic (native resume 未設定時) は内部 history Vec を空にする |
-| `/ai <KIND>` | AI バックエンドを切り替え（`claude`/`codex`/`gemini`/`qwen`/`cursor`/`copilot`/`generic:<NAME>`）。新しい backend を `create_backend` で構築し、現セッションは破棄される |
+| `/ai <NAME>` | AI バックエンドを切り替え（built-in `claude`/`codex`/`gemini`/`qwen`/`cursor`/`copilot` または `[[ai.providers]]` の `name`）。新しい backend を `create_backend` で構築し、現セッションは破棄される |
 | `/<unknown>` | 警告メッセージ表示、AI には送らない |
 
 スラッシュコマンドはそれぞれ AI CLI 自身の対話モードで提供される `/<cmd>` とは独立に **aish 側で実装**されている（aish は CLI を非対話モードで起動するため、CLI 側の slash command は届かない）。
@@ -170,7 +170,7 @@ aishプロンプトで先頭が `/` の入力は AI に送らずローカルで�
 aish は trait `AiBackend` を介して以下に対応する:
 
 - 個別実装の **native backend 6 種**: **Claude Code / OpenAI Codex CLI / Google Gemini CLI / Alibaba Qwen Code / Cursor Agent CLI / GitHub Copilot CLI** (`src/ai/<name>.rs` に bespoke 実装)
-- 設定駆動の **Generic CLI backend**: `[[ai.providers]]` に登録した任意の CLI を `--ai generic:<NAME>` で使う。Rust コード変更なしで provider 追加可能 (`src/ai/generic.rs` の単一 driver が recipe を読んで動的に振る舞いを決定)
+- 設定駆動の **Generic CLI backend**: `[[ai.providers]]` に登録した任意の CLI を `--ai <NAME>` (registered `name` をそのまま) で使う。Rust コード変更なしで provider 追加可能 (`src/ai/generic.rs` の単一 driver が recipe を読んで動的に振る舞いを決定)。`name` は built-in 予約語と衝突不可
 
 各バックエンドは JSON で `{message, commands[]}` 相当を返し、aish は提案ベースで動作する。CLI 非依存の原則 (透明性・サーバ無書き込み) は trait 実装側で守る責任を負う。
 
@@ -498,10 +498,12 @@ Free プランの cursor-agent では Named models が使えず `auto` のみ指
 起動時に `AiConfig::validate_providers()` で以下を検証:
 - 配列長 <= 256
 - `name` 一意
+- `name` が built-in 予約語 (claude/codex/gemini/qwen/cursor/copilot) と衝突しないこと
 - `parse` / `prompt_delivery` 値の妥当性
 - `prompt_delivery="flag"` のとき `prompt_flag` が非空
 
 不正があれば config 読み込みエラーで起動拒否する (`Invalid [[ai.providers]] in <path>: ...`)。
+予約語は `BackendKind::all_native()` から導出するので、native backend を増やしたら自動的に予約語にも加わる。
 
 **安全性**: aish 側からは native backend (claude / copilot 等) と違って `--deny-tool` 相当の
 強制フラグは付けない。利用者が `args` に `--mode plan` / `--sandbox` 等を明示的に含める想定。

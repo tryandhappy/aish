@@ -253,6 +253,7 @@ impl AiConfig {
     /// `[[ai.providers]]` を起動時に検証。
     /// - 個数 <= 256 (BackendKind::Generic(u8) が u8 を埋めるため)
     /// - name の一意性
+    /// - name が native 予約語 (claude/codex/gemini/qwen/cursor/copilot) と衝突しないこと
     /// - parse / prompt_delivery の値が許可リスト内
     ///
     /// 不正があれば Err(String) を返す。Config::load 後に呼ぶ。
@@ -263,6 +264,12 @@ impl AiConfig {
                 self.providers.len()
             ));
         }
+        // native 予約語は `BackendKind::all_native()` から導出して二重定義を避ける。
+        // 新しい native backend を追加したら自動で予約語にも入る。
+        let reserved: std::collections::HashSet<&str> = crate::ai::BackendKind::all_native()
+            .iter()
+            .map(|k| k.as_str())
+            .collect();
         let mut seen = std::collections::HashSet::new();
         for p in &self.providers {
             if p.name.is_empty() {
@@ -271,6 +278,12 @@ impl AiConfig {
             if p.binary.is_empty() {
                 return Err(format!(
                     "[[ai.providers]] `{}` has empty `binary`",
+                    p.name
+                ));
+            }
+            if reserved.contains(p.name.as_str()) {
+                return Err(format!(
+                    "[[ai.providers]] `{}`: provider name collides with built-in backend",
                     p.name
                 ));
             }
@@ -613,6 +626,21 @@ history_turns = 4
         assert!(!p.system_prompt_inline);
         assert_eq!(p.history_turns, 4);
         config.ai.validate_providers().unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_reserved_native_name() {
+        let toml_str = r#"
+[[ai.providers]]
+name = "claude"
+binary = "alt-claude"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let err = config.ai.validate_providers().unwrap_err();
+        assert!(
+            err.contains("built-in"),
+            "expected built-in collision error, got: {err}"
+        );
     }
 
     #[test]

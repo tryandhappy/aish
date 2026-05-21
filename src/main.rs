@@ -205,7 +205,7 @@ fn try_handle_slash_command(
              /effort [low|medium|high|...]   set reasoning effort (no value = clear)\n\
              /model  [<name>]         set model (no value = clear, fall back to config/default)\n\
              /clear                   clear conversation history / session\n\
-             /ai     <claude|codex|gemini|qwen|cursor|copilot|generic:<NAME>>   switch AI backend"
+             /ai     <NAME>           switch AI backend (built-in: claude|codex|gemini|qwen|cursor|copilot, or any [[ai.providers]] name)"
                 .to_string(),
         ),
         "effort" => {
@@ -228,7 +228,7 @@ fn try_handle_slash_command(
         "ai" => {
             let Some(v) = value else {
                 return Some(
-                    "/ai requires a backend (claude|codex|gemini|qwen|cursor|copilot|generic:<NAME>)".to_string(),
+                    "/ai requires a backend name (built-in: claude|codex|gemini|qwen|cursor|copilot, or any [[ai.providers]].name)".to_string(),
                 );
             };
             let new_kind = match ai::BackendKind::parse(v) {

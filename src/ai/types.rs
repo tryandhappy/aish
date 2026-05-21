@@ -74,6 +74,20 @@ pub struct GenericMeta {
 /// 2 回目以降の set() は黙って無視される (テスト等での重複呼び出しに耐える)。
 static GENERIC_REGISTRY: OnceLock<Vec<GenericMeta>> = OnceLock::new();
 
+/// native backend 名のみを受け付ける純粋関数 (registry 非依存)。
+/// `parse` の 1 段目で使う。
+fn parse_native(s: &str) -> Result<BackendKind, ()> {
+    match s {
+        "claude" => Ok(BackendKind::Claude),
+        "codex" => Ok(BackendKind::Codex),
+        "gemini" => Ok(BackendKind::Gemini),
+        "qwen" => Ok(BackendKind::Qwen),
+        "cursor" => Ok(BackendKind::Cursor),
+        "copilot" => Ok(BackendKind::Copilot),
+        _ => Err(()),
+    }
+}
+
 impl BackendKind {
     /// 起動時に一度だけ呼ぶ。`[[ai.providers]]` 各エントリの recipe / display_name / binary を
     /// `Box::leak` で `&'static str` 化してテーブルに格納する。
@@ -82,8 +96,10 @@ impl BackendKind {
         let metas: Vec<GenericMeta> = providers
             .iter()
             .map(|p| {
-                let display = Box::leak(format!("generic:{}", p.name).into_boxed_str())
-                    as &'static str;
+                // display_name は recipe.name そのまま (flat namespace)。
+                // native 予約語との衝突は config::validate_providers で先に reject されている。
+                let display =
+                    Box::leak(p.name.clone().into_boxed_str()) as &'static str;
                 let binary =
                     Box::leak(p.binary.clone().into_boxed_str()) as &'static str;
                 let recipe = Box::leak(Box::new(p.clone())) as &'static ProviderRecipe;
@@ -106,43 +122,38 @@ impl BackendKind {
         GENERIC_REGISTRY.get()?.get(idx as usize)
     }
 
-    /// `"claude"`, `"copilot"`, `"generic:<name>"` の形式を BackendKind に解決する。
-    /// generic は `init_generics` 後でないと解決できない。
+    /// 文字列を BackendKind に解決する。
+    ///
+    /// 解決順:
+    /// 1. native 6 種 (`"claude"` 等) の固定 match
+    /// 2. `GENERIC_REGISTRY` の provider name と完全一致するか線形検索
+    ///
+    /// generic provider は flat namespace で扱う (prefix 不要)。`validate_providers` で
+    /// native 予約語との衝突は起動時に reject されるので、ここで両ステップが同じ文字列に
+    /// マッチすることは無い (= native 優先で曖昧性は無い)。
     pub fn parse(s: &str) -> Result<Self, String> {
-        if let Some(name) = s.strip_prefix("generic:") {
-            let Some(reg) = GENERIC_REGISTRY.get() else {
-                return Err(format!(
-                    "no [[ai.providers]] configured (cannot resolve `{s}`)"
-                ));
-            };
-            return reg
+        if let Ok(k) = parse_native(s) {
+            return Ok(k);
+        }
+        if let Some(reg) = GENERIC_REGISTRY.get() {
+            if let Some(idx) = reg
                 .iter()
-                .position(|m| m.recipe.name == name)
+                .position(|m| m.recipe.name == s)
                 .and_then(|i| u8::try_from(i).ok())
-                .map(BackendKind::Generic)
-                .ok_or_else(|| {
-                    let names: Vec<_> = reg.iter().map(|m| m.recipe.name.as_str()).collect();
-                    format!(
-                        "unknown generic provider `{name}` (configured: {})",
-                        if names.is_empty() {
-                            "<none>".to_string()
-                        } else {
-                            names.join(", ")
-                        }
-                    )
-                });
+            {
+                return Ok(BackendKind::Generic(idx));
+            }
         }
-        match s {
-            "claude" => Ok(BackendKind::Claude),
-            "codex" => Ok(BackendKind::Codex),
-            "gemini" => Ok(BackendKind::Gemini),
-            "qwen" => Ok(BackendKind::Qwen),
-            "cursor" => Ok(BackendKind::Cursor),
-            "copilot" => Ok(BackendKind::Copilot),
-            other => Err(format!(
-                "unknown backend `{other}` (expected: claude|codex|gemini|qwen|cursor|copilot|generic:<NAME>)"
-            )),
+        // 不一致: 利用可能候補を一覧で示す。
+        let mut available: Vec<String> =
+            Self::all_native().iter().map(|k| k.as_str().to_string()).collect();
+        if let Some(reg) = GENERIC_REGISTRY.get() {
+            available.extend(reg.iter().map(|m| m.recipe.name.clone()));
         }
+        Err(format!(
+            "unknown backend `{s}` (available: {})",
+            available.join(", ")
+        ))
     }
 
     /// 表示名 (slash command 入力と round-trip する形式)。
@@ -159,7 +170,7 @@ impl BackendKind {
             BackendKind::Generic(_) => self
                 .generic_meta()
                 .map(|m| m.display_name)
-                .unwrap_or("generic:?"),
+                .unwrap_or("?"),
         }
     }
 
@@ -331,22 +342,22 @@ mod tests {
     }
 
     #[test]
-    fn parse_generic_errors_when_registry_uninitialized() {
-        // 他のテストが init してしまっている可能性があるので "no providers" メッセージか
-        // "unknown generic provider" のどちらかが返ることだけ確認 (どちらでも parse 失敗が正)。
-        let result = BackendKind::parse("generic:nonexistent-xyz-test-only");
+    fn parse_unknown_name_returns_err_with_available_list() {
+        // 確実に存在しない名前 (UUID 風) なら native / registry のどちらにも hit しない。
+        // OnceLock がプロセス共有なので registry が他テストで populate されている可能性に対応。
+        let result = BackendKind::parse("nonexistent-xyz-7c3e9b1d-test-only");
         assert!(result.is_err());
         let msg = result.unwrap_err();
-        assert!(
-            msg.contains("generic") && (msg.contains("unknown") || msg.contains("no [[ai.providers]]")),
-            "unexpected err: {msg}"
-        );
+        assert!(msg.contains("unknown backend"), "unexpected err: {msg}");
+        // メッセージには利用可能な native 名が並んでいる。
+        assert!(msg.contains("claude"), "should list claude: {msg}");
     }
 
     #[test]
-    fn parse_unknown_includes_generic_in_message() {
-        let err = BackendKind::parse("badname").unwrap_err();
-        assert!(err.contains("generic:<NAME>"));
+    fn parse_native_takes_priority_over_unset_registry() {
+        // 既存 native 名は registry の状態に依存せず常に native として解決される。
+        assert_eq!(BackendKind::parse("claude").unwrap(), BackendKind::Claude);
+        assert_eq!(BackendKind::parse("copilot").unwrap(), BackendKind::Copilot);
     }
 
     #[test]
