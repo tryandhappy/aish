@@ -1,5 +1,6 @@
 use super::claude::ClaudeBackend;
 use super::codex::CodexBackend;
+use super::copilot::CopilotBackend;
 use super::cursor::CursorBackend;
 use super::gemini::GeminiBackend;
 use super::qwen::QwenBackend;
@@ -18,6 +19,7 @@ pub fn create_backend(
         BackendKind::Gemini => Ok(Box::new(GeminiBackend::new(cfg, log))),
         BackendKind::Qwen => Ok(Box::new(QwenBackend::new(cfg, log))),
         BackendKind::Cursor => Ok(Box::new(CursorBackend::new(cfg, log))),
+        BackendKind::Copilot => Ok(Box::new(CopilotBackend::new(cfg, log))),
     }
 }
 

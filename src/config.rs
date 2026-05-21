@@ -49,6 +49,8 @@ pub struct AiConfig {
     pub qwen: GenericBackendConfig,
     #[serde(default)]
     pub cursor: CursorBackendConfig,
+    #[serde(default)]
+    pub copilot: CopilotBackendConfig,
 }
 
 impl Default for AiConfig {
@@ -64,6 +66,7 @@ impl Default for AiConfig {
             gemini: GenericBackendConfig::default(),
             qwen: GenericBackendConfig::default(),
             cursor: CursorBackendConfig::default(),
+            copilot: CopilotBackendConfig::default(),
         }
     }
 }
@@ -128,6 +131,37 @@ impl Default for CursorBackendConfig {
 
 fn default_cursor_mode() -> String {
     // plan = read-only / propose-only。aish の「提案のみ」セマンティクスと合致する安全側既定。
+    "plan".to_string()
+}
+
+/// copilot CLI 用設定。
+/// - `mode`: `--mode <value>` の値 (`"plan"` / `"interactive"` / `"autopilot"`)。aish 用途では `"plan"` 推奨。
+/// - `extra_args`: その他追加引数。
+///
+/// なお以下は cursor と同様 aish が常に自動付与するので config から指定できない:
+/// - `--output-format json` (JSONL 出力)
+/// - `--allow-all-tools` (非対話モードで必須)
+/// - `--deny-tool=shell` / `--deny-tool=write` (信頼の根幹: shell 実行と書き込みを完全拒否)
+/// - `--no-ask-user` (会話は aish が仕切る)
+#[derive(Debug, Deserialize, Clone)]
+pub struct CopilotBackendConfig {
+    #[serde(default)]
+    pub extra_args: Vec<String>,
+    /// `--mode` に渡す値。空 / 未指定なら何も渡さない (= interactive 既定)。aish では `"plan"` 推奨。
+    #[serde(default = "default_copilot_mode")]
+    pub mode: String,
+}
+
+impl Default for CopilotBackendConfig {
+    fn default() -> Self {
+        Self {
+            extra_args: Vec::new(),
+            mode: default_copilot_mode(),
+        }
+    }
+}
+
+fn default_copilot_mode() -> String {
     "plan".to_string()
 }
 

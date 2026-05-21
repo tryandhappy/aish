@@ -42,6 +42,10 @@ aish は SSH でサーバを管理する道具なので、**ユーザが画面�
 - **cursor backend は `--trust` を常時付与する**。cursor-agent の headless モード (`-p`) は `--trust` 無しだと `Workspace Trust Required` で実行を拒否し、stdin は読まずプロンプト表示だけ出して非ゼロ終了する。`AiError::EmptyOutput` / `NonZeroExit` 経由でユーザに見えるが原因が分かりにくいので、config からは指定不可で `src/ai/cursor.rs` の固定引数に埋め込んでいる。`--yolo` / `-f` (Run Everything) は意図しない実行を許してしまうので絶対に付けない。安全側の `--trust` 単体で十分。
 - **cursor backend のツール抑制は `--mode plan` + system prompt の二段構え**。cursor-agent には codex の `--disable shell_tool ...` に相当する個別ツール無効化フラグが無いので、`[ai.cursor].mode = "plan"` (default) で read-only / propose-only モードに固定するのが主防御。OS レベル defense-in-depth として `[ai.cursor].sandbox = "enabled"` を併用可。**`mode = ""` (通常モード) は明示的にユーザが選んだときだけ。aish 側の確認 UI を迂回するリスクがあるので推奨しない**。
 - **cursor-agent の Free プランでは Named models が使えず `auto` のみ**。`--model sonnet-4` 等を指定すると `Named models unavailable Free plans can only use Auto.` で `EmptyOutput` エラーになる。paid プランなら sonnet-4 等を指定可能。config では `[ai].model = "auto"` を案内している。
+- **copilot backend は `-p` フラグを付けない**。`copilot -p <text>` フラグは positional / stdin と排他で、aish のように stdin で prompt を流すと `error: too many arguments. Expected 0 arguments but got 1.` で死ぬ。copilot CLI は stdin を自動検出するので `-p` なしで `run_cli_capture_stdout` 経由の stdin 渡しで動く。これは他の `-p` 必須 backend (claude, cursor) と挙動が逆になるので、`src/ai/copilot.rs` を編集するときは注意。
+- **copilot backend のツール抑制は四段構え**: `--allow-all-tools` (非対話必須) + `--deny-tool=shell` + `--deny-tool=write` + `--no-ask-user` + `--mode plan` (default)。deny は allow に優先するので、`--allow-all-tools` を付けても shell 実行と書き込みは完全拒否される。これで copilot は claude / codex 同等の「LLM のみ」状態に退化する。これらは config からは指定不可で固定引数に埋め込んでいる (信頼の根幹に直結するため)。`--yolo` / `--allow-all` (Run Everything 系) は絶対に付けない。
+- **copilot の `--output-format json` は JSONL (1 行 1 オブジェクト)**。他の backend のような単一の外側 JSON ではない。`src/ai/copilot.rs::parse_jsonl_envelope` で行ごとに走査し、`type == "assistant.message"` 行の `data.content` (最終応答テキスト) と `type == "result"` 行の `sessionId` (session UUID) を取り出す。ephemeral な delta / status 行 (`session.*`, `assistant.message_delta`, `assistant.reasoning`, `assistant.turn_*` 等) は無視する。複数 `assistant.message` がある場合は最後のものを採用 (一応 multi-turn 想定だが現状は 1 turn のみ)。
+- **copilot は組織ポリシーで CLI 利用が拒否されることがある**。`Error: Access denied by policy settings (Request ID: ...)` が出たら個人の Copilot 設定 (https://github.com/settings/copilot) または所属組織の admin に確認が必要。aish 側では `AiError::NonZeroExit { stderr }` 経由でユーザに見えるので、エラー本文の `policy` 文字列でユーザが原因に気付ける。
 - **AI 応答受信後は ring_buffer に注釈を append してから `mark_sent_for(current_kind)`** の順序を守る。注釈 (`[aish→<kind>]> ...` / `[ai/<kind>]> ...` / `[ai/<kind> suggests] ...`) は **current AI は再受信せず、他 backend は次回 catch-up で受信する**。逆順にすると current AI が自分の発話をループで受信してしまう。
 - **`/clear` は ring_buffer.mark_sent_all() で全 backend の cursor を末尾に進める**が、AI CLI 内部の session/history は **current backend のみ** リセットする (他 backend の instance は保持していないため)。「全 AI の会話を仕切り直す」セマンティクスを守りつつ、副作用は最小限にする妥協案。
 - **ring_buffer の `[link]` ライクな PTY 文字列と注釈ラベル (`[aish→...]` / `[ai/...]`) は衝突しうる**。AI は文脈で区別する想定。誤検出が頻発したらフォーマットを XML 風 (`<aish to="claude">`) 等に変更する余地あり。
@@ -55,7 +59,7 @@ aish は SSH でサーバを管理する道具なので、**ユーザが画面�
 - **コードに新しい仕様 / 落とし穴 / 不変条件を導入する変更を行ったら、同じ作業フローの中で CLAUDE.md「実装上の注意」(仕様が膨らんだ場合は SPEC.md) への追記を必ず行う**。対象は、コードから直ちには読み取れず後から見て間違える可能性のある挙動。typo 修正・cosmetic refactor・既存仕様の範囲内の小さな修正は対象外。判断に迷ったら追記する側に倒す。
 - **依頼された作業が完了したら、コード変更と CLAUDE.md / SPEC.md の追記を 1 つの commit にまとめて自動作成してよい**。ユーザに「commit しますか？」と都度確認しなくてよい。コミットメッセージは既存スタイル (`Feat:` / `Fix:` / `Refactor:` / `Docs:` / `Chore:` 等の日本語プレフィックス + 短い説明、必要なら body) に従う。
 - **push は別途ユーザに確認する**。リモートに公開する操作は引き続き確認が必要。
-- **タグ付け / リリースは `release` slash command 経由のみ**。auto-commit の対象外。
+- **タグ付け / git tag タグをつける。git push --tagsでGitHub Actionが動き出し、リリースされるが、git pushは自動では行わない。
 
 ## 設定ファイル
 - `~/.aish/config.toml` (TOML)。`--config <path>` で変更可能。

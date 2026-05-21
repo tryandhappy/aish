@@ -41,17 +41,19 @@ path = "~/.aish/logs/claude-code.log"                          # default: "~/.ai
 # AI backend settings
 # `backend` selects which CLI to drive. `--ai <kind>` (CLI flag) overrides this.
 # Supported: claude (Claude Code), codex (OpenAI Codex CLI), gemini (Google Gemini CLI),
-#            qwen (Alibaba Qwen Code), cursor (Cursor Agent CLI / `cursor-agent`).
+#            qwen (Alibaba Qwen Code), cursor (Cursor Agent CLI / `cursor-agent`),
+#            copilot (GitHub Copilot CLI).
 # `system_prompt` / `language` here override the top-level values; if empty, the
 # top-level values above are used (backward compatibility).
 [ai]
-backend = "claude"                                             # default: "claude" — claude|codex|gemini|qwen|cursor
+backend = "claude"                                             # default: "claude" — claude|codex|gemini|qwen|cursor|copilot
 model = ""                                                     # default: "" — モデル名 (例: "sonnet", "gpt-5", "gemini-2.5-pro")
                                                                # `--model <NAME>` (CLI) > [ai].model > extra_args の -m 指定 の順で優先
                                                                # 空のときはバックエンド CLI 既定のモデルが使われる
 effort = ""                                                    # default: "" — reasoning effort レベル (例: "low" | "medium" | "high")
                                                                # `--effort <LEVEL>` (CLI) > [ai].effort の順で優先
                                                                # claude → `--effort <level>`, codex → `-c model_reasoning_effort=<level>` に変換
+                                                               # copilot → `--effort <level>` (native 対応、none/low/medium/high/xhigh/max)
                                                                # gemini / qwen / cursor は該当 CLI フラグが無いので無視される
 system_prompt = ""                                             # default: "" — falls back to top-level system_prompt
 language = ""                                                  # default: "" — falls back to top-level language
@@ -87,3 +89,18 @@ extra_args = []
 extra_args = []                                                # e.g. ["--model", "auto"] (paid plan なら不要)
 mode = "plan"                                                  # default: "plan" — "plan" (read-only) / "ask" (Q&A only) / "" (通常モード = 危険)
 sandbox = ""                                                   # default: "" — "enabled" / "disabled" を cursor-agent --sandbox にそのまま渡す。defense-in-depth
+
+# GitHub Copilot CLI (`copilot`). aish は以下の必須安全フラグを常に自動付与する (config 指定不可):
+#   --output-format json   (JSONL 形式の応答)
+#   --allow-all-tools      (非対話モードで必須)
+#   --deny-tool=shell      (信頼の根幹: shell 実行を完全拒否; deny は --allow-all-tools に優先)
+#   --deny-tool=write      (信頼の根幹: ファイル書き込みを完全拒否)
+#   --no-ask-user          (会話は aish が仕切る; copilot 側から user に質問させない)
+# つまり copilot は「LLM のみ」に退化させた状態で動作する (claude / codex 相当の堅さ)。
+#
+# 認証は `gh auth login` か `copilot login` 経由、もしくは COPILOT_GITHUB_TOKEN /
+# GH_TOKEN / GITHUB_TOKEN env のいずれか。所属組織の Copilot ポリシーで CLI 利用が
+# 許可されている必要がある。
+[ai.copilot]
+extra_args = []                                                # e.g. ["--disable-builtin-mcps"]
+mode = "plan"                                                  # default: "plan" — "plan" / "interactive" / "autopilot" / "" (mode 指定なし)

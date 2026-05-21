@@ -50,6 +50,7 @@ pub enum BackendKind {
     Gemini,
     Qwen,
     Cursor,
+    Copilot,
 }
 
 impl BackendKind {
@@ -60,8 +61,9 @@ impl BackendKind {
             "gemini" => Ok(BackendKind::Gemini),
             "qwen" => Ok(BackendKind::Qwen),
             "cursor" => Ok(BackendKind::Cursor),
+            "copilot" => Ok(BackendKind::Copilot),
             other => Err(format!(
-                "unknown backend `{other}` (expected: claude|codex|gemini|qwen|cursor)"
+                "unknown backend `{other}` (expected: claude|codex|gemini|qwen|cursor|copilot)"
             )),
         }
     }
@@ -73,6 +75,7 @@ impl BackendKind {
             BackendKind::Gemini => "gemini",
             BackendKind::Qwen => "qwen",
             BackendKind::Cursor => "cursor",
+            BackendKind::Copilot => "copilot",
         }
     }
 
@@ -85,6 +88,7 @@ impl BackendKind {
             BackendKind::Gemini => "gemini",
             BackendKind::Qwen => "qwen",
             BackendKind::Cursor => "cursor-agent",
+            BackendKind::Copilot => "copilot",
         }
     }
 
@@ -96,10 +100,11 @@ impl BackendKind {
             BackendKind::Gemini => 2,
             BackendKind::Qwen => 3,
             BackendKind::Cursor => 4,
+            BackendKind::Copilot => 5,
         }
     }
 
-    pub const COUNT: usize = 5;
+    pub const COUNT: usize = 6;
 
     #[allow(dead_code)]
     pub fn all() -> [BackendKind; Self::COUNT] {
@@ -109,6 +114,7 @@ impl BackendKind {
             BackendKind::Gemini,
             BackendKind::Qwen,
             BackendKind::Cursor,
+            BackendKind::Copilot,
         ]
     }
 }
@@ -169,6 +175,7 @@ mod tests {
         assert_eq!(BackendKind::parse("gemini").unwrap(), BackendKind::Gemini);
         assert_eq!(BackendKind::parse("qwen").unwrap(), BackendKind::Qwen);
         assert_eq!(BackendKind::parse("cursor").unwrap(), BackendKind::Cursor);
+        assert_eq!(BackendKind::parse("copilot").unwrap(), BackendKind::Copilot);
     }
 
     #[test]
@@ -186,6 +193,7 @@ mod tests {
             BackendKind::Gemini,
             BackendKind::Qwen,
             BackendKind::Cursor,
+            BackendKind::Copilot,
         ] {
             assert_eq!(BackendKind::parse(kind.as_str()).unwrap(), kind);
         }
