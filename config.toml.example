@@ -40,18 +40,19 @@ path = "~/.aish/logs/claude-code.log"                          # default: "~/.ai
 
 # AI backend settings
 # `backend` selects which CLI to drive. `--ai <kind>` (CLI flag) overrides this.
-# Supported: claude (Claude Code), codex (OpenAI Codex CLI), gemini (Google Gemini CLI), qwen (Alibaba Qwen Code).
+# Supported: claude (Claude Code), codex (OpenAI Codex CLI), gemini (Google Gemini CLI),
+#            qwen (Alibaba Qwen Code), cursor (Cursor Agent CLI / `cursor-agent`).
 # `system_prompt` / `language` here override the top-level values; if empty, the
 # top-level values above are used (backward compatibility).
 [ai]
-backend = "claude"                                             # default: "claude" — claude|codex|gemini|qwen
+backend = "claude"                                             # default: "claude" — claude|codex|gemini|qwen|cursor
 model = ""                                                     # default: "" — モデル名 (例: "sonnet", "gpt-5", "gemini-2.5-pro")
                                                                # `--model <NAME>` (CLI) > [ai].model > extra_args の -m 指定 の順で優先
                                                                # 空のときはバックエンド CLI 既定のモデルが使われる
 effort = ""                                                    # default: "" — reasoning effort レベル (例: "low" | "medium" | "high")
                                                                # `--effort <LEVEL>` (CLI) > [ai].effort の順で優先
                                                                # claude → `--effort <level>`, codex → `-c model_reasoning_effort=<level>` に変換
-                                                               # gemini / qwen は該当 CLI フラグが無いので無視される
+                                                               # gemini / qwen / cursor は該当 CLI フラグが無いので無視される
 system_prompt = ""                                             # default: "" — falls back to top-level system_prompt
 language = ""                                                  # default: "" — falls back to top-level language
 
@@ -59,7 +60,7 @@ language = ""                                                  # default: "" —
 disallowed_tools = "Bash,Edit,Write,Read"                      # default: "Bash,Edit,Write,Read"
 extra_args = []                                                # default: [] — extra args appended to `claude -p ...`
 
-# Codex / Gemini / Qwen don't have JSON-schema flags, so JSON output is enforced via system prompt.
+# Codex / Gemini / Qwen / Cursor don't have JSON-schema flags, so JSON output is enforced via system prompt.
 # Use extra_args for model selection or other CLI-specific flags.
 [ai.codex]
 extra_args = []                                                # e.g. ["-m", "gpt-5.5"]
@@ -69,3 +70,11 @@ extra_args = []                                                # e.g. ["-m", "ge
 
 [ai.qwen]
 extra_args = []
+
+# Cursor Agent CLI (`cursor-agent`). aish は `-p --output-format json` で都度呼び出す。
+# cursor-agent はファイル編集 / shell 実行ツールを内蔵しているが、aish は codex のような
+# 個別ツール無効化フラグを使えないため、ツール抑制は system prompt の best-effort 指示に頼る。
+# `sandbox` で `--sandbox <mode>` を渡せる。安全側に倒すなら "enabled" を推奨。
+[ai.cursor]
+extra_args = []                                                # e.g. ["--model", "auto"]
+sandbox = "enabled"                                            # default: "" (未指定) — "enabled" / "disabled" 等を cursor-agent --sandbox にそのまま渡す

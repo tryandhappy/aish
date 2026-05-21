@@ -49,6 +49,7 @@ pub enum BackendKind {
     Codex,
     Gemini,
     Qwen,
+    Cursor,
 }
 
 impl BackendKind {
@@ -58,8 +59,9 @@ impl BackendKind {
             "codex" => Ok(BackendKind::Codex),
             "gemini" => Ok(BackendKind::Gemini),
             "qwen" => Ok(BackendKind::Qwen),
+            "cursor" => Ok(BackendKind::Cursor),
             other => Err(format!(
-                "unknown backend `{other}` (expected: claude|codex|gemini|qwen)"
+                "unknown backend `{other}` (expected: claude|codex|gemini|qwen|cursor)"
             )),
         }
     }
@@ -70,6 +72,19 @@ impl BackendKind {
             BackendKind::Codex => "codex",
             BackendKind::Gemini => "gemini",
             BackendKind::Qwen => "qwen",
+            BackendKind::Cursor => "cursor",
+        }
+    }
+
+    /// 実行ファイル名 (`check_installed` / spawn 用)。
+    /// `as_str` と異なる backend (cursor → cursor-agent) があるため別途定義。
+    pub fn binary(self) -> &'static str {
+        match self {
+            BackendKind::Claude => "claude",
+            BackendKind::Codex => "codex",
+            BackendKind::Gemini => "gemini",
+            BackendKind::Qwen => "qwen",
+            BackendKind::Cursor => "cursor-agent",
         }
     }
 
@@ -80,10 +95,11 @@ impl BackendKind {
             BackendKind::Codex => 1,
             BackendKind::Gemini => 2,
             BackendKind::Qwen => 3,
+            BackendKind::Cursor => 4,
         }
     }
 
-    pub const COUNT: usize = 4;
+    pub const COUNT: usize = 5;
 
     #[allow(dead_code)]
     pub fn all() -> [BackendKind; Self::COUNT] {
@@ -92,6 +108,7 @@ impl BackendKind {
             BackendKind::Codex,
             BackendKind::Gemini,
             BackendKind::Qwen,
+            BackendKind::Cursor,
         ]
     }
 }
@@ -151,6 +168,7 @@ mod tests {
         assert_eq!(BackendKind::parse("codex").unwrap(), BackendKind::Codex);
         assert_eq!(BackendKind::parse("gemini").unwrap(), BackendKind::Gemini);
         assert_eq!(BackendKind::parse("qwen").unwrap(), BackendKind::Qwen);
+        assert_eq!(BackendKind::parse("cursor").unwrap(), BackendKind::Cursor);
     }
 
     #[test]
@@ -167,9 +185,28 @@ mod tests {
             BackendKind::Codex,
             BackendKind::Gemini,
             BackendKind::Qwen,
+            BackendKind::Cursor,
         ] {
             assert_eq!(BackendKind::parse(kind.as_str()).unwrap(), kind);
         }
+    }
+
+    #[test]
+    fn binary_overrides_as_str_for_cursor() {
+        assert_eq!(BackendKind::Cursor.binary(), "cursor-agent");
+        assert_eq!(BackendKind::Claude.binary(), "claude");
+    }
+
+    #[test]
+    fn ordinals_are_unique_and_within_count() {
+        let mut seen = [false; BackendKind::COUNT];
+        for k in BackendKind::all() {
+            let o = k.ordinal();
+            assert!(o < BackendKind::COUNT, "ordinal {o} out of range");
+            assert!(!seen[o], "duplicate ordinal {o}");
+            seen[o] = true;
+        }
+        assert!(seen.iter().all(|&b| b));
     }
 
     #[test]

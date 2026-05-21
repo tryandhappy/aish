@@ -1,5 +1,6 @@
 use super::claude::ClaudeBackend;
 use super::codex::CodexBackend;
+use super::cursor::CursorBackend;
 use super::gemini::GeminiBackend;
 use super::qwen::QwenBackend;
 use super::types::{AiBackend, AiError, BackendKind};
@@ -16,11 +17,13 @@ pub fn create_backend(
         BackendKind::Codex => Ok(Box::new(CodexBackend::new(cfg, log))),
         BackendKind::Gemini => Ok(Box::new(GeminiBackend::new(cfg, log))),
         BackendKind::Qwen => Ok(Box::new(QwenBackend::new(cfg, log))),
+        BackendKind::Cursor => Ok(Box::new(CursorBackend::new(cfg, log))),
     }
 }
 
 pub fn check_installed(kind: BackendKind) -> bool {
-    Command::new(kind.as_str())
+    // 実行ファイル名は kind ごとに異なることがある (cursor → cursor-agent) ので `binary()` を使う。
+    Command::new(kind.binary())
         .arg("--version")
         .output()
         .map(|o| o.status.success())

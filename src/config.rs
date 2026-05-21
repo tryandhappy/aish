@@ -47,6 +47,8 @@ pub struct AiConfig {
     pub gemini: GenericBackendConfig,
     #[serde(default)]
     pub qwen: GenericBackendConfig,
+    #[serde(default)]
+    pub cursor: CursorBackendConfig,
 }
 
 impl Default for AiConfig {
@@ -61,6 +63,7 @@ impl Default for AiConfig {
             codex: GenericBackendConfig::default(),
             gemini: GenericBackendConfig::default(),
             qwen: GenericBackendConfig::default(),
+            cursor: CursorBackendConfig::default(),
         }
     }
 }
@@ -94,6 +97,19 @@ fn default_disallowed_tools() -> String {
 pub struct GenericBackendConfig {
     #[serde(default)]
     pub extra_args: Vec<String>,
+}
+
+/// cursor-agent 用設定。`sandbox` は cursor-agent の `--sandbox <mode>` 値を
+/// そのまま渡す (`on` / `off` 等)。`extra_args` に `--sandbox` を直接書いてもよいが、
+/// 専用フィールドの方が typo しにくいので両方サポートする (extra_args が後勝ち)。
+/// 未指定なら cursor-agent 既定に任せる。
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct CursorBackendConfig {
+    #[serde(default)]
+    pub extra_args: Vec<String>,
+    /// `--sandbox` に渡す値。空 / 未指定なら何も渡さない。
+    #[serde(default)]
+    pub sandbox: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]

@@ -196,6 +196,7 @@ fn backend_color_code(name: &str) -> u8 {
         "codex" => 39,      // cyan-blue
         "gemini" => 135,    // purple
         "qwen" => 198,      // pink-magenta
+        "cursor" => 220,    // amber/gold (Cursor brand 寄り)
         _ => 208,
     }
 }

@@ -49,9 +49,9 @@ CLI SSH + AI (Claude Code) ツール。クライアント側のClaude Codeから
 | `--update` | GitHub Releases から最新バイナリをダウンロードして自己更新 |
 | `--help` | ヘルプを表示して終了 |
 | `--config <path>` | 設定ファイルのパスを指定（デフォルト `~/.aish/config.toml`）|
-| `--ai <kind>` | AIバックエンドを選択（`claude`/`codex`/`gemini`/`qwen`、既定 `claude`）。設定ファイル `[ai].backend` を上書きする |
+| `--ai <kind>` | AIバックエンドを選択（`claude`/`codex`/`gemini`/`qwen`/`cursor`、既定 `claude`）。設定ファイル `[ai].backend` を上書きする |
 | `--model <name>` | 使用モデル名を指定（例: `sonnet`, `gpt-5`, `gemini-2.5-pro`）。`[ai].model` および各バックエンドの `extra_args` の `-m` より優先 |
-| `--effort <level>` | reasoning effort レベル（例: `low`/`medium`/`high`）。claude → `--effort`、codex → `-c model_reasoning_effort=` に変換。gemini/qwen は CLI 非対応のため無視 |
+| `--effort <level>` | reasoning effort レベル（例: `low`/`medium`/`high`）。claude → `--effort`、codex → `-c model_reasoning_effort=` に変換。gemini/qwen/cursor は CLI 非対応のため無視 |
 | それ以外 | SSH引数としてそのまま `ssh` に渡す |
 
 ---
@@ -148,10 +148,10 @@ aishプロンプトで先頭が `/` の入力は AI に送らずローカルで�
 | コマンド | 動作 |
 |---|---|
 | `/help` | 利用可能な slash command 一覧を表示 |
-| `/effort [LEVEL]` | reasoning effort を runtime で変更（次回 send 以降に反映）。引数省略でクリア。gemini/qwen は CLI フラグが無いので保存のみで実リクエストに反映されない |
+| `/effort [LEVEL]` | reasoning effort を runtime で変更（次回 send 以降に反映）。引数省略でクリア。gemini/qwen/cursor は CLI フラグが無いので保存のみで実リクエストに反映されない |
 | `/model [NAME]` | モデルを runtime で変更（既存 session_id / history は維持）。引数省略でクリア |
-| `/clear` | 会話履歴 / セッションをクリア。claude は session_id を None に、codex/gemini/qwen は内部 history Vec を空にする |
-| `/ai <KIND>` | AI バックエンドを切り替え（`claude`/`codex`/`gemini`/`qwen`）。新しい backend を `create_backend` で構築し、現セッションは破棄される |
+| `/clear` | 会話履歴 / セッションをクリア。claude / codex は session_id を None に、gemini/qwen/cursor は内部 history Vec を空にする (cursor は最終 session_id も None に戻す) |
+| `/ai <KIND>` | AI バックエンドを切り替え（`claude`/`codex`/`gemini`/`qwen`/`cursor`）。新しい backend を `create_backend` で構築し、現セッションは破棄される |
 | `/<unknown>` | 警告メッセージ表示、AI には送らない |
 
 スラッシュコマンドはそれぞれ AI CLI 自身の対話モードで提供される `/<cmd>` とは独立に **aish 側で実装**されている（aish は CLI を非対話モードで起動するため、CLI 側の slash command は届かない）。
@@ -167,20 +167,21 @@ aishプロンプトで先頭が `/` の入力は AI に送らずローカルで�
 
 ## 6. AI連携
 
-aish は trait `AiBackend` を介して 4 種類の AI CLI に対応する: **Claude Code / OpenAI Codex CLI / Google Gemini CLI / Alibaba Qwen Code**。各バックエンドは JSON で `{message, commands[]}` 相当を返し、aish は提案ベースで動作する。CLI 非依存の原則 (透明性・サーバ無書き込み) は trait 実装側で守る責任を負う。
+aish は trait `AiBackend` を介して 5 種類の AI CLI に対応する: **Claude Code / OpenAI Codex CLI / Google Gemini CLI / Alibaba Qwen Code / Cursor Agent CLI**。各バックエンドは JSON で `{message, commands[]}` 相当を返し、aish は提案ベースで動作する。CLI 非依存の原則 (透明性・サーバ無書き込み) は trait 実装側で守る責任を負う。
 
 選択優先順位: `--ai` (CLI) > `[ai].backend` (設定) > `claude` (既定)。
 
 ### 6.0 バックエンド能力差
 
-| 機能 | Claude | Codex | Gemini | Qwen |
-|---|---|---|---|---|
-| 非対話モード | `claude -p` | `codex exec -` | `gemini` (stdin) | `qwen` (stdin) |
-| プロンプト渡し | stdin | stdin | stdin | stdin |
-| JSON Schema 強制 | `--json-schema` | なし | なし | なし |
-| 危険ツール無効化 | `--disallowedTools` | `-s read-only` (sandbox) | system prompt のみ | system prompt のみ |
-| セッション再開 | `--resume <sid>` (JSON `session_id` 捕獲) | `exec resume <UUID>` (rollout ファイル名から UUID 捕獲) | best-effort (`--resume latest`) | best-effort (`--continue`) |
-| 実装ファイル | `src/ai/claude.rs` | `src/ai/codex.rs` | `src/ai/gemini.rs` | `src/ai/qwen.rs` |
+| 機能 | Claude | Codex | Gemini | Qwen | Cursor |
+|---|---|---|---|---|---|
+| 実行ファイル | `claude` | `codex` | `gemini` | `qwen` | `cursor-agent` |
+| 非対話モード | `claude -p` | `codex exec -` | `gemini` (stdin) | `qwen` (stdin) | `cursor-agent -p` (stdin) |
+| プロンプト渡し | stdin | stdin | stdin | stdin | stdin |
+| JSON 出力強制 | `--json-schema` | なし | なし | なし | `--output-format json` (ラッパのみ) |
+| 危険ツール無効化 | `--disallowedTools` | `-s read-only` + `--disable` 12 種 | system prompt のみ | system prompt のみ | `--sandbox <mode>` + system prompt |
+| セッション再開 | `--resume <sid>` (JSON `session_id` 捕獲) | `exec resume <UUID>` (rollout ファイル名から UUID 捕獲) | best-effort (`--resume latest`) | best-effort (`--continue`) | best-effort (`--resume <sid>`、内部 history と併用) |
+| 実装ファイル | `src/ai/claude.rs` | `src/ai/codex.rs` | `src/ai/gemini.rs` | `src/ai/qwen.rs` | `src/ai/cursor.rs` |
 
 JSON Schema 強制が無いバックエンドは system prompt で `{"message":..., "commands":[...]}` 単独出力を強く指示し、`extract_json` で抽出する。失敗時は出力全体を `message` として `commands: []` でフォールバック。
 
@@ -189,8 +190,10 @@ JSON Schema 強制が無いバックエンドは system prompt で `{"message":.
 - Codex: 初回 send 後 `~/.codex/sessions/YYYY/MM/DD/rollout-...-<UUID>.jsonl` から UUID を捕獲し、
   2 回目以降 `codex exec resume <UUID>` で連結。`--ephemeral` は付けない。
 
-**Gemini / Qwen** は session resume 機構を非対話モードで安定して使えないため、各 backend 内部で
-直近 8 ターン分の (user_prompt, ai_message) を履歴として保持し、毎回プロンプトに含めて再送する。
+**Gemini / Qwen / Cursor** は session resume 機構を非対話モードで安定して使えない / 安全性検証が
+未完なため、各 backend 内部で直近 8 ターン分の (user_prompt, ai_message) を履歴として保持し、
+毎回プロンプトに含めて再送する。Cursor は応答 JSON から `session_id` を捕獲して終了時の
+resume_command 案内には使うが、send() 時には参照しない (純粋に資料表示用)。
 ターミナル差分 (ring buffer) と合わせることで、`mark_sent` 後でも multi-step ワークフローが文脈を保つ。
 
 #### 安全性の差
@@ -203,10 +206,14 @@ JSON Schema 強制が無いバックエンドは system prompt で `{"message":.
   `tool_call_mcp_elicitation`)。さらに defense-in-depth として `-s read-only` sandbox を併用。
   この設定で codex は提案 JSON だけを返す純粋な LLM として動作する。
 - **Gemini / Qwen**: フラグレベルの制約は無く、system prompt の「ツール禁止」指示のみ。
+- **Cursor**: codex 相当の個別ツール無効化フラグは無いので、tool 抑制は system prompt の
+  best-effort 指示に頼る (gemini / qwen と同等)。defense-in-depth として `[ai.cursor].sandbox` で
+  `--sandbox enabled` を渡せる (cursor-agent 側のサンドボックス機構)。`disabled` を渡すと
+  サンドボックスは外れるが、aish 側の「提案のみ実行」確認 UI は同じく機能する。
 - 最大限の安全性が必要な場合は `--ai claude` を使うこと。
 
 ### 6.1 起動
-- aish起動時に選択されたバックエンドのバイナリ (`claude`/`codex`/`gemini`/`qwen`) を `--version` で確認し、失敗なら「Please install ...」を表示して終了。Claude の場合のみインストールコマンドも併せて表示。
+- aish起動時に選択されたバックエンドのバイナリ (`claude`/`codex`/`gemini`/`qwen`/`cursor-agent`) を `--version` で確認し、失敗なら「Please install ...」を表示して終了。Claude の場合のみインストールコマンドも併せて表示。実行ファイル名は `BackendKind::binary()` が返す (cursor のみ `cursor-agent`、他は `as_str()` と同じ)。
 
 ### 6.2 初回リクエスト
 ```
@@ -286,7 +293,8 @@ claude -p --resume <session_id> \
   - codex:  `codex resume <UUID>` (rollout ファイルから UUID が捕獲できた場合)
   - gemini: `gemini --resume latest` (best-effort、1 ターン以上会話があれば)
   - qwen:   `qwen --continue` (best-effort、1 ターン以上会話があれば)
-- gemini / qwen は非対話モードでの session 永続化が CLI 仕様として保証されていないため、表示はしてもコマンド実行で aish の会話が読み戻せないことがある。
+  - cursor: `cursor-agent --resume <UUID>` (best-effort、1 ターン以上会話があれば。直近応答 JSON の `session_id` を保持)
+- gemini / qwen / cursor は非対話モードでの session 永続化が CLI 仕様として保証されていないため、表示はしてもコマンド実行で aish の会話が読み戻せないことがある。
 
 ### 6.9 JSON抽出
 - Claude CLIの出力にJSON前後のテキストが混じる可能性に対応し、`extract_json` で最外の `{...}` をバランス解析で抽出。
@@ -399,9 +407,9 @@ TOML形式。未指定フィールドはデフォルト値。
 ### 11.4 `[ai]`
 | キー | 既定値 | 説明 |
 |---|---|---|
-| `backend` | `"claude"` | 使用する AI CLI (`claude`/`codex`/`gemini`/`qwen`)。`--ai` で上書き可能 |
+| `backend` | `"claude"` | 使用する AI CLI (`claude`/`codex`/`gemini`/`qwen`/`cursor`)。`--ai` で上書き可能 |
 | `model` | `""` | モデル名（例: `sonnet`, `gpt-5`）。空ならバックエンド CLI 既定。`--model` で上書き可能 |
-| `effort` | `""` | reasoning effort レベル。claude → `--effort`、codex → `-c model_reasoning_effort=` に変換。gemini/qwen は無視。`--effort` で上書き可能 |
+| `effort` | `""` | reasoning effort レベル。claude → `--effort`、codex → `-c model_reasoning_effort=` に変換。gemini/qwen/cursor は無視。`--effort` で上書き可能 |
 | `system_prompt` | `""` | 空ならトップレベル `system_prompt` にフォールバック |
 | `language` | `""` | 空ならトップレベル `language` にフォールバック |
 
@@ -415,6 +423,12 @@ TOML形式。未指定フィールドはデフォルト値。
 | キー | 既定値 | 説明 |
 |---|---|---|
 | `extra_args` | `[]` | 各 CLI への追加引数 (例: `["-m", "gpt-5.5"]`)。aish ビルトイン引数の後ろに追記される |
+
+#### `[ai.cursor]`
+| キー | 既定値 | 説明 |
+|---|---|---|
+| `extra_args` | `[]` | `cursor-agent` への追加引数。aish ビルトイン引数 (`-p --output-format json`、`--sandbox <mode>`) の後ろに追記される |
+| `sandbox` | `""` | `--sandbox <mode>` に渡す値 (`"enabled"` / `"disabled"`)。空 / 未指定なら `--sandbox` を付けない (cursor-agent 既定に従う)。安全側に倒すなら `"enabled"` を推奨 |
 
 トップレベル `system_prompt` / `language` は後方互換のため残す。`[ai]` セクションが省略されたり
 そのフィールドが空文字なら、トップレベルの値が `[ai]` 側にコピーされる。

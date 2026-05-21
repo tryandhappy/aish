@@ -1,6 +1,7 @@
 mod claude;
 mod codex;
 mod common;
+mod cursor;
 mod factory;
 mod gemini;
 mod qwen;
