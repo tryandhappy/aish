@@ -152,7 +152,7 @@ aishプロンプトで先頭が `/` の入力は AI に送らずローカルで�
 | `/model [NAME]` | モデルを runtime で変更（既存 session_id / history は維持）。引数省略でクリア |
 | `/clear` | 会話履歴 / セッションをクリア。claude / codex / cursor / copilot / generic (native resume 設定時) は session_id を None に、gemini / qwen / generic (native resume 未設定時) は内部 history Vec を空にする |
 | `/ai <NAME>` | AI バックエンドを切り替え（built-in `claude`/`codex`/`gemini`/`qwen`/`cursor`/`copilot` または `[[ai.providers]]` の `name`）。新しい backend を `create_backend` で構築し、現セッションは破棄される |
-| `/<unknown>` | 警告メッセージ表示、AI には送らない |
+| `/<unknown>` | slash command として認識せず、入力をそのまま AI プロンプトに送る (例: `/root/test.txt` のようなファイルパス、`/foo bar` のような自然文も AI に届く) |
 
 スラッシュコマンドはそれぞれ AI CLI 自身の対話モードで提供される `/<cmd>` とは独立に **aish 側で実装**されている（aish は CLI を非対話モードで起動するため、CLI 側の slash command は届かない）。
 

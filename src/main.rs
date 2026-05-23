@@ -253,9 +253,10 @@ fn try_handle_slash_command(
                 Err(e) => Some(format!("ai: failed to switch: {e}")),
             }
         }
-        other => Some(format!(
-            "unknown slash command: /{other}  (try /help)"
-        )),
+        // 未知の /xxx は slash command として扱わず、そのまま AI プロンプトに流す。
+        // 例: `/root/test.txt` のようなファイルパスや、`/foo bar` のような自然文を
+        // AI に質問できるようにするため (タイポでも AI 側がフォローしやすい)。
+        _ => None,
     }
 }
 
