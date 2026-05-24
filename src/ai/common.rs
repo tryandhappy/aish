@@ -152,15 +152,12 @@ pub(crate) fn shell_join(args: &[String]) -> String {
 }
 
 /// Claude Code 用の system prompt。
-/// Claude は CLI フラグ (`--disallowedTools` / `--output-format json` 等) で JSON 出力・ツール禁止を
-/// 構造的に指定できるため、prompt 側は base + language の連結のみで足りる。
-/// language が空なら base をそのまま返す。
+/// 元々は base + language のみで CLI フラグ (`--disallowedTools` / `--output-format json` / `--json-schema`)
+/// に安全制約と JSON 出力指示を委ねていたが、defense-in-depth のため他 backend と同じ
+/// `build_system_prompt` の内容 (安全制約 + JSON フォーマット指示) を Claude にも適用する。
+/// CLI フラグによる構造的制約と prompt レベルの指示の二段構え。
 pub(crate) fn build_system_prompt_claude(prompt: &str, language: &str) -> String {
-    if language.is_empty() {
-        prompt.to_string()
-    } else {
-        format!("{prompt} Respond in {language}.")
-    }
+    build_system_prompt(prompt, language)
 }
 
 /// 既定の system prompt。JSON Schema / ツール禁止フラグを持たない backend (codex/gemini/qwen)
@@ -174,17 +171,19 @@ pub(crate) fn build_system_prompt(base: &str, language: &str) -> String {
     };
     format!(
         "{base}{lang_part}\n\n\
-         重要 (安全制約):\n\
-         - あなたは aish の提案エンジンです。**いかなるツール呼び出しも行わないでください**。\
-         shell exec, file read, file write, web search, code interpreter 等のいずれも禁止です。\n\
-         - ターミナルの内容は既に下記 ```terminal``` ブロックに含まれています。\
-         追加の情報収集はせず、与えられた情報だけで判断してください。\n\
-         - コマンドは「提案のみ」行ってください。\
-         直接の実行・ファイル編集・サーバへの書き込みは一切行わないでください。\
-         実行可否は aish が画面でユーザに確認します。\n\n\
+         重要:\n\
+         - あなたはLinux/ルータ管理の専門家です。\n\
+         - SSH/Terminalの内容を把握しています。\n\
+         - ユーザの指示に従いコマンドを考えて提案してください。\n\
+         - コマンドは出力フォーマットの「提案コマンド」で提案します。\n\
+         - 提案コマンドはユーザが実行するかどうか確認します。\n\
+         - **いかなるツール呼び出しも直接行わないでください**。必ず提案コマンドを使用してください。\n\
+         - shell exec, file read, file write, code interpreter 等のいずれも禁止です。\n\
+         - 情報収集もかならず提案コマンドを使用してください。\n\
+         - あなたが直接、端末の情報を収集・閲覧・操作・書込・編集・実行等するのは禁止です。\n\
+         - ターミナルの内容は既に下記 ```terminal``` ブロックに含まれています。\n\
+         - コマンドは「提案のみ」行ってください。\n\n\
          応答ルール:\n\
-         - 1度のレスポンスで提案するコマンドは1つだけにしてください。複数ステップが必要な場合は、\
-         実行結果を確認してから次のコマンドを提案してください。\n\
          - &&や||による条件付き実行は1つのコマンドとして維持してください。\n\n\
          出力フォーマット: 必ず以下の JSON だけを 1 つ出力してください。\
          前後に説明文・コードフェンス・追加テキストを付けないでください。\n\
@@ -487,16 +486,32 @@ mod tests {
     }
 
     #[test]
-    fn build_system_prompt_claude_appends_language() {
+    fn build_system_prompt_claude_matches_generic_builder() {
+        // Claude 版は build_system_prompt と完全に同じ出力。defense-in-depth で
+        // 同じ安全制約・JSON 指示を CLI フラグと併用する。
         assert_eq!(
             build_system_prompt_claude("base.", "Japanese"),
-            "base. Respond in Japanese."
+            build_system_prompt("base.", "Japanese")
+        );
+        assert_eq!(
+            build_system_prompt_claude("base.", ""),
+            build_system_prompt("base.", "")
         );
     }
 
     #[test]
+    fn build_system_prompt_claude_appends_language() {
+        // base + " Respond in {language}." が先頭にあること。
+        let s = build_system_prompt_claude("base.", "Japanese");
+        assert!(s.starts_with("base. Respond in Japanese.\n\n"), "got: {s}");
+    }
+
+    #[test]
     fn build_system_prompt_claude_skips_when_empty_language() {
-        assert_eq!(build_system_prompt_claude("base.", ""), "base.");
+        // 空 language なら "Respond in ..." 句なし。
+        let s = build_system_prompt_claude("base.", "");
+        assert!(s.starts_with("base.\n\n"), "got: {s}");
+        assert!(!s.contains("Respond in"), "got: {s}");
     }
 
     #[test]

@@ -109,12 +109,11 @@ impl AiBackend for ClaudeBackend {
             args.push("--resume".to_string());
             args.push(sid.clone());
         } else {
-            let system = format!(
-                "{} コマンドを提案してください。直接実行しないでください。1度のレスポンスで提案するコマンドは1つだけにしてください。複数のステップが必要な場合は、実行結果を確認してから次のコマンドを提案してください。&&や||による条件付き実行は1つのコマンドとして維持してください。実行したいコマンドがあれば commands 配列に入れてください (message 中に説明としてコマンドが出てきても問題ありませんが、実行を意図したコマンドは必ず commands 配列に含めてください)。",
-                self.system_prompt
-            );
+            // `self.system_prompt` (= build_system_prompt_claude → build_system_prompt) に
+            // 安全制約・JSON フォーマット指示が全て含まれている。inline で追記する必要なし。
+            // `--append-system-prompt` は append 動作なので初回のみ (resume では二重追加になる)。
             args.push("--append-system-prompt".to_string());
-            args.push(system);
+            args.push(self.system_prompt.clone());
         }
 
         args.push("--output-format".to_string());
