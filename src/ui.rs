@@ -1156,6 +1156,22 @@ fn show_minibuffer(
     }
 }
 
+/// fd から 1 byte を poll 付きで読む。timeout/EOF/エラーなら None。
+/// ESC sequence 解析専用: blocking read で固まるのを防ぐため、すべての追加 byte 読みに使う。
+#[cfg(unix)]
+fn poll_read_byte(stdin: &mut std::fs::File, fd: i32, timeout_ms: i32) -> Option<u8> {
+    let mut pollfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+    let ready = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
+    if ready <= 0 {
+        return None;
+    }
+    let mut byte = [0u8; 1];
+    match stdin.read(&mut byte) {
+        Ok(1) => Some(byte[0]),
+        _ => None,
+    }
+}
+
 /// パススルーモードのrawキー入力処理。
 /// Ctrl+/ でaishプロンプトを開き、それ以外はPTYに直送する。
 #[cfg(unix)]
@@ -1189,37 +1205,41 @@ fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &st
                 let _ = tx.send(InputEvent::PtyData(vec![b]));
             }
             0x1b => {
-                // ESC: 後続バイトをpollで時間制限つきに読み取る。
-                // 単独ESCのときは50ms待って後続が無ければESC単体としてPTYに転送する。
+                // ESC: 後続バイトをすべて poll(50ms) 付きで読み取る。
+                // どの read も blocking にしてはならない。partial sequence
+                // (mouse tracking 中のフォーカス切替で断片送信される等) が
+                // 来ると stdin read が固まり、Ctrl+C 含め全キー入力が
+                // PTY に届かなくなるため (pi-hole installer + whiptail +
+                // Ghostty focus 切替で再現実績あり)。timeout したら溜めた
+                // byte は不完全でも PTY に転送する (transparent proxy 原則)。
+                const POLL_TIMEOUT_MS: i32 = 50;
+                const MAX_SEQ_LEN: usize = 64;
                 let fd = (*stdin).as_raw_fd();
-                let mut pollfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-                let ready = unsafe { libc::poll(&mut pollfd, 1, 50) };
                 let mut seq_bytes = vec![0x1b_u8];
-                if ready > 0 {
-                    let mut seq = [0u8; 1];
-                    if stdin.read(&mut seq).is_ok() {
-                        seq_bytes.push(seq[0]);
-                        if seq[0] == b'[' {
-                            // CSIシーケンス: 終端文字(0x40-0x7E)まで読む
-                            loop {
-                                match stdin.read(&mut seq) {
-                                    Ok(1) => {
-                                        seq_bytes.push(seq[0]);
-                                        if seq[0] >= 0x40 && seq[0] <= 0x7E {
-                                            break;
-                                        }
+
+                // 1 byte 目: ESC 直後
+                if let Some(b1) = poll_read_byte(&mut *stdin, fd, POLL_TIMEOUT_MS) {
+                    seq_bytes.push(b1);
+                    if b1 == b'[' {
+                        // CSI: 終端文字 (0x40-0x7E) まで poll 付きで読む。
+                        // 長さ上限を超えたら fail-safe で打ち切り。
+                        while seq_bytes.len() < MAX_SEQ_LEN {
+                            match poll_read_byte(&mut *stdin, fd, POLL_TIMEOUT_MS) {
+                                Some(b) => {
+                                    seq_bytes.push(b);
+                                    if (0x40..=0x7E).contains(&b) {
+                                        break;
                                     }
-                                    _ => break,
                                 }
+                                None => break,
                             }
-                        } else if seq[0] == b'O' {
-                            // SS3シーケンス (ESC O X): Home/End/F1-F4 等。
-                            // 1バイト追読みして PTY にまとめて送らないと、
-                            // vim 等で ESC O と X が分割解釈されて誤動作する。
-                            let mut tail = [0u8; 1];
-                            if let Ok(1) = stdin.read(&mut tail) {
-                                seq_bytes.push(tail[0]);
-                            }
+                        }
+                    } else if b1 == b'O' {
+                        // SS3 (ESC O X): Home/End/F1-F4 等。
+                        // 1バイト追読みして PTY にまとめて送らないと、
+                        // vim 等で ESC O と X が分割解釈されて誤動作する。
+                        if let Some(tail) = poll_read_byte(&mut *stdin, fd, POLL_TIMEOUT_MS) {
+                            seq_bytes.push(tail);
                         }
                     }
                 }
