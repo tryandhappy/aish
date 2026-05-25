@@ -439,14 +439,10 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                     }
                     ui::passthrough_read(&input_tx, &input_bg, &input_aish_label);
                 }
-                ui::InputRequest::ReadLine(prompt) => {
-                    if !prompt.is_empty() {
-                        print!("{prompt}");
-                        io::stdout().flush().ok();
-                    }
-                    // None は Ctrl+C / EOF。確認プロンプト側で「残り全部キャンセル」として扱う。
-                    let event = match ui::read_line() {
-                        Some(line) => ui::InputEvent::Line(line),
+                ui::InputRequest::ReadConfirmKey => {
+                    // Y/n/a 1 キー即確定。None は Ctrl+C / Ctrl+D / ESC = 全キャンセル。
+                    let event = match ui::read_confirm_key() {
+                        Some(choice) => ui::InputEvent::Confirm(choice),
                         None => ui::InputEvent::ReadLineCancelled,
                     };
                     if input_tx.send(event).is_err() {
@@ -604,26 +600,24 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                                         total,
                                         &config.display,
                                     );
-                                    let _ = prompt_tx
-                                        .send(ui::InputRequest::ReadLine(String::new()));
+                                    let _ = prompt_tx.send(ui::InputRequest::ReadConfirmKey);
                                     loop {
                                         match input_rx.recv() {
-                                            Ok(ui::InputEvent::Line(line)) => {
-                                                match ui::parse_confirm(&line) {
-                                                    ui::ConfirmChoice::Yes => break true,
-                                                    ui::ConfirmChoice::No => break false,
-                                                    ui::ConfirmChoice::All => {
-                                                        auto_approve_remaining = true;
-                                                        break true;
-                                                    }
+                                            Ok(ui::InputEvent::Confirm(choice)) => match choice {
+                                                ui::ConfirmChoice::Yes => break true,
+                                                ui::ConfirmChoice::No => break false,
+                                                ui::ConfirmChoice::All => {
+                                                    auto_approve_remaining = true;
+                                                    break true;
                                                 }
-                                            }
+                                            },
                                             Ok(ui::InputEvent::ReadLineCancelled) => {
                                                 // Ctrl+C: 残りすべてをキャンセル
                                                 user_cancelled = true;
                                                 break false;
                                             }
-                                            Ok(ui::InputEvent::PtyData(_))
+                                            Ok(ui::InputEvent::Line(_))
+                                            | Ok(ui::InputEvent::PtyData(_))
                                             | Ok(ui::InputEvent::PassthroughEnded) => continue,
                                             Ok(ui::InputEvent::AiPrompt(_)) => continue,
                                             Err(_) => break false,
@@ -798,6 +792,11 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
             }
             Ok(ui::InputEvent::ReadLineCancelled) => {
                 // メインループでは ReadLine を発行していない (AI 確認時のみ) ので
+                // ここに来るのは想定外。安全側で無視する。
+                continue;
+            }
+            Ok(ui::InputEvent::Confirm(_)) => {
+                // メインループでは ReadConfirmKey を発行していない (AI 確認時のみ) ので
                 // ここに来るのは想定外。安全側で無視する。
                 continue;
             }

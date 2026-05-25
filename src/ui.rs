@@ -15,12 +15,17 @@ fn prompt_history() -> &'static Mutex<Vec<String>> {
 
 pub enum InputEvent {
     PtyData(Vec<u8>),
+    /// パススルーモードで Enter 確定された行 (Windows fallback 専用)。
+    /// Unix では `passthrough_read_raw` が PtyData / AiPrompt を直接 emit するので使われない。
+    #[allow(dead_code)]
     Line(String),
     AiPrompt(String),
     PassthroughEnded,
     /// `ReadLine` 中にユーザが Ctrl+C を押した (もしくは EOF)。
     /// 確認プロンプト中なら「残りコマンドを全部キャンセル」を意味する。
     ReadLineCancelled,
+    /// `ReadConfirmKey` でユーザが Yes/No/All のいずれかを 1 キーで選んだ。
+    Confirm(ConfirmChoice),
 }
 
 static MINIBUFFER_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -131,7 +136,9 @@ pub fn terminal_size() -> (u16, u16) {
 
 pub enum InputRequest {
     Passthrough(String),
-    ReadLine(String),
+    /// Y/n/a 確認プロンプト用。1 キー (Enter 不要) で確定する。
+    /// IME 経由の全角・ひらがな確定文字 (`ｙ` / `ｎ` / `あ` 等) も受理する。
+    ReadConfirmKey,
 }
 
 #[cfg(unix)]
@@ -372,24 +379,11 @@ pub fn print_single_confirm_prompt(
     io::stdout().flush().ok();
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConfirmChoice {
     Yes,
     No,
     All,
-}
-
-pub fn parse_confirm(input: &str) -> ConfirmChoice {
-    let trimmed = input.trim();
-    if trimmed.is_empty()
-        || trimmed.eq_ignore_ascii_case("y")
-        || trimmed.eq_ignore_ascii_case("yes")
-    {
-        ConfirmChoice::Yes
-    } else if trimmed.eq_ignore_ascii_case("a") || trimmed.eq_ignore_ascii_case("all") {
-        ConfirmChoice::All
-    } else {
-        ConfirmChoice::No
-    }
 }
 
 pub enum UserInput {
@@ -412,18 +406,7 @@ fn char_width(c: char) -> usize {
     UnicodeWidthChar::width(c).unwrap_or(0)
 }
 
-/// rawモードでライン編集を行い、全角文字のBS削除に対応する
-pub fn read_line() -> Option<String> {
-    #[cfg(unix)]
-    {
-        read_line_raw()
-    }
-    #[cfg(not(unix))]
-    {
-        read_line_cooked()
-    }
-}
-
+/// Windows fallback: cooked モードで 1 行読む。passthrough_read の non-unix 経路で使う。
 #[cfg(not(unix))]
 fn read_line_cooked() -> Option<String> {
     let mut line = String::new();
@@ -432,12 +415,6 @@ fn read_line_cooked() -> Option<String> {
         Ok(_) => Some(line.trim_end_matches('\n').trim_end_matches('\r').to_string()),
         Err(_) => None,
     }
-}
-
-#[cfg(unix)]
-fn read_line_raw() -> Option<String> {
-    // rawモードはセッション全体で維持されているため、ここでは設定・復元しない
-    read_line_raw_loop()
 }
 
 #[cfg(unix)]
@@ -452,140 +429,162 @@ fn termios_get(fd: i32) -> Option<libc::termios> {
     }
 }
 
-#[cfg(unix)]
-fn read_line_raw_loop() -> Option<String> {
-    use std::os::unix::io::FromRawFd;
-    let mut line = String::new();
+/// Y/n/a 確認プロンプトで「1 キー押下で即確定」する入力読み取り。
+///
+/// raw mode で 1 byte ずつ読み、UTF-8 マルチバイト文字はデコードして
+/// `match_confirm_char` で判定する。IME 経由の全角・ひらがな確定文字も受理する
+/// (`ｙ` `ｎ` `あ` 等)。詳細は `match_confirm_char` のテーブルを参照。
+///
+/// 戻り値:
+/// - `Some(ConfirmChoice)`: ユーザが Y/N/A 相当のキーを押した
+/// - `None`: Ctrl+C / Ctrl+D (EOF) / ESC 単独 → 「残り全部キャンセル」
+///
+/// 未知キー / 制御文字は無視して次のキーを待つ (打ち間違いで意図せず No に
+/// なるのを避けるため)。raw mode は ECHO off なので、マッチした文字のみ
+/// stdout に echo する。
+pub fn read_confirm_key() -> Option<ConfirmChoice> {
+    #[cfg(unix)]
+    {
+        read_confirm_key_unix()
+    }
+    #[cfg(not(unix))]
+    {
+        read_confirm_key_cooked()
+    }
+}
+
+/// マッチした選択肢を `[X]\n` の形でターミナルに描画する。
+/// raw mode は ECHO off なので、確定したことをユーザに見せるために手動で echo する。
+fn echo_confirm(choice: ConfirmChoice) {
+    let label = match choice {
+        ConfirmChoice::Yes => "Y",
+        ConfirmChoice::No => "N",
+        ConfirmChoice::All => "A",
+    };
     let mut stdout = io::stdout();
-    // io::stdin()はBufReaderを内包しており、poll()と併用するとデータ喪失する。
-    // ManuallyDropでfd 0を直接読み取り、BufReaderをバイパスする。
+    let _ = write!(stdout, "{label}\x1b[0m\n");
+    let _ = stdout.flush();
+}
+
+/// 1 文字を Yes / No / All / なし にマッピングする。
+/// ASCII y/Y/n/N/a/A + IME 経由の全角・ひらがな確定文字をサポート。
+/// Enter (`\n` / `\r`) と Space はデフォルト Yes 扱い。
+fn match_confirm_char(c: char) -> Option<ConfirmChoice> {
+    match c {
+        // Yes: ASCII / 全角小文字 / 全角大文字 / Enter / Space
+        'y' | 'Y' | 'ｙ' | 'Ｙ' | '\n' | '\r' | ' ' => Some(ConfirmChoice::Yes),
+        // No: ASCII / 全角小文字 / 全角大文字 / ひらがな「ん」(romaji "n" 確定の自然結果)
+        'n' | 'N' | 'ｎ' | 'Ｎ' | 'ん' => Some(ConfirmChoice::No),
+        // All: ASCII / 全角小文字 / 全角大文字 / ひらがな「あ」(romaji "a" 確定の自然結果)
+        'a' | 'A' | 'ａ' | 'Ａ' | 'あ' => Some(ConfirmChoice::All),
+        _ => None,
+    }
+}
+
+#[cfg(unix)]
+fn read_confirm_key_unix() -> Option<ConfirmChoice> {
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+    // io::stdin() の BufReader をバイパスして fd 0 から直接 1 byte ずつ読む。
+    // raw mode はセッション全体で維持済み (save_terminal_settings)。
     let mut stdin = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
     let mut buf = [0u8; 4];
 
     loop {
         let n = match stdin.read(&mut buf[..1]) {
-            Ok(0) => {
-                if line.is_empty() {
-                    return None;
-                }
-                break;
-            }
+            Ok(0) => return None, // EOF
             Ok(n) => n,
             Err(_) => return None,
         };
-
         if n == 0 {
             continue;
         }
-
         let b = buf[0];
 
         match b {
-            b'\n' | b'\r' => {
-                let _ = stdout.write_all(b"\x1b[0m\n");
-                let _ = stdout.flush();
-                break;
-            }
-            0x7f | 0x08 => {
-                // Backspace (DEL or BS)
-                if let Some(c) = line.pop() {
-                    let w = char_width(c);
-                    // カーソルをw列戻し、スペースで上書きし、再度戻す
-                    for _ in 0..w {
-                        let _ = stdout.write_all(b"\x08 \x08");
-                    }
-                    let _ = stdout.flush();
-                }
-            }
-            0x03 => {
-                // Ctrl-C: 入力をキャンセルして None を返す。aish 自体は終了しない。
+            0x03 | 0x04 => {
+                // Ctrl+C / Ctrl+D: 残り全部キャンセル
+                let mut stdout = io::stdout();
                 let _ = stdout.write_all(b"\n");
                 let _ = stdout.flush();
                 return None;
             }
-            0x04 => {
-                // Ctrl-D (EOF)
-                if line.is_empty() {
-                    return None;
-                }
-            }
-            0x15 => {
-                // Ctrl-U: 行全体を削除
-                let total_width: usize = line.chars().map(char_width).sum();
-                for _ in 0..total_width {
-                    let _ = stdout.write_all(b"\x08 \x08");
-                }
-                let _ = stdout.flush();
-                line.clear();
-            }
-            0x17 => {
-                // Ctrl-W: 直前の単語を削除
-                // 末尾の空白を削除
-                let mut erased_width = 0usize;
-                while line.ends_with(' ') {
-                    line.pop();
-                    erased_width += 1;
-                }
-                // 非空白文字を削除
-                while !line.is_empty() && !line.ends_with(' ') {
-                    if let Some(c) = line.pop() {
-                        erased_width += char_width(c);
-                    }
-                }
-                for _ in 0..erased_width {
-                    let _ = stdout.write_all(b"\x08 \x08");
-                }
-                let _ = stdout.flush();
-            }
             0x1b => {
-                // ESC: 後続バイトがあればエスケープシーケンス（矢印キー等）、なければ単独ESC
-                use std::os::unix::io::AsRawFd;
+                // ESC: 後続バイトがあればエスケープシーケンス (矢印キー等) → 無視。
+                // 単独なら「キャンセル」扱い (read_line_raw_loop と同じ)。
                 let fd = (*stdin).as_raw_fd();
-                let mut pollfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+                let mut pollfd = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
                 let ready = unsafe { libc::poll(&mut pollfd, 1, 50) };
                 if ready > 0 {
-                    let mut seq = [0u8; 2];
+                    let mut seq = [0u8; 8];
                     let _ = stdin.read(&mut seq);
-                    // エスケープシーケンスは無視（矢印キー等）
+                    // エスケープシーケンス本体は捨てる (再読み取りループに戻る)
+                    continue;
                 } else {
-                    // 単独ESC → キャンセル
                     return None;
                 }
             }
             _ if b < 0x20 => {
-                // その他の制御文字は無視
+                // 上記以外の制御文字 (Tab, Ctrl+L 等) は無視して再読み取り
+                continue;
             }
             _ => {
-                // UTF-8マルチバイト文字の処理
+                // ASCII または UTF-8 マルチバイト先頭。char にデコードして判定。
                 let byte_len = utf8_char_len(b);
-                if byte_len > 1 {
-                    // 残りのバイトを読む
-                    let mut read_so_far = 1;
-                    buf[0] = b;
-                    while read_so_far < byte_len {
-                        match stdin.read(&mut buf[read_so_far..byte_len]) {
-                            Ok(n) if n > 0 => read_so_far += n,
-                            _ => break,
-                        }
+                buf[0] = b;
+                let mut read_so_far = 1;
+                while read_so_far < byte_len {
+                    match stdin.read(&mut buf[read_so_far..byte_len]) {
+                        Ok(n) if n > 0 => read_so_far += n,
+                        _ => break,
                     }
-                    if read_so_far == byte_len {
-                        if let Ok(s) = std::str::from_utf8(&buf[..byte_len]) {
-                            line.push_str(s);
-                            let _ = stdout.write_all(&buf[..byte_len]);
-                            let _ = stdout.flush();
-                        }
-                    }
-                } else {
-                    // ASCII文字
-                    line.push(b as char);
-                    let _ = stdout.write_all(&[b]);
-                    let _ = stdout.flush();
                 }
+                if read_so_far != byte_len {
+                    continue;
+                }
+                let s = match std::str::from_utf8(&buf[..byte_len]) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                let c = match s.chars().next() {
+                    Some(c) => c,
+                    None => continue,
+                };
+                if let Some(choice) = match_confirm_char(c) {
+                    echo_confirm(choice);
+                    return Some(choice);
+                }
+                // 未知キーは無視 (echo もしない) して次のキーを待つ
             }
         }
     }
+}
 
-    Some(line)
+#[cfg(not(unix))]
+fn read_confirm_key_cooked() -> Option<ConfirmChoice> {
+    // Windows fallback: cooked mode で 1 行読み、先頭の有効文字でマッチ。
+    // raw 1 キー読みは Windows では仕組みが違うのでここでは Enter 確定を許容する。
+    loop {
+        let mut line = String::new();
+        match io::stdin().read_line(&mut line) {
+            Ok(0) => return None,
+            Ok(_) => {}
+            Err(_) => return None,
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return Some(ConfirmChoice::Yes);
+        }
+        if let Some(c) = trimmed.chars().next() {
+            if let Some(choice) = match_confirm_char(c) {
+                return Some(choice);
+            }
+        }
+        // 未知入力は再読み取り
+    }
 }
 
 /// パススルーモードで入力を読む。Ctrl+/でaishプロンプトを開く。
@@ -1332,5 +1331,54 @@ mod tests {
     #[test]
     fn parse_dsr_response_empty() {
         assert_eq!(parse_dsr_response(b""), None);
+    }
+
+    #[test]
+    fn match_confirm_ascii() {
+        assert_eq!(match_confirm_char('y'), Some(ConfirmChoice::Yes));
+        assert_eq!(match_confirm_char('Y'), Some(ConfirmChoice::Yes));
+        assert_eq!(match_confirm_char('n'), Some(ConfirmChoice::No));
+        assert_eq!(match_confirm_char('N'), Some(ConfirmChoice::No));
+        assert_eq!(match_confirm_char('a'), Some(ConfirmChoice::All));
+        assert_eq!(match_confirm_char('A'), Some(ConfirmChoice::All));
+    }
+
+    #[test]
+    fn match_confirm_enter_and_space_default_yes() {
+        assert_eq!(match_confirm_char('\n'), Some(ConfirmChoice::Yes));
+        assert_eq!(match_confirm_char('\r'), Some(ConfirmChoice::Yes));
+        assert_eq!(match_confirm_char(' '), Some(ConfirmChoice::Yes));
+    }
+
+    #[test]
+    fn match_confirm_fullwidth_lowercase() {
+        // IME 全角小文字 (英数モードや半角→全角変換時の自然な結果)
+        assert_eq!(match_confirm_char('ｙ'), Some(ConfirmChoice::Yes));
+        assert_eq!(match_confirm_char('ｎ'), Some(ConfirmChoice::No));
+        assert_eq!(match_confirm_char('ａ'), Some(ConfirmChoice::All));
+    }
+
+    #[test]
+    fn match_confirm_fullwidth_uppercase() {
+        assert_eq!(match_confirm_char('Ｙ'), Some(ConfirmChoice::Yes));
+        assert_eq!(match_confirm_char('Ｎ'), Some(ConfirmChoice::No));
+        assert_eq!(match_confirm_char('Ａ'), Some(ConfirmChoice::All));
+    }
+
+    #[test]
+    fn match_confirm_hiragana_natural_ime() {
+        // ひらがなモードで "a" → あ, "n" を確定 → ん となる自然な IME 出力
+        assert_eq!(match_confirm_char('あ'), Some(ConfirmChoice::All));
+        assert_eq!(match_confirm_char('ん'), Some(ConfirmChoice::No));
+    }
+
+    #[test]
+    fn match_confirm_unknown_returns_none() {
+        assert_eq!(match_confirm_char('x'), None);
+        assert_eq!(match_confirm_char('1'), None);
+        assert_eq!(match_confirm_char('あ' as char), Some(ConfirmChoice::All)); // sanity
+        assert_eq!(match_confirm_char('い'), None);
+        assert_eq!(match_confirm_char('や'), None); // "ya" は受け付けない
+        assert_eq!(match_confirm_char('な'), None); // "na" も受け付けない
     }
 }

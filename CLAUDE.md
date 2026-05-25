@@ -27,9 +27,11 @@ aish は SSH でサーバを管理する道具なので、**ユーザが画面�
 
 コードから直ちに読み取れない、間違えやすいポイント：
 
-- **rawモードはセッション全体で維持**する（`save_terminal_settings` で設定）。`read_line` / `passthrough` 個別での再設定・復元は不要。
+- **rawモードはセッション全体で維持**する（`save_terminal_settings` で設定）。`passthrough` / `read_confirm_key` 個別での再設定・復元は不要。
+- **AI 提案コマンドの確認プロンプト (Y/n/a) は 1 キー即確定** (`read_confirm_key`, `src/ui.rs`)。Enter は不要。raw mode で 1 byte ずつ読み、UTF-8 マルチバイトは追加 byte を読み切って `char` にデコードしてから `match_confirm_char` で判定する。受理する文字は ASCII `y`/`Y`/`n`/`N`/`a`/`A` + IME 全角 `ｙ`/`Ｙ`/`ｎ`/`Ｎ`/`ａ`/`Ａ` + ひらがな `あ` (= "a" の自然 IME 確定) と `ん` (= "n" 確定の自然出力)。Enter (`\n`/`\r`) と Space はデフォルト Yes (旧 `parse_confirm` の「空入力 = Yes」を踏襲)。未知キーは **無視して再読み取り** (打ち間違いで意図せず No になる事故を避けるため)。Ctrl+C / Ctrl+D / ESC 単独は「残り全部キャンセル」(`InputEvent::ReadLineCancelled`)。マッチした文字のみ `Y\n` / `N\n` / `A\n` の形で手動 echo する (raw mode は ECHO off)。
+- **IME の未確定文字 (preedit) は aish からは取得不能**。fcitx / mozc / Windows IME / macOS IME 等は OS の入力メソッド層で preedit buffer を保持しており、確定 (commit) されるまで stdin に 1 バイトも流れてこない (terminal emulator が overlay 描画しているだけで PTY には到達しない)。Kitty keyboard protocol / CSI u を有効化しても変わらない (IME が下流)。したがって「IME 入力中にリアルタイム反応」は構造上不可能で、確定済み文字でマッチするのが現実解。`read_confirm_key` はその方針 (= IME 入力中は何キーを叩いても aish には届かないので無反応に見える) で実装している。
 - **stdin の termios は `c_lflag` の `ICANON|ECHO|ISIG|IEXTEN` に加えて `c_iflag` の raw 化フラグ群 (`IGNBRK|BRKINT|PARMRK|ISTRIP|INLCR|IGNCR|ICRNL|IXON`) も落とす**。ICRNL を残すと、ユーザの Enter (`\r`) が端末 driver の段階で `\n` に変換され PTY に届く。`prompt_toolkit` 系の選択ピッカー (`Application` / `questionary` 等) は `Keys.ControlM` (= `\r`) のみを「選択確定」にバインドしているため、CR→NL 変換がかかると Enter が無反応になる (`aws configure sso` のアカウント選択画面で再現)。`c_oflag` (OPOST) は触らない: `show_minibuffer` 等で `writeln!(stdout)` が `\n` のみを書く箇所があり、端末側の NL→CRLF 変換に依存している。
-- **AI対話終了後は `input_idle = true` を明示的に設定**すること。確認プロンプトの ReadLine で false になったまま戻ると入力リクエストが再送されずハングする。
+- **AI対話終了後は `input_idle = true` を明示的に設定**すること。確認プロンプトの ReadConfirmKey で false になったまま戻ると入力リクエストが再送されずハングする。
 - **aishプロンプト表示中は PTY出力の画面描画を抑制**（`MINIBUFFER_ACTIVE` フラグ）。ただしリングバッファへの記録は継続する。
 - **通常動作中は PTY出力に aish 独自の文字列を一切挿入しない**（パススルーに徹する）。ステータスバーは DECSTBM の外に描画する。
 - **Shift+Enter による改行は非対応**。ターミナル間で CSI u / legacy の扱いが揃わないため。改行は `Alt+Enter` のみサポート。
