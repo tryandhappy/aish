@@ -1153,9 +1153,16 @@ fn show_minibuffer(
             let _ = tx.send(InputEvent::AiPrompt(text));
         }
         None => {
-            // キャンセル (ESC/Ctrl+C/Ctrl+//exit) → 何もしない。
-            // 打ちかけは画面に残る。Ctrl+/ を誤って押した後でも shell 入力中の
-            // テキストが失われない。
+            // キャンセル (ESC/Ctrl+C/Ctrl+//exit) → 1 行改行を出して bash プロンプト跡が
+            // 同じ行に表示されるのを避ける ([aish] と bash プロンプトの混在防止)。
+            // 打ちかけは画面と bash readline に残る。Ctrl+/ を誤って押した後でも
+            // shell 入力中のテキストが失われない。改行で cursor は bash 入力欄の
+            // 1 行下に移動するが、bash readline 側の cursor 認識はそのままなので、
+            // 次の入力 byte は bash 側で受理され echoback で正しい位置 (新しい行) に
+            // 描画される。最下行の場合は ONLCR の \n が scroll を引き起こし、bash
+            // プロンプト 1 行ぶんが上に退避するだけで内容は失われない。
+            let _ = writeln!(stdout);
+            let _ = stdout.flush();
         }
     }
 }
