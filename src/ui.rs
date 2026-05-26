@@ -752,7 +752,7 @@ fn redraw_minibuffer(
     chars: &[char],
     cursor_pos: usize,
     rows_used: &mut u16,
-    was_at_bottom: bool,
+    total_scrolled: &mut u16,
 ) {
     let total_cols = term_cols as usize;
     let avail_first = total_cols.saturating_sub(label_width).max(1);
@@ -783,19 +783,21 @@ fn redraw_minibuffer(
             for r in clear_from..=clear_to {
                 let _ = write!(stdout, "\x1b[{r};1H\x1b[2K");
             }
-        } else if *rows_used > 0 && was_at_bottom {
+        } else if *rows_used > 0 {
             // grow: 現 DECSTBM の bottom に cursor を置いて \n を delta 個出し、
             // 現 scroll 領域内で bash 出力を上に退避してから minibuffer の伸長を許す。
-            // was_at_bottom = false (画面上半分始まり) の場合は入口で scroll を
-            // 起こしていない (= 上端を削らないため) ので、ここで scroll すると
-            // 逆に画面が無駄に下にずれてしまうのでスキップ。
-            // stdout 専用、PTY には送らない。
+            // was_at_bottom に関わらず常に scroll する: 画面上半分始まりでも
+            // minibuffer は常に最下行起点で伸ばすため、scroll しないと minibuffer
+            // 直上の行 (= bash 履歴) を上書きしてしまう。scroll で履歴を上に
+            // 退避させて保護する。scroll 量は total_scrolled に積算して終了時の
+            // cursor 復元に使う。stdout 専用、PTY には送らない。
             let delta = new_rows_used - *rows_used;
             let current_bottom = term_rows.saturating_sub(*rows_used).max(1);
             let _ = write!(stdout, "\x1b[{current_bottom};1H");
             for _ in 0..delta {
                 let _ = write!(stdout, "\n");
             }
+            *total_scrolled = total_scrolled.saturating_add(delta);
         }
         let scroll_bottom = term_rows.saturating_sub(new_rows_used).max(1);
         let _ = write!(stdout, "\x1b[1;{scroll_bottom}r");
@@ -849,7 +851,7 @@ fn read_minibuffer_line(
     label: &str,
     label_width: usize,
     input_bg: &str,
-    was_at_bottom: bool,
+    total_scrolled: &mut u16,
 ) -> (Option<String>, u16) {
     use std::os::unix::io::{AsRawFd, FromRawFd};
     let mut stdin = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
@@ -866,7 +868,7 @@ fn read_minibuffer_line(
 
     redraw_minibuffer(
         stdout, term_rows, term_cols, max_rows, label, label_width, input_bg,
-        &chars, cursor_pos, &mut rows_used, was_at_bottom,
+        &chars, cursor_pos, &mut rows_used, total_scrolled,
     );
 
     loop {
@@ -1060,7 +1062,7 @@ fn read_minibuffer_line(
 
         redraw_minibuffer(
             stdout, term_rows, term_cols, max_rows, label, label_width, input_bg,
-            &chars, cursor_pos, &mut rows_used, was_at_bottom,
+            &chars, cursor_pos, &mut rows_used, total_scrolled,
         );
     }
 }
@@ -1089,13 +1091,17 @@ fn show_minibuffer(
 
     // 画面下端のときだけ scroll 退避で空き行を確保。stdout 専用 LF: PTY には送らない。
     // 画面上半分のときは何もしない (上端を削らない)。
+    // total_scrolled で minibuffer 表示中に積算した scroll 量を追跡し、終了時の
+    // cursor 復元に使う (入口 scroll + grow scroll の合計)。
+    let mut total_scrolled: u16 = 0;
     if was_at_bottom {
         let _ = write!(stdout, "\n");
         let _ = stdout.flush();
+        total_scrolled = 1;
     }
 
     let (result, rows_used) = read_minibuffer_line(
-        stdout, rows, cols, max_rows, aish_label, label_width, input_bg, was_at_bottom,
+        stdout, rows, cols, max_rows, aish_label, label_width, input_bg, &mut total_scrolled,
     );
 
     // DECSTBM をフルリセット (1..rows)、ミニバッファが使用した追加行をクリア
@@ -1110,11 +1116,10 @@ fn show_minibuffer(
         // 1 行ミニバッファでも最終行に入力跡が残っているのでクリア
         let _ = write!(stdout, "\x1b[{rows};1H\x1b[2K");
     }
-    // cursor を絶対座標で復元。画面下端ケースでは scroll で bash 入力欄が
-    // rows_used 行ぶん上に動いているので、保存位置から rows_used を引く。
-    // 画面上半分ケースでは scroll を起こしていないので保存位置そのまま。
-    let scrolled = if was_at_bottom { rows_used } else { 0 };
-    let restored_row = saved_row.saturating_sub(scrolled).max(1);
+    // cursor を絶対座標で復元。total_scrolled は入口 scroll + grow scroll の合計で、
+    // bash 入力欄がその行数ぶん上に動いているので保存位置から引く。
+    // 画面下端起点 / 上半分起点いずれも同じロジックで扱える。
+    let restored_row = saved_row.saturating_sub(total_scrolled).max(1);
     let _ = write!(stdout, "\x1b[{restored_row};{saved_col}H");
     let _ = stdout.flush();
     MINIBUFFER_ACTIVE.store(false, Ordering::Relaxed);
