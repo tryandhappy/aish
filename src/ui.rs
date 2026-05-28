@@ -527,6 +527,12 @@ fn read_confirm_key_unix() -> Option<ConfirmChoice> {
                     return None;
                 }
             }
+            0x0a | 0x0d => {
+                // Enter (LF / CR): 空入力 = デフォルト Yes (CLAUDE.md 仕様)。
+                // `b < 0x20` の制御文字フィルタより先に処理しないと捨てられる。
+                echo_confirm(ConfirmChoice::Yes);
+                return Some(ConfirmChoice::Yes);
+            }
             _ if b < 0x20 => {
                 // 上記以外の制御文字 (Tab, Ctrl+L 等) は無視して再読み取り
                 continue;
