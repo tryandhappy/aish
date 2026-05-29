@@ -16,7 +16,7 @@ const AI_RESPONSE_SCHEMA: &str = r#"{
     "commands": {
       "type": "array",
       "items": { "type": "string" },
-      "description": "実行を提案するコマンドのリスト(空配列も可)"
+      "description": "ユーザに実行を提案するコマンドのリスト。message 本文で実行コマンドを提示したら同じものを必ずここにも入れる(本文だけに書かない)。提案すべきコマンドが無ければ空配列。"
     }
   },
   "required": ["message", "commands"]
