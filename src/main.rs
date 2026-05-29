@@ -530,9 +530,14 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                     &mut ring_buffer,
                 ) {
                     ui::print_slash_result(&msg);
-                    // shell プロンプトをリフレッシュ。aish プロンプトを開いた時点で minibuffer 側が
-                    // (in-progress 入力があれば) Ctrl+C で行を空にしているので、ここで `\n` を送ると
-                    // 空コマンド扱いで新規プロンプトだけが描画される。
+                    // shell プロンプトをリフレッシュする。ユーザが Ctrl+/ の前に打ちかけた
+                    // 未確定 shell 入力が bash readline に残っている可能性があるため、`\n` を
+                    // 送る前に Ctrl+A + Ctrl+K (0x01, 0x0b) で行を消去する。これをしないと、
+                    // ユーザが Enter していない打ちかけコマンドを `\n` が勝手に実行してしまう
+                    // (信頼の根幹: 承認していないコマンドを実行しない)。0x01,0x0b は SIGINT を
+                    // 発火させない安全な行消去で、AI 提案コマンド実行直前と同一イディオム。
+                    // 打ちかけは bash の kill-ring に退避するので Ctrl+Y で復元可能。
+                    let _ = pty.write(&[0x01, 0x0b]);
                     let _ = pty.write(b"\n");
                     pending_input = true;
                     last_pty_output = Instant::now();
@@ -750,7 +755,13 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                     }
                 }
 
-                // AI対話終了後、シェルのプロンプトを再表示させる
+                // AI対話終了後、シェルのプロンプトを再表示させる。
+                // 提案コマンドを1つも実行しなかった場合 (全拒否 / 提案なし) は
+                // any_executed 経路の Ctrl+A+Ctrl+K 行消去を通っていないため、ユーザが
+                // Ctrl+/ 前に打ちかけた未確定入力が bash readline に残る。`\n` の前に
+                // 0x01,0x0b で消去し、打ちかけの勝手な実行を防ぐ (実行済み経路では行が
+                // 空なので no-op)。
+                let _ = pty.write(&[0x01, 0x0b]);
                 pty.write(b"\n")?;
                 thread::sleep(Duration::from_millis(200));
                 let mut first = true;
