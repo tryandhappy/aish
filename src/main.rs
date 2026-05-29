@@ -1,5 +1,6 @@
 mod ai;
 mod config;
+mod input;
 mod mode;
 mod prompt_sniffer;
 mod pty_handler;

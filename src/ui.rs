@@ -7,6 +7,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use unicode_width::UnicodeWidthChar;
 
+// 低レベル入力の framing は crate::input に集約。confirm / passthrough / minibuffer は
+// next_event を消費する薄い層になる (fd 0 の直接読みはここから無くなる)。
+#[cfg(unix)]
+use crate::input::{self, Fd0Source, Tok};
+
 static PROMPT_HISTORY: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 
 fn prompt_history() -> &'static Mutex<Vec<String>> {
@@ -479,89 +484,37 @@ fn match_confirm_char(c: char) -> Option<ConfirmChoice> {
 
 #[cfg(unix)]
 fn read_confirm_key_unix() -> Option<ConfirmChoice> {
-    use std::os::unix::io::{AsRawFd, FromRawFd};
-    // io::stdin() の BufReader をバイパスして fd 0 から直接 1 byte ずつ読む。
-    // raw mode はセッション全体で維持済み (save_terminal_settings)。
-    let mut stdin = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
-    let mut buf = [0u8; 4];
-
+    // 入力の framing は crate::input に集約済み。ここは Tok を解釈するだけの薄い層。
+    // Enter が制御文字フィルタに飲まれる順序トラップは next_event 側で型として解消済み。
+    let mut src = Fd0Source::new();
     loop {
-        let n = match stdin.read(&mut buf[..1]) {
-            Ok(0) => return None, // EOF
-            Ok(n) => n,
-            Err(_) => return None,
-        };
-        if n == 0 {
-            continue;
-        }
-        let b = buf[0];
-
-        match b {
-            0x03 | 0x04 => {
-                // Ctrl+C / Ctrl+D: 残り全部キャンセル
+        let ev = input::next_event(&mut src);
+        match ev.tok {
+            Tok::Eof => return None,
+            // Ctrl+C / Ctrl+D: 残り全部キャンセル (改行を出してから抜ける)
+            Tok::Ctrl(0x03) | Tok::Ctrl(0x04) => {
                 let mut stdout = io::stdout();
                 let _ = stdout.write_all(b"\n");
                 let _ = stdout.flush();
                 return None;
             }
-            0x1b => {
-                // ESC: 後続バイトがあればエスケープシーケンス (矢印キー等) → 無視。
-                // 単独なら「キャンセル」扱い (read_line_raw_loop と同じ)。
-                let fd = (*stdin).as_raw_fd();
-                let mut pollfd = libc::pollfd {
-                    fd,
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                let ready = unsafe { libc::poll(&mut pollfd, 1, 50) };
-                if ready > 0 {
-                    let mut seq = [0u8; 8];
-                    let _ = stdin.read(&mut seq);
-                    // エスケープシーケンス本体は捨てる (再読み取りループに戻る)
-                    continue;
-                } else {
-                    return None;
-                }
-            }
-            0x0a | 0x0d => {
-                // Enter (LF / CR): 空入力 = デフォルト Yes (CLAUDE.md 仕様)。
-                // `b < 0x20` の制御文字フィルタより先に処理しないと捨てられる。
-                // 入力 char が無いのでデフォルト表記の 'Y' を echo する。
+            // 単独 ESC: キャンセル (echo はしない)
+            Tok::Esc => return None,
+            // Enter = デフォルト Yes。入力 char が無いのでデフォルト表記の 'Y' を echo。
+            Tok::Enter => {
                 echo_confirm('Y');
                 return Some(ConfirmChoice::Yes);
             }
-            _ if b < 0x20 => {
-                // 上記以外の制御文字 (Tab, Ctrl+L 等) は無視して再読み取り
-                continue;
-            }
-            _ => {
-                // ASCII または UTF-8 マルチバイト先頭。char にデコードして判定。
-                let byte_len = utf8_char_len(b);
-                buf[0] = b;
-                let mut read_so_far = 1;
-                while read_so_far < byte_len {
-                    match stdin.read(&mut buf[read_so_far..byte_len]) {
-                        Ok(n) if n > 0 => read_so_far += n,
-                        _ => break,
-                    }
-                }
-                if read_so_far != byte_len {
-                    continue;
-                }
-                let s = match std::str::from_utf8(&buf[..byte_len]) {
-                    Ok(s) => s,
-                    Err(_) => continue,
-                };
-                let c = match s.chars().next() {
-                    Some(c) => c,
-                    None => continue,
-                };
+            // マッチする文字なら確定 (Space も match_confirm_char で Yes 扱い)。
+            // 未知文字は無視して再読み取り (打ち間違いで意図せず No になる事故を避ける)。
+            Tok::Char(c) => {
                 if let Some(choice) = match_confirm_char(c) {
                     echo_confirm(c);
                     return Some(choice);
                 }
-                // 未知キーは無視 (echo もしない) して次のキーを待つ
             }
+            // 矢印キー等のシーケンス・修飾キー・その他制御文字は無視して待つ。
+            _ => {}
         }
     }
 }
@@ -856,9 +809,8 @@ fn read_minibuffer_line(
     input_bg: &str,
     total_scrolled: &mut u16,
 ) -> (Option<String>, u16) {
-    use std::os::unix::io::{AsRawFd, FromRawFd};
-    let mut stdin = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
-    let mut buf = [0u8; 4];
+    // 入力の framing は crate::input に集約済み。ここは Tok を編集操作に対応づける薄い層。
+    let mut src = Fd0Source::new();
 
     let mut chars: Vec<char> = Vec::new();
     let mut cursor_pos: usize = 0;
@@ -875,8 +827,10 @@ fn read_minibuffer_line(
     );
 
     loop {
-        let n = match stdin.read(&mut buf[..1]) {
-            Ok(0) => {
+        let ev = input::next_event(&mut src);
+        match ev.tok {
+            // EOF: 入力があれば確定、無ければキャンセル
+            Tok::Eof => {
                 let text = if chars.is_empty() {
                     None
                 } else {
@@ -884,31 +838,29 @@ fn read_minibuffer_line(
                 };
                 return (text, rows_used);
             }
-            Ok(n) => n,
-            Err(_) => return (None, rows_used),
-        };
-        if n == 0 {
-            continue;
-        }
-        let b = buf[0];
-
-        match b {
-            b'\n' | b'\r' => {
+            // Enter: 確定 ("exit" はキャンセル扱い)
+            Tok::Enter => {
                 let s: String = chars.iter().collect();
                 if s.trim() == "exit" {
                     return (None, rows_used);
                 }
                 return (Some(s), rows_used);
             }
-            0x7f | 0x08 => {
+            // Alt+Enter / 修飾 Enter (CSI u): 改行を挿入
+            Tok::AltEnter | Tok::ModEnter => {
+                chars.insert(cursor_pos, '\n');
+                cursor_pos += 1;
+            }
+            Tok::Backspace => {
                 if cursor_pos > 0 {
                     cursor_pos -= 1;
                     chars.remove(cursor_pos);
                 }
             }
-            0x1f => return (None, rows_used), // Ctrl+/ でキャンセル
-            0x03 => return (None, rows_used), // Ctrl-C
-            0x04 => {
+            // Ctrl+/ (0x1f) / Ctrl+C (0x03) / 単独 ESC: キャンセル
+            Tok::Ctrl(0x1f) | Tok::Ctrl(0x03) | Tok::Esc => return (None, rows_used),
+            // Ctrl+D (0x04): 空ならキャンセル、そうでなければ前方削除
+            Tok::Ctrl(0x04) => {
                 if chars.is_empty() {
                     return (None, rows_used);
                 }
@@ -916,24 +868,23 @@ fn read_minibuffer_line(
                     chars.remove(cursor_pos);
                 }
             }
-            0x01 => cursor_pos = 0,
-            0x05 => cursor_pos = chars.len(),
-            0x02 => {
-                cursor_pos = cursor_pos.saturating_sub(1);
-            }
-            0x06 => {
+            Tok::Ctrl(0x01) => cursor_pos = 0, // Ctrl+A: 行頭
+            Tok::Ctrl(0x05) => cursor_pos = chars.len(), // Ctrl+E: 行末
+            Tok::Ctrl(0x02) => cursor_pos = cursor_pos.saturating_sub(1), // Ctrl+B: 左
+            Tok::Ctrl(0x06) => {
+                // Ctrl+F: 右
                 if cursor_pos < chars.len() {
                     cursor_pos += 1;
                 }
             }
-            0x15 => {
+            Tok::Ctrl(0x15) => {
+                // Ctrl+U: 行頭まで削除
                 chars.drain(..cursor_pos);
                 cursor_pos = 0;
             }
-            0x0b => {
-                chars.truncate(cursor_pos);
-            }
-            0x17 => {
+            Tok::Ctrl(0x0b) => chars.truncate(cursor_pos), // Ctrl+K: 行末まで削除
+            Tok::Ctrl(0x17) => {
+                // Ctrl+W: 直前の単語を削除
                 let mut end = cursor_pos;
                 while end > 0 && chars[end - 1] == ' ' {
                     end -= 1;
@@ -944,123 +895,51 @@ fn read_minibuffer_line(
                 chars.drain(end..cursor_pos);
                 cursor_pos = end;
             }
-            0x1b => {
-                let fd = (*stdin).as_raw_fd();
-                let mut pollfd = libc::pollfd {
-                    fd,
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                let ready = unsafe { libc::poll(&mut pollfd, 1, 50) };
-                if ready <= 0 {
-                    return (None, rows_used); // 単独ESCでキャンセル
+            Tok::Left => cursor_pos = cursor_pos.saturating_sub(1),
+            Tok::Right => {
+                if cursor_pos < chars.len() {
+                    cursor_pos += 1;
                 }
-                let mut first = [0u8; 1];
-                if stdin.read(&mut first).is_err() {
-                    continue;
+            }
+            Tok::Home => cursor_pos = 0,
+            Tok::End => cursor_pos = chars.len(),
+            Tok::Delete => {
+                if cursor_pos < chars.len() {
+                    chars.remove(cursor_pos);
                 }
-                match first[0] {
-                    b'\r' | b'\n' => {
-                        // Alt+Enter: 改行を挿入
-                        chars.insert(cursor_pos, '\n');
-                        cursor_pos += 1;
-                    }
-                    b'[' | b'O' => {
-                        // CSI/SS3 パラメータと終端を読む
-                        let mut params: Vec<u8> = Vec::new();
-                        let mut final_byte: u8 = 0;
-                        loop {
-                            let mut c = [0u8; 1];
-                            match stdin.read(&mut c) {
-                                Ok(1) => {
-                                    if c[0] >= 0x40 && c[0] <= 0x7E {
-                                        final_byte = c[0];
-                                        break;
-                                    }
-                                    params.push(c[0]);
-                                }
-                                _ => break,
-                            }
+            }
+            // 履歴ナビゲーション (Up = 過去へ / Down = 新しい方へ)
+            Tok::Up | Tok::Down => {
+                let is_up = matches!(ev.tok, Tok::Up);
+                if let Ok(history) = prompt_history().lock() {
+                    let new_idx = if is_up {
+                        hist_idx.saturating_sub(1)
+                    } else if hist_idx < hist_len {
+                        hist_idx + 1
+                    } else {
+                        hist_idx
+                    };
+                    if new_idx != hist_idx {
+                        if hist_idx == hist_len {
+                            saved_input = chars.clone();
                         }
-                        // Shift+Enter / modifier+Enter の CSI u 形式: ESC [ 13 ; N u
-                        // 修飾キーありに限定するため "13;" で始まるものだけマッチ
-                        // (プレーンEnterが \x1b[13u で届いた場合は else 側へ流す)
-                        if final_byte == b'u' && params.starts_with(b"13;") {
-                            chars.insert(cursor_pos, '\n');
-                            cursor_pos += 1;
+                        hist_idx = new_idx;
+                        chars = if hist_idx < hist_len {
+                            history[hist_idx].chars().collect()
                         } else {
-                            match (params.as_slice(), final_byte) {
-                                (b"", b'D') => {
-                                    cursor_pos = cursor_pos.saturating_sub(1);
-                                }
-                                (b"", b'C') => {
-                                    if cursor_pos < chars.len() {
-                                        cursor_pos += 1;
-                                    }
-                                }
-                                (b"", b'H') | (b"1", b'~') | (b"7", b'~') => cursor_pos = 0,
-                                (b"", b'F') | (b"4", b'~') | (b"8", b'~') => {
-                                    cursor_pos = chars.len()
-                                }
-                                (b"3", b'~') => {
-                                    if cursor_pos < chars.len() {
-                                        chars.remove(cursor_pos);
-                                    }
-                                }
-                                (b"", b'A') | (b"", b'B') => {
-                                    if let Ok(history) = prompt_history().lock() {
-                                        let new_idx = if final_byte == b'A' {
-                                            if hist_idx > 0 {
-                                                hist_idx - 1
-                                            } else {
-                                                hist_idx
-                                            }
-                                        } else if hist_idx < hist_len {
-                                            hist_idx + 1
-                                        } else {
-                                            hist_idx
-                                        };
-                                        if new_idx != hist_idx {
-                                            if hist_idx == hist_len {
-                                                saved_input = chars.clone();
-                                            }
-                                            hist_idx = new_idx;
-                                            chars = if hist_idx < hist_len {
-                                                history[hist_idx].chars().collect()
-                                            } else {
-                                                saved_input.clone()
-                                            };
-                                            cursor_pos = chars.len();
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    _ => {} // 未知のエスケープは無視
-                }
-            }
-            _ if b < 0x20 => {}
-            _ => {
-                let byte_len = utf8_char_len(b);
-                buf[0] = b;
-                let mut read_so_far = 1;
-                while read_so_far < byte_len {
-                    match stdin.read(&mut buf[read_so_far..byte_len]) {
-                        Ok(n) if n > 0 => read_so_far += n,
-                        _ => break,
-                    }
-                }
-                if read_so_far == byte_len {
-                    if let Ok(s) = std::str::from_utf8(&buf[..byte_len]) {
-                        for c in s.chars() {
-                            chars.insert(cursor_pos, c);
-                            cursor_pos += 1;
-                        }
+                            saved_input.clone()
+                        };
+                        cursor_pos = chars.len();
                     }
                 }
             }
+            // 通常文字: カーソル位置に挿入
+            Tok::Char(c) => {
+                chars.insert(cursor_pos, c);
+                cursor_pos += 1;
+            }
+            // その他 (未知のエスケープ・フォーカス・Tab 等の制御文字・生バイト) は無視
+            _ => {}
         }
 
         redraw_minibuffer(
@@ -1170,135 +1049,32 @@ fn show_minibuffer(
     }
 }
 
-/// fd から 1 byte を poll 付きで読む。timeout/EOF/エラーなら None。
-/// ESC sequence 解析専用: blocking read で固まるのを防ぐため、すべての追加 byte 読みに使う。
-#[cfg(unix)]
-fn poll_read_byte(stdin: &mut std::fs::File, fd: i32, timeout_ms: i32) -> Option<u8> {
-    let mut pollfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-    let ready = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
-    if ready <= 0 {
-        return None;
-    }
-    let mut byte = [0u8; 1];
-    match stdin.read(&mut byte) {
-        Ok(1) => Some(byte[0]),
-        _ => None,
-    }
-}
-
 /// パススルーモードのrawキー入力処理。
-/// Ctrl+/ でaishプロンプトを開き、それ以外はPTYに直送する。
+/// Ctrl+/ でaishプロンプトを開き、それ以外は **元バイト列をそのまま** PTYに直送する。
+/// 入力の framing (ESC/CSI/SS3/UTF-8) は crate::input に集約済み。透明性の根幹として
+/// `InEvent.raw` を無加工で転送し、`Char` の再エンコードはしない (invalid UTF-8 /
+/// Alt+非ASCII / paste / マウスシーケンスで壊れるため)。フォーカスイベントのみ破棄する。
 #[cfg(unix)]
 fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &str) {
-    use std::os::unix::io::{AsRawFd, FromRawFd};
-    // io::stdin()はBufReaderを内包しており、poll()と併用するとデータ喪失する。
-    // ManuallyDropでfd 0を直接読み取り、BufReaderをバイパスする。
-    let mut stdin = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
+    let mut src = Fd0Source::new();
     let mut stdout = io::stdout();
-    let mut buf = [0u8; 1];
 
     loop {
-        match stdin.read(&mut buf) {
-            Ok(0) => return,
-            Ok(_) => {}
-            Err(_) => return,
-        }
-        let b = buf[0];
-
-        match b {
-            0x1f => {
-                // Ctrl+/ → aishプロンプトを開く
+        let ev = input::next_event(&mut src);
+        match ev.tok {
+            Tok::Eof => return,
+            // Ctrl+/ → aishプロンプトを開く
+            Tok::Ctrl(0x1f) => {
                 show_minibuffer(&mut stdout, tx, input_bg, aish_label);
                 return;
             }
-            0x03 => {
-                // Ctrl+C: PTYに送信
-                let _ = tx.send(InputEvent::PtyData(vec![b]));
-            }
-            b'\r' | b'\n' => {
-                let _ = tx.send(InputEvent::PtyData(vec![b]));
-            }
-            0x1b => {
-                // ESC: 後続バイトをすべて poll(50ms) 付きで読み取る。
-                // どの read も blocking にしてはならない。partial sequence
-                // (mouse tracking 中のフォーカス切替で断片送信される等) が
-                // 来ると stdin read が固まり、Ctrl+C 含め全キー入力が
-                // PTY に届かなくなるため (pi-hole installer + whiptail +
-                // Ghostty focus 切替で再現実績あり)。timeout したら溜めた
-                // byte は不完全でも PTY に転送する (transparent proxy 原則)。
-                const POLL_TIMEOUT_MS: i32 = 50;
-                const MAX_SEQ_LEN: usize = 64;
-                let fd = (*stdin).as_raw_fd();
-                let mut seq_bytes = vec![0x1b_u8];
-
-                // 1 byte 目: ESC 直後
-                if let Some(b1) = poll_read_byte(&mut *stdin, fd, POLL_TIMEOUT_MS) {
-                    seq_bytes.push(b1);
-                    if b1 == b'[' {
-                        // CSI: 終端文字 (0x40-0x7E) まで poll 付きで読む。
-                        // 長さ上限を超えたら fail-safe で打ち切り。
-                        while seq_bytes.len() < MAX_SEQ_LEN {
-                            match poll_read_byte(&mut *stdin, fd, POLL_TIMEOUT_MS) {
-                                Some(b) => {
-                                    seq_bytes.push(b);
-                                    if (0x40..=0x7E).contains(&b) {
-                                        break;
-                                    }
-                                }
-                                None => break,
-                            }
-                        }
-                    } else if b1 == b'O' {
-                        // SS3 (ESC O X): Home/End/F1-F4 等。
-                        // 1バイト追読みして PTY にまとめて送らないと、
-                        // vim 等で ESC O と X が分割解釈されて誤動作する。
-                        if let Some(tail) = poll_read_byte(&mut *stdin, fd, POLL_TIMEOUT_MS) {
-                            seq_bytes.push(tail);
-                        }
-                    }
-                }
-                // フォーカスイベント(ESC[I, ESC[O)は破棄、それ以外はPTYに転送
-                let is_focus = seq_bytes.len() == 3
-                    && seq_bytes[1] == b'['
-                    && (seq_bytes[2] == b'I' || seq_bytes[2] == b'O');
-                if !is_focus {
-                    let _ = tx.send(InputEvent::PtyData(seq_bytes));
-                }
-            }
+            // フォーカスイベント (ESC[I / ESC[O) は破棄 (従来どおり TUI に流さない)
+            Tok::FocusIn | Tok::FocusOut => {}
+            // それ以外は元バイト列をそのまま PTY へ (Ctrl+C / Enter / 矢印 / 文字すべて raw)
             _ => {
-                // 通常文字(ASCII or UTF-8マルチバイト)をPTYに転送
-                let byte_len = utf8_char_len(b);
-                if byte_len > 1 {
-                    let mut mb_buf = [0u8; 4];
-                    mb_buf[0] = b;
-                    let mut read_so_far = 1;
-                    while read_so_far < byte_len {
-                        match stdin.read(&mut mb_buf[read_so_far..byte_len]) {
-                            Ok(n) if n > 0 => read_so_far += n,
-                            _ => break,
-                        }
-                    }
-                    let _ = tx.send(InputEvent::PtyData(mb_buf[..read_so_far].to_vec()));
-                } else {
-                    let _ = tx.send(InputEvent::PtyData(vec![b]));
-                }
+                let _ = tx.send(InputEvent::PtyData(ev.raw));
             }
         }
-    }
-}
-
-/// UTF-8の先頭バイトから文字のバイト長を返す
-fn utf8_char_len(b: u8) -> usize {
-    if b < 0x80 {
-        1
-    } else if b < 0xC0 {
-        1 // continuation byte (invalid as start)
-    } else if b < 0xE0 {
-        2
-    } else if b < 0xF0 {
-        3
-    } else {
-        4
     }
 }
 
