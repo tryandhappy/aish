@@ -453,16 +453,12 @@ pub fn read_confirm_key() -> Option<ConfirmChoice> {
     }
 }
 
-/// マッチした選択肢を `[X]\n` の形でターミナルに描画する。
+/// 押されたキーをそのまま `\n` 付きでターミナルに描画する。
 /// raw mode は ECHO off なので、確定したことをユーザに見せるために手動で echo する。
-fn echo_confirm(choice: ConfirmChoice) {
-    let label = match choice {
-        ConfirmChoice::Yes => "Y",
-        ConfirmChoice::No => "N",
-        ConfirmChoice::All => "A",
-    };
+/// `y` / `Y` などは押下の大小をそのまま反映し、`match` で大文字固定にはしない。
+fn echo_confirm(c: char) {
     let mut stdout = io::stdout();
-    let _ = write!(stdout, "{label}\x1b[0m\n");
+    let _ = write!(stdout, "{c}\x1b[0m\n");
     let _ = stdout.flush();
 }
 
@@ -530,7 +526,8 @@ fn read_confirm_key_unix() -> Option<ConfirmChoice> {
             0x0a | 0x0d => {
                 // Enter (LF / CR): 空入力 = デフォルト Yes (CLAUDE.md 仕様)。
                 // `b < 0x20` の制御文字フィルタより先に処理しないと捨てられる。
-                echo_confirm(ConfirmChoice::Yes);
+                // 入力 char が無いのでデフォルト表記の 'Y' を echo する。
+                echo_confirm('Y');
                 return Some(ConfirmChoice::Yes);
             }
             _ if b < 0x20 => {
@@ -560,7 +557,7 @@ fn read_confirm_key_unix() -> Option<ConfirmChoice> {
                     None => continue,
                 };
                 if let Some(choice) = match_confirm_char(c) {
-                    echo_confirm(choice);
+                    echo_confirm(c);
                     return Some(choice);
                 }
                 // 未知キーは無視 (echo もしない) して次のキーを待つ
