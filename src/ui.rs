@@ -821,6 +821,11 @@ fn read_minibuffer_line(
     let mut hist_idx: usize = hist_len;
     let mut saved_input: Vec<char> = Vec::new();
 
+    // bracketed paste 状態。PasteStart..PasteEnd の間は改行を送信ではなく挿入に回す。
+    // prev_was_cr は CRLF (\r\n) を 1 つの \n に正規化するための直前 CR 追跡。
+    let mut pasting = false;
+    let mut prev_was_cr = false;
+
     redraw_minibuffer(
         stdout, term_rows, term_cols, max_rows, label, label_width, input_bg,
         &chars, cursor_pos, &mut rows_used, total_scrolled,
@@ -828,6 +833,41 @@ fn read_minibuffer_line(
 
     loop {
         let ev = input::next_event(&mut src);
+
+        // bracketed paste 中: 改行は送信せずバッファに挿入 (複数行入力)。ペースト本文中の
+        // 制御シーケンスで誤って cancel/submit しないよう、PasteEnd / Enter / Char 以外は無視。
+        if pasting {
+            match ev.tok {
+                Tok::PasteEnd => {
+                    pasting = false;
+                    prev_was_cr = false;
+                }
+                Tok::Enter => {
+                    // CRLF (\r\n) は 1 つの \n に正規化。\r 直後の \n はスキップする。
+                    if ev.raw == [b'\n'] && prev_was_cr {
+                        prev_was_cr = false;
+                    } else {
+                        chars.insert(cursor_pos, '\n');
+                        cursor_pos += 1;
+                        prev_was_cr = ev.raw == [b'\r'];
+                    }
+                }
+                Tok::Char(c) => {
+                    chars.insert(cursor_pos, c);
+                    cursor_pos += 1;
+                    prev_was_cr = false;
+                }
+                _ => {
+                    prev_was_cr = false;
+                }
+            }
+            redraw_minibuffer(
+                stdout, term_rows, term_cols, max_rows, label, label_width, input_bg,
+                &chars, cursor_pos, &mut rows_used, total_scrolled,
+            );
+            continue;
+        }
+
         match ev.tok {
             // EOF: 入力があれば確定、無ければキャンセル
             Tok::Eof => {
@@ -846,6 +886,8 @@ fn read_minibuffer_line(
                 }
                 return (Some(s), rows_used);
             }
+            // bracketed paste 開始: 以降 PasteEnd まで改行は送信せず挿入扱い (複数行入力)
+            Tok::PasteStart => pasting = true,
             // Alt+Enter / 修飾 Enter (CSI u): 改行を挿入
             Tok::AltEnter | Tok::ModEnter => {
                 chars.insert(cursor_pos, '\n');

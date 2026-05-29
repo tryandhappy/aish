@@ -58,6 +58,10 @@ pub enum Tok {
     /// フォーカス in/out (`ESC [ I` / `ESC [ O`)。
     FocusIn,
     FocusOut,
+    /// bracketed paste 開始 / 終了 (`ESC [ 200 ~` / `ESC [ 201 ~`)。
+    /// minibuffer はこの間の改行を送信ではなくバッファ挿入 (複数行入力) として扱う。
+    PasteStart,
+    PasteEnd,
     /// デコードできなかった生バイト (invalid UTF-8 lead 等)。raw に元バイト。
     Bytes,
     /// 入力終端 (EOF / fd エラー)。
@@ -163,6 +167,9 @@ fn classify_csi(params: &[u8], final_byte: u8) -> Tok {
         return Tok::ModEnter;
     }
     match (params, final_byte) {
+        // bracketed paste マーカー (端末が ESC[?2004h 有効時にペースト本文を囲む)
+        (b"200", b'~') => Tok::PasteStart,
+        (b"201", b'~') => Tok::PasteEnd,
         (b"", b'A') => Tok::Up,
         (b"", b'B') => Tok::Down,
         (b"", b'C') => Tok::Right,
@@ -410,6 +417,30 @@ mod tests {
     fn focus_events() {
         assert_eq!(decode_all(b"\x1b[I"), vec![Tok::FocusIn]);
         assert_eq!(decode_all(b"\x1b[O"), vec![Tok::FocusOut]);
+    }
+
+    #[test]
+    fn bracketed_paste_markers() {
+        assert_eq!(decode_all(b"\x1b[200~"), vec![Tok::PasteStart]);
+        assert_eq!(decode_all(b"\x1b[201~"), vec![Tok::PasteEnd]);
+    }
+
+    #[test]
+    fn bracketed_paste_sequence() {
+        // 複数行ペースト: 改行 (\r) はマーカー間に Enter として届く。
+        // minibuffer 側がこの Enter を「送信」ではなく「改行挿入」に振り分ける。
+        assert_eq!(
+            decode_all(b"\x1b[200~ab\rcd\x1b[201~"),
+            vec![
+                Tok::PasteStart,
+                Tok::Char('a'),
+                Tok::Char('b'),
+                Tok::Enter,
+                Tok::Char('c'),
+                Tok::Char('d'),
+                Tok::PasteEnd,
+            ]
+        );
     }
 
     #[test]
