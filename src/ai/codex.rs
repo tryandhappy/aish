@@ -10,18 +10,18 @@ use crate::config::{AiConfig, LogConfig};
 /// これを付けないと codex は内部で shell 等を実行して結果だけを返してしまい、
 /// aish の「提案 → 確認 → 実行」モデルを迂回する。
 const DISABLE_TOOL_FEATURES: &[&str] = &[
-    "shell_tool",                  // shell 実行
-    "unified_exec",                // 別系統の exec
-    "browser_use",                 // ブラウザ操作
-    "computer_use",                // computer use
-    "multi_agent",                 // sub-agent (sub-agent がツールを持つ恐れ)
-    "image_generation",            // 画像生成
-    "tool_search",                 // ツール探索
-    "tool_suggest",                // ツール提案
-    "plugins",                     // プラグイン (任意ツール経由)
-    "apps",                        // app 連携
+    "shell_tool",                   // shell 実行
+    "unified_exec",                 // 別系統の exec
+    "browser_use",                  // ブラウザ操作
+    "computer_use",                 // computer use
+    "multi_agent",                  // sub-agent (sub-agent がツールを持つ恐れ)
+    "image_generation",             // 画像生成
+    "tool_search",                  // ツール探索
+    "tool_suggest",                 // ツール提案
+    "plugins",                      // プラグイン (任意ツール経由)
+    "apps",                         // app 連携
     "skill_mcp_dependency_install", // MCP 依存インストール
-    "tool_call_mcp_elicitation",   // MCP ツール呼び出し
+    "tool_call_mcp_elicitation",    // MCP ツール呼び出し
 ];
 
 /// Codex CLI (`codex exec`) backend。
@@ -116,7 +116,12 @@ impl AiBackend for CodexBackend {
                 )
             }
         } else {
-            build_full_prompt(&self.system_prompt, &[], req.terminal_context, req.user_prompt)
+            build_full_prompt(
+                &self.system_prompt,
+                &[],
+                req.terminal_context,
+                req.user_prompt,
+            )
         };
 
         let last_msg_path = unique_tmp_path(".txt");
@@ -275,8 +280,10 @@ mod tests {
     #[test]
     fn parse_uuid_rejects_non_uuid() {
         assert!(parse_codex_session_uuid("rollout-foo-bar.jsonl").is_none());
-        assert!(parse_codex_session_uuid("notrollout-019dc3e5-954b-7bb1-be7f-6549613b7488.jsonl")
-            .is_none());
+        assert!(
+            parse_codex_session_uuid("notrollout-019dc3e5-954b-7bb1-be7f-6549613b7488.jsonl")
+                .is_none()
+        );
         assert!(parse_codex_session_uuid("rollout-2026-04-25T18-08-16.jsonl").is_none());
     }
 }

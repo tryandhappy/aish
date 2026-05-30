@@ -239,11 +239,14 @@ impl AiBackend for ClaudeBackend {
         };
 
         let ai_response = match result_value {
-            serde_json::Value::Object(_) => serde_json::from_value::<AiResponse>(result_value.clone())
-                .unwrap_or_else(|_| AiResponse {
-                    message: result_value.to_string(),
-                    commands: vec![],
-                }),
+            serde_json::Value::Object(_) => {
+                serde_json::from_value::<AiResponse>(result_value.clone()).unwrap_or_else(|_| {
+                    AiResponse {
+                        message: result_value.to_string(),
+                        commands: vec![],
+                    }
+                })
+            }
             serde_json::Value::String(s) => {
                 let s = s.trim();
                 if s.is_empty() {

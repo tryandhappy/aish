@@ -86,12 +86,7 @@ pub fn check_and_clear_sigwinch() -> bool {
 /// - OSC 0/1/2: アイコン名 / ウィンドウタイトル
 /// - OSC 10/11/12: 前景 / 背景 / カーソル色 (色指定が空でない場合のみ送る)
 /// PTY のコンテンツ領域には一切干渉しないため、fullscreen アプリやスクロール領域と衝突しない。
-pub fn setup_terminal_indicator(
-    title: &str,
-    fg_color: &str,
-    bg_color: &str,
-    cursor_color: &str,
-) {
+pub fn setup_terminal_indicator(title: &str, fg_color: &str, bg_color: &str, cursor_color: &str) {
     let mut stdout = io::stdout();
     // OSC 0: icon name + window title (両方をまとめてセット)
     let _ = write!(stdout, "\x1b]0;{title}\x07");
@@ -207,12 +202,12 @@ pub fn build_color_start(color: &str) -> String {
 /// `BackendKind::generic_meta()` を直接見て recipe.color を取り出す。
 fn backend_color_code(name: &str) -> u8 {
     match name {
-        "claude" => 208,    // orange (Anthropic 寄り)
-        "codex" => 39,      // cyan-blue
-        "gemini" => 135,    // purple
-        "qwen" => 198,      // pink-magenta
-        "cursor" => 220,    // amber/gold (Cursor brand 寄り)
-        "copilot" => 41,    // emerald green (GitHub 寄り)
+        "claude" => 208, // orange (Anthropic 寄り)
+        "codex" => 39,   // cyan-blue
+        "gemini" => 135, // purple
+        "qwen" => 198,   // pink-magenta
+        "cursor" => 220, // amber/gold (Cursor brand 寄り)
+        "copilot" => 41, // emerald green (GitHub 寄り)
         _ => 208,
     }
 }
@@ -358,12 +353,7 @@ pub fn print_ai_commands(commands: &[String], display: &DisplayConfig) {
     io::stdout().flush().ok();
 }
 
-pub fn print_single_confirm_prompt(
-    cmd: &str,
-    index: usize,
-    total: usize,
-    display: &DisplayConfig,
-) {
+pub fn print_single_confirm_prompt(cmd: &str, index: usize, total: usize, display: &DisplayConfig) {
     let color = &display.confirm_color;
     // 残コマンドがある (= 最後ではない) ときだけ [Y/n/a] を出す。
     // a = 残り全部を自動承認 (apt / sudo の慣習)。
@@ -378,9 +368,7 @@ pub fn print_single_confirm_prompt(
     // これを入れないと混ざってしまう。1つ目の前は空行になるが
     // `Proposed commands:` リストとの区切りになり視認性が上がる。
     // cmd 前後のスペースは色を付けないように、各セグメント境界で \x1b[0m リセットする。
-    print!(
-        "\n{color}{label_on}Exec?\x1b[0m {color}{cmd}\x1b[0m {color}{hl_on}[{options}]\x1b[0m "
-    );
+    print!("\n{color}{label_on}Exec?\x1b[0m {color}{cmd}\x1b[0m {color}{hl_on}[{options}]\x1b[0m ");
     io::stdout().flush().ok();
 }
 
@@ -417,7 +405,11 @@ fn read_line_cooked() -> Option<String> {
     let mut line = String::new();
     match io::stdin().read_line(&mut line) {
         Ok(0) => None,
-        Ok(_) => Some(line.trim_end_matches('\n').trim_end_matches('\r').to_string()),
+        Ok(_) => Some(
+            line.trim_end_matches('\n')
+                .trim_end_matches('\r')
+                .to_string(),
+        ),
         Err(_) => None,
     }
 }
@@ -715,8 +707,7 @@ fn redraw_minibuffer(
     let indent_width = label_width;
     let avail_cont = total_cols.saturating_sub(indent_width).max(1);
 
-    let (vlines, cvline, cvcol) =
-        compute_visual_layout(chars, cursor_pos, avail_first, avail_cont);
+    let (vlines, cvline, cvcol) = compute_visual_layout(chars, cursor_pos, avail_first, avail_cont);
     let total_vlines = vlines.len();
     let visible_count = total_vlines.min(max_rows as usize).max(1);
 
@@ -827,8 +818,17 @@ fn read_minibuffer_line(
     let mut prev_was_cr = false;
 
     redraw_minibuffer(
-        stdout, term_rows, term_cols, max_rows, label, label_width, input_bg,
-        &chars, cursor_pos, &mut rows_used, total_scrolled,
+        stdout,
+        term_rows,
+        term_cols,
+        max_rows,
+        label,
+        label_width,
+        input_bg,
+        &chars,
+        cursor_pos,
+        &mut rows_used,
+        total_scrolled,
     );
 
     loop {
@@ -862,8 +862,17 @@ fn read_minibuffer_line(
                 }
             }
             redraw_minibuffer(
-                stdout, term_rows, term_cols, max_rows, label, label_width, input_bg,
-                &chars, cursor_pos, &mut rows_used, total_scrolled,
+                stdout,
+                term_rows,
+                term_cols,
+                max_rows,
+                label,
+                label_width,
+                input_bg,
+                &chars,
+                cursor_pos,
+                &mut rows_used,
+                total_scrolled,
             );
             continue;
         }
@@ -985,8 +994,17 @@ fn read_minibuffer_line(
         }
 
         redraw_minibuffer(
-            stdout, term_rows, term_cols, max_rows, label, label_width, input_bg,
-            &chars, cursor_pos, &mut rows_used, total_scrolled,
+            stdout,
+            term_rows,
+            term_cols,
+            max_rows,
+            label,
+            label_width,
+            input_bg,
+            &chars,
+            cursor_pos,
+            &mut rows_used,
+            total_scrolled,
         );
     }
 }
@@ -1025,7 +1043,14 @@ fn show_minibuffer(
     }
 
     let (result, rows_used) = read_minibuffer_line(
-        stdout, rows, cols, max_rows, aish_label, label_width, input_bg, &mut total_scrolled,
+        stdout,
+        rows,
+        cols,
+        max_rows,
+        aish_label,
+        label_width,
+        input_bg,
+        &mut total_scrolled,
     );
 
     // DECSTBM をフルリセット (1..rows)、ミニバッファが使用した追加行をクリア

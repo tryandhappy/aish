@@ -135,12 +135,7 @@ impl AiBackend for GenericCliBackend {
         } else {
             // system_prompt_inline=false: aish 側で system prompt を一切付けない。
             // 利用者が CLI 側 (config file 等) で system prompt を管理する想定。
-            build_full_prompt(
-                "",
-                &self.history,
-                req.terminal_context,
-                req.user_prompt,
-            )
+            build_full_prompt("", &self.history, req.terminal_context, req.user_prompt)
         };
 
         // === args 組み立て ===
@@ -233,8 +228,7 @@ impl AiBackend for GenericCliBackend {
         // 応答テキスト → AiResponse:
         // - assistant_text が取れていればそれを lossy パース
         // - 取れなければ生 stdout を lossy パース
-        let response =
-            parse_ai_response_lossy(assistant_text.as_deref().unwrap_or(&stdout));
+        let response = parse_ai_response_lossy(assistant_text.as_deref().unwrap_or(&stdout));
 
         // native resume を使わない backend は内部 history に積む (gemini/qwen と同じ)。
         if !self.uses_native_resume() {

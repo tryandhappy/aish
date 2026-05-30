@@ -1,6 +1,6 @@
 use super::common::{
-    build_full_prompt, build_system_prompt, expand_tilde, extract_json,
-    extract_model_from_args, parse_ai_response_lossy, run_cli_capture_stdout,
+    build_full_prompt, build_system_prompt, expand_tilde, extract_json, extract_model_from_args,
+    parse_ai_response_lossy, run_cli_capture_stdout,
 };
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
 use crate::config::{AiConfig, LogConfig};
@@ -113,7 +113,12 @@ impl AiBackend for CursorBackend {
                 )
             }
         } else {
-            build_full_prompt(&self.system_prompt, &[], req.terminal_context, req.user_prompt)
+            build_full_prompt(
+                &self.system_prompt,
+                &[],
+                req.terminal_context,
+                req.user_prompt,
+            )
         };
 
         let mut args: Vec<String> = vec![
@@ -189,10 +194,7 @@ mod tests {
     fn unwraps_result_field() {
         let s = r#"{"type":"result","subtype":"success","is_error":false,"result":"{\"message\":\"hi\",\"commands\":[]}","session_id":"abc-123"}"#;
         let (result, sid) = unwrap_cursor_envelope(s);
-        assert_eq!(
-            result.as_deref(),
-            Some(r#"{"message":"hi","commands":[]}"#)
-        );
+        assert_eq!(result.as_deref(), Some(r#"{"message":"hi","commands":[]}"#));
         assert_eq!(sid.as_deref(), Some("abc-123"));
     }
 

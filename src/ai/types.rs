@@ -98,10 +98,8 @@ impl BackendKind {
             .map(|p| {
                 // display_name は recipe.name そのまま (flat namespace)。
                 // native 予約語との衝突は config::validate_providers で先に reject されている。
-                let display =
-                    Box::leak(p.name.clone().into_boxed_str()) as &'static str;
-                let binary =
-                    Box::leak(p.binary.clone().into_boxed_str()) as &'static str;
+                let display = Box::leak(p.name.clone().into_boxed_str()) as &'static str;
+                let binary = Box::leak(p.binary.clone().into_boxed_str()) as &'static str;
                 let recipe = Box::leak(Box::new(p.clone())) as &'static ProviderRecipe;
                 GenericMeta {
                     recipe,
@@ -145,8 +143,10 @@ impl BackendKind {
             }
         }
         // 不一致: 利用可能候補を一覧で示す。
-        let mut available: Vec<String> =
-            Self::all_native().iter().map(|k| k.as_str().to_string()).collect();
+        let mut available: Vec<String> = Self::all_native()
+            .iter()
+            .map(|k| k.as_str().to_string())
+            .collect();
         if let Some(reg) = GENERIC_REGISTRY.get() {
             available.extend(reg.iter().map(|m| m.recipe.name.clone()));
         }
@@ -167,10 +167,7 @@ impl BackendKind {
             BackendKind::Qwen => "qwen",
             BackendKind::Cursor => "cursor",
             BackendKind::Copilot => "copilot",
-            BackendKind::Generic(_) => self
-                .generic_meta()
-                .map(|m| m.display_name)
-                .unwrap_or("?"),
+            BackendKind::Generic(_) => self.generic_meta().map(|m| m.display_name).unwrap_or("?"),
         }
     }
 
@@ -237,10 +234,19 @@ impl BackendKind {
 pub enum AiError {
     Cancelled,
     Spawn(std::io::Error),
-    NonZeroExit { stderr: String },
-    EmptyOutput { stderr: String },
-    NoJson { raw: String },
-    ParseFailure { raw: String, source: serde_json::Error },
+    NonZeroExit {
+        stderr: String,
+    },
+    EmptyOutput {
+        stderr: String,
+    },
+    NoJson {
+        raw: String,
+    },
+    ParseFailure {
+        raw: String,
+        source: serde_json::Error,
+    },
     Other(String),
 }
 

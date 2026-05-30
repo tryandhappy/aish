@@ -291,7 +291,10 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
 
     #[cfg(unix)]
     unsafe {
-        libc::signal(libc::SIGWINCH, sigwinch_handler as *const () as libc::sighandler_t);
+        libc::signal(
+            libc::SIGWINCH,
+            sigwinch_handler as *const () as libc::sighandler_t,
+        );
     }
 
     let mut config = config::Config::load(args.config_path.as_deref())?;
@@ -328,8 +331,7 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
         // 走らず端末が raw モードで残るので、必ず Err で抜けて main 側のクリーンアップを通す。
         return Err(match kind {
             ai::BackendKind::Claude => {
-                "Please install Claude Code.\ncurl -fsSL https://claude.ai/install.sh | bash"
-                    .into()
+                "Please install Claude Code.\ncurl -fsSL https://claude.ai/install.sh | bash".into()
             }
             other => format!(
                 "Backend `{}` is not installed or not on PATH.",
@@ -394,7 +396,11 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
     let title = if args.ssh_args.is_empty() {
         config.display.shell_prefix_label.clone()
     } else {
-        format!("{} {}", config.display.shell_prefix_label, args.ssh_args.join(" "))
+        format!(
+            "{} {}",
+            config.display.shell_prefix_label,
+            args.ssh_args.join(" ")
+        )
     };
     ui::setup_terminal_indicator(
         &title,
@@ -567,10 +573,8 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                             ring_buffer.append_text(&format!(
                                 "\n[aish→{kind_label}]> {last_prompt_for_annotation}\n"
                             ));
-                            ring_buffer.append_text(&format!(
-                                "[ai/{kind_label}]> {}\n",
-                                response.message
-                            ));
+                            ring_buffer
+                                .append_text(&format!("[ai/{kind_label}]> {}\n", response.message));
                             if !response.commands.is_empty() {
                                 ring_buffer.append_text(&format!(
                                     "[ai/{kind_label} suggests] {}\n",
@@ -770,7 +774,8 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                     let output = if first {
                         first = false;
                         // 先頭の改行を除去してプロンプトだけ表示
-                        let trimmed = data.iter()
+                        let trimmed = data
+                            .iter()
                             .position(|&b| b != b'\r' && b != b'\n')
                             .unwrap_or(data.len());
                         &data[trimmed..]
@@ -851,7 +856,8 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
 
 fn print_help() {
     let version = env!("CARGO_PKG_VERSION");
-    println!("\
+    println!(
+        "\
 aish v{version} — CLI SSH + AI
 
 USAGE:
@@ -904,7 +910,8 @@ CONFIG:
     詳細は config.toml.example および SPEC.md を参照。
 
 REPOSITORY:
-    https://github.com/tryandhappy/aish");
+    https://github.com/tryandhappy/aish"
+    );
 
     // 末尾に ssh --help (= ssh 自身の usage) を追記。SSH_ARGS にどんな引数が
     // 渡せるかをそのまま見せる。ssh が PATH に無い・出力が空ならスキップ。
@@ -953,10 +960,7 @@ fn main() {
             match result {
                 Ok(info) => {
                     if let Some(cmd) = info.resume_command {
-                        eprintln!(
-                            "\nResume this {} session with:\n  {cmd}",
-                            info.backend_name
-                        );
+                        eprintln!("\nResume this {} session with:\n  {cmd}", info.backend_name);
                     }
                 }
                 Err(e) => {

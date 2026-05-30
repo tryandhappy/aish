@@ -186,10 +186,7 @@ mod tests {
         buf.append(b"; shared-2");
         // Claude は差分のみ、他は全部。
         assert_eq!(buf.get_unsent_for(BackendKind::Claude), "; shared-2");
-        assert_eq!(
-            buf.get_unsent_for(BackendKind::Codex),
-            "shared-1; shared-2"
-        );
+        assert_eq!(buf.get_unsent_for(BackendKind::Codex), "shared-1; shared-2");
     }
 
     #[test]

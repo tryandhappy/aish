@@ -276,10 +276,7 @@ impl AiConfig {
                 return Err("[[ai.providers]] entry has empty `name`".to_string());
             }
             if p.binary.is_empty() {
-                return Err(format!(
-                    "[[ai.providers]] `{}` has empty `binary`",
-                    p.name
-                ));
+                return Err(format!("[[ai.providers]] `{}` has empty `binary`", p.name));
             }
             if reserved.contains(p.name.as_str()) {
                 return Err(format!(
@@ -288,10 +285,7 @@ impl AiConfig {
                 ));
             }
             if !seen.insert(p.name.clone()) {
-                return Err(format!(
-                    "[[ai.providers]] has duplicate name `{}`",
-                    p.name
-                ));
+                return Err(format!("[[ai.providers]] has duplicate name `{}`", p.name));
             }
             if !matches!(p.parse.as_str(), "lossy" | "extract_json" | "jsonl") {
                 return Err(format!(
@@ -314,7 +308,6 @@ impl AiConfig {
         }
         Ok(())
     }
-
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -684,5 +677,4 @@ prompt_delivery = "flag"
         let err = config.ai.validate_providers().unwrap_err();
         assert!(err.contains("prompt_flag"));
     }
-
 }

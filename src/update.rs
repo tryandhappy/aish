@@ -12,9 +12,7 @@ fn detect_target() -> Result<&'static str, String> {
 }
 
 fn fetch_latest_version() -> Result<String, Box<dyn std::error::Error>> {
-    let url = format!(
-        "https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest"
-    );
+    let url = format!("https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest");
     let output = Command::new("curl")
         .args(["-fsSL", "-H", "Accept: application/vnd.github+json", &url])
         .output()?;
@@ -112,10 +110,9 @@ pub fn run_update() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     if expected != actual {
         let _ = std::fs::remove_file(&tmpfile);
-        return Err(format!(
-            "Checksum mismatch.\n  expected: {expected}\n  actual:   {actual}"
-        )
-        .into());
+        return Err(
+            format!("Checksum mismatch.\n  expected: {expected}\n  actual:   {actual}").into(),
+        );
     }
 
     // Install to current executable path
@@ -126,11 +123,12 @@ pub fn run_update() -> Result<(), Box<dyn std::error::Error>> {
     // Set executable permission
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmpfile, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| {
+        std::fs::set_permissions(&tmpfile, std::fs::Permissions::from_mode(0o755)).map_err(
+            |e| {
                 let _ = std::fs::remove_file(&tmpfile);
                 format!("Failed to set permissions: {e}")
-            })?;
+            },
+        )?;
     }
 
     // Replace current binary
@@ -162,8 +160,7 @@ mod tests {
 
     #[test]
     fn parse_hash_with_filename() {
-        let line =
-            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789  some-file";
+        let line = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789  some-file";
         assert_eq!(
             parse_sha256_hash(line).unwrap(),
             "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"

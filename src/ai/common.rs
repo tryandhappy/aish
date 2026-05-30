@@ -523,7 +523,10 @@ mod tests {
     #[test]
     fn extract_model_long_separated() {
         let args = vec!["--model".into(), "claude-sonnet-4-6".into()];
-        assert_eq!(extract_model_from_args(&args), Some("claude-sonnet-4-6".into()));
+        assert_eq!(
+            extract_model_from_args(&args),
+            Some("claude-sonnet-4-6".into())
+        );
     }
 
     #[test]
@@ -535,7 +538,10 @@ mod tests {
     #[test]
     fn extract_model_long_eq() {
         let args = vec!["--model=gemini-2.5-pro".into()];
-        assert_eq!(extract_model_from_args(&args), Some("gemini-2.5-pro".into()));
+        assert_eq!(
+            extract_model_from_args(&args),
+            Some("gemini-2.5-pro".into())
+        );
     }
 
     #[test]
@@ -553,16 +559,17 @@ mod tests {
     #[test]
     fn jsonl_extracts_content_and_session() {
         let jsonl = concat!(
-            r#"{"type":"session.start","data":{}}"#, "\n",
-            r#"{"type":"user.message","data":{"content":"hi"}}"#, "\n",
-            r#"{"type":"assistant.message","data":{"content":"hello world"}}"#, "\n",
-            r#"{"type":"result","sessionId":"abc-123"}"#, "\n",
+            r#"{"type":"session.start","data":{}}"#,
+            "\n",
+            r#"{"type":"user.message","data":{"content":"hi"}}"#,
+            "\n",
+            r#"{"type":"assistant.message","data":{"content":"hello world"}}"#,
+            "\n",
+            r#"{"type":"result","sessionId":"abc-123"}"#,
+            "\n",
         );
-        let (content, sid) = parse_jsonl_with_paths(
-            jsonl,
-            "assistant.message:data.content",
-            "result:sessionId",
-        );
+        let (content, sid) =
+            parse_jsonl_with_paths(jsonl, "assistant.message:data.content", "result:sessionId");
         assert_eq!(content.as_deref(), Some("hello world"));
         assert_eq!(sid.as_deref(), Some("abc-123"));
     }
@@ -570,8 +577,10 @@ mod tests {
     #[test]
     fn jsonl_last_content_wins() {
         let jsonl = concat!(
-            r#"{"type":"assistant.message","data":{"content":"first"}}"#, "\n",
-            r#"{"type":"assistant.message","data":{"content":"second"}}"#, "\n",
+            r#"{"type":"assistant.message","data":{"content":"first"}}"#,
+            "\n",
+            r#"{"type":"assistant.message","data":{"content":"second"}}"#,
+            "\n",
         );
         let (content, _) = parse_jsonl_with_paths(jsonl, "assistant.message:data.content", "");
         assert_eq!(content.as_deref(), Some("second"));
@@ -581,9 +590,11 @@ mod tests {
     fn jsonl_skips_malformed_lines() {
         let jsonl = concat!(
             "garbage\n",
-            r#"{"type":"assistant.message","data":{"content":"ok"}}"#, "\n",
+            r#"{"type":"assistant.message","data":{"content":"ok"}}"#,
+            "\n",
             "{broken\n",
-            r#"{"type":"result","sessionId":"sid"}"#, "\n",
+            r#"{"type":"result","sessionId":"sid"}"#,
+            "\n",
         );
         let (content, sid) =
             parse_jsonl_with_paths(jsonl, "assistant.message:data.content", "result:sessionId");

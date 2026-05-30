@@ -112,7 +112,12 @@ impl AiBackend for CopilotBackend {
                 )
             }
         } else {
-            build_full_prompt(&self.system_prompt, &[], req.terminal_context, req.user_prompt)
+            build_full_prompt(
+                &self.system_prompt,
+                &[],
+                req.terminal_context,
+                req.user_prompt,
+            )
         };
 
         let mut args: Vec<String> = vec![

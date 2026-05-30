@@ -9,7 +9,11 @@ pub struct PtyHandler {
 }
 
 impl PtyHandler {
-    pub fn spawn_ssh(ssh_args: &[String], rows: u16, cols: u16) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn spawn_ssh(
+        ssh_args: &[String],
+        rows: u16,
+        cols: u16,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut cmd = CommandBuilder::new("ssh");
         for arg in ssh_args {
             cmd.arg(arg);
@@ -37,7 +41,11 @@ impl PtyHandler {
         Self::spawn_command(cmd, rows, cols)
     }
 
-    fn spawn_command(cmd: CommandBuilder, rows: u16, cols: u16) -> Result<Self, Box<dyn std::error::Error>> {
+    fn spawn_command(
+        cmd: CommandBuilder,
+        rows: u16,
+        cols: u16,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
             rows,
