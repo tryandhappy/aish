@@ -6,6 +6,9 @@ CLI SSH + AI (Claude Code)。ローカルシェル または SSH接続先サー�
 - 言語: Rust
 - ビルド: `export PATH="$HOME/.cargo/bin:$PATH" && cargo build`
 - 対応OS: Linux (Ubuntu), macOS, Windows（UI部はUnix限定、Windowsは `read_line_cooked` フォールバック）
+- CI: `.github/workflows/ci.yml` が全 push で `cargo fmt --all -- --check` / `cargo clippy --all-targets -- -D warnings` (ubuntu) と `cargo test` (ubuntu + macOS) を回す。**push 前にこの 3 つをローカルで通すこと**。`release.yml` (タグ push でのリリース) とは独立。
+  - **テスト実行は `cargo test`。`--lib` を付けない**: aish は bin-only crate (`src/lib.rs` なし) なので `cargo test --lib` はターゲット不在で 0 件になる。
+  - **clippy `-D warnings` は構造的 lint を一部 `#[allow(clippy::...)]` で抑制している** (`utf8_char_len` の `if_same_then_else`、minibuffer/echo の `write_with_newline`、`compute_visual_layout` の `needless_range_loop`、minibuffer 関数群の `too_many_arguments`、入力スレッドの `while_let_loop`)。いずれも trust-critical / 意図的なコードを温存するためで、**安易に外して writeln! 化やリファクタをしない** (CLAUDE.md「実装上の注意」の write! 形固定等と整合させるため)。
 
 ## 仕様
 

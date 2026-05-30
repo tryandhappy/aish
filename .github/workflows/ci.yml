@@ -4,6 +4,24 @@ name: CI
 on: push
 
 jobs:
+  # fmt / clippy は OS 非依存 (どちらも unix で結果ほぼ同一) なので ubuntu 1 回に集約し、
+  # macOS ランナーの消費を抑える。
+  lint:
+    name: Lint (fmt + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      # 構造的な clippy lint は trust-critical コードに #[allow] で抑制済み (src 参照)。
+      # ここを通すには新規コードでも warning ゼロを保つこと。
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
   test:
     name: Test (${{ matrix.os }})
     strategy:
