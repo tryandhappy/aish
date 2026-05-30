@@ -234,6 +234,9 @@ fn decode_utf8(src: &mut impl ByteSource, mut raw: Vec<u8>) -> InEvent {
 }
 
 /// UTF-8 の先頭バイトから文字のバイト長を返す。
+// b < 0x80 (ASCII) と継続バイト (b < 0xC0, 先頭としては不正) はどちらも長さ 1。
+// 意図的に同一の分岐なので if_same_then_else は許容する。
+#[allow(clippy::if_same_then_else)]
 fn utf8_char_len(b: u8) -> usize {
     if b < 0x80 {
         1

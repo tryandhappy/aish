@@ -85,6 +85,7 @@ pub fn check_and_clear_sigwinch() -> bool {
 /// ターミナルの "aish 動作中" 表示を OSC で設定する。
 /// - OSC 0/1/2: アイコン名 / ウィンドウタイトル
 /// - OSC 10/11/12: 前景 / 背景 / カーソル色 (色指定が空でない場合のみ送る)
+///
 /// PTY のコンテンツ領域には一切干渉しないため、fullscreen アプリやスクロール領域と衝突しない。
 pub fn setup_terminal_indicator(title: &str, fg_color: &str, bg_color: &str, cursor_color: &str) {
     let mut stdout = io::stdout();
@@ -455,6 +456,8 @@ pub fn read_confirm_key() -> Option<ConfirmChoice> {
 /// `y` / `Y` などは押下の大小をそのまま反映し、`match` で大文字固定にはしない。
 fn echo_confirm(c: char) {
     let mut stdout = io::stdout();
+    // CLAUDE.md: echo_confirm は match を持たず write!("{c}\x1b[0m\n") だけ (writeln! に置換しない)。
+    #[allow(clippy::write_with_newline)]
     let _ = write!(stdout, "{c}\x1b[0m\n");
     let _ = stdout.flush();
 }
@@ -574,6 +577,8 @@ fn visible_width(s: &str) -> usize {
 /// 入力を可視行にレイアウトする。
 /// 各要素は (start_char, end_char_exclusive, is_first_on_logical_line) を表す。
 /// cursor_vline, cursor_vcol はカーソルの可視行インデックスと左端からのカラムオフセット。
+// i は chars の index 兼 cursor 位置比較 (i == cursor_pos) / vlines 記録に使うので enumerate には置換しない。
+#[allow(clippy::needless_range_loop)]
 fn compute_visual_layout(
     chars: &[char],
     cursor_pos: usize,
@@ -689,6 +694,7 @@ fn query_cursor_position_dsr(stdout: &mut io::Stdout) -> Option<(u16, u16)> {
 /// 入力長に応じて縦方向に拡張し、DECSTBMを動的に調整する。
 /// 戻り値: 新しくミニバッファが占有する行数。
 #[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
 fn redraw_minibuffer(
     stdout: &mut io::Stdout,
     term_rows: u16,
@@ -742,6 +748,7 @@ fn redraw_minibuffer(
             let current_bottom = term_rows.saturating_sub(*rows_used).max(1);
             let _ = write!(stdout, "\x1b[{current_bottom};1H");
             for _ in 0..delta {
+                #[allow(clippy::write_with_newline)]
                 let _ = write!(stdout, "\n");
             }
             *total_scrolled = total_scrolled.saturating_add(delta);
@@ -790,6 +797,7 @@ fn redraw_minibuffer(
 /// 入力長に応じて縦方向に拡張し、最大 max_rows 行まで表示する。
 /// 戻り値は (入力テキスト, 最終的に占有した行数)。
 #[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
 fn read_minibuffer_line(
     stdout: &mut io::Stdout,
     term_rows: u16,
@@ -1037,6 +1045,7 @@ fn show_minibuffer(
     // cursor 復元に使う (入口 scroll + grow scroll の合計)。
     let mut total_scrolled: u16 = 0;
     if was_at_bottom {
+        #[allow(clippy::write_with_newline)]
         let _ = write!(stdout, "\n");
         let _ = stdout.flush();
         total_scrolled = 1;
@@ -1234,7 +1243,7 @@ mod tests {
     fn match_confirm_unknown_returns_none() {
         assert_eq!(match_confirm_char('x'), None);
         assert_eq!(match_confirm_char('1'), None);
-        assert_eq!(match_confirm_char('あ' as char), Some(ConfirmChoice::All)); // sanity
+        assert_eq!(match_confirm_char('あ'), Some(ConfirmChoice::All)); // sanity
         assert_eq!(match_confirm_char('い'), None);
         assert_eq!(match_confirm_char('や'), None); // "ya" は受け付けない
         assert_eq!(match_confirm_char('な'), None); // "na" も受け付けない

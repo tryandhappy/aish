@@ -112,6 +112,7 @@ pub struct GenericBackendConfig {
 /// - `mode`: `--mode <value>` の値 (`"plan"` / `"ask"`)。aish 用途では `"plan"` (read-only / propose-only) が推奨。
 /// - `sandbox`: `--sandbox <value>` の値 (`"enabled"` / `"disabled"`)。defense-in-depth。
 /// - `extra_args`: その他追加引数 (`--sandbox` 等を直接書いてもよい; 重複時は CLI の挙動次第)。
+///
 /// なお `--trust` は cursor-agent の headless モードで必須なので config からは指定不可で常に付与される。
 #[derive(Debug, Deserialize, Clone)]
 pub struct CursorBackendConfig {

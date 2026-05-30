@@ -172,7 +172,7 @@ fn debug_bytes(data: &[u8], max: usize) -> String {
             0x08 => s.push_str("\\b"),
             0x0c => s.push_str("\\f"),
             0x20..=0x7e => s.push(b as char),
-            _ => s.push_str(&format!("\\x{:02x}", b)),
+            _ => s.push_str(&format!("\\x{b:02x}")),
         }
     }
     if data.len() > max {
@@ -432,6 +432,8 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
     let (input_tx, input_rx) = mpsc::channel::<ui::InputEvent>();
     let input_bg = config.display.input_color.clone();
     let input_aish_label = aish_label.clone();
+    // recv() の Err(切断) で break する loop。while let に置換せず元の構造を保つ。
+    #[allow(clippy::while_let_loop)]
     thread::spawn(move || {
         loop {
             let request = match prompt_rx.recv() {
@@ -718,7 +720,7 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                                     thread::sleep(Duration::from_millis(20));
                                 }
 
-                                debug_log(&format!("exec end: chunks={}", chunk_count));
+                                debug_log(&format!("exec end: chunks={chunk_count}"));
 
                                 executed_summary.push(format!("`{cmd}`"));
                             }

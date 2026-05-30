@@ -163,7 +163,7 @@ mod tests {
     fn test_repeated_mark_sent_cycles() {
         let mut buf = RingBuffer::new();
         for i in 0..5 {
-            let payload = format!("chunk-{}", i);
+            let payload = format!("chunk-{i}");
             buf.append(payload.as_bytes());
             assert_eq!(buf.get_unsent_for(ANY), payload);
             buf.mark_sent_for(ANY);
