@@ -11,6 +11,9 @@
 # Codex CLI marker (空ファイル。codex 直接実行時に作られる)
 /.codex
 
+# Claude Code の worktree 作業領域 (ローカル専用。誤って submodule/gitlink 化されるのを防ぐ)
+.claude/worktrees/
+
 # IDE
 .vscode/
 .idea/
