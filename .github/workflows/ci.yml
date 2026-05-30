@@ -1,0 +1,21 @@
+name: CI
+
+# 全 push でテストを回す。release.yml (タグ push でのリリース) とは独立。
+on: push
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # aish は bin-only crate (src/lib.rs なし)。`cargo test --lib` だと
+      # ターゲット不在で 0 件になるので、必ず `cargo test` を使う。
+      - name: Test
+        run: cargo test
