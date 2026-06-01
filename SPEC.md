@@ -521,7 +521,7 @@ ordinal は `6 + index` (native の後ろに連番) で、ring_buffer の sent_m
 
 ## 12. セルフアップデート (`--update`)
 
-1. `std::env::consts::ARCH` で対応ターゲットを決定（`x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl`）。他は拒否。
+1. `std::env::consts::ARCH` で対応ターゲットを決定（`x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl`）。他は拒否。**`detect_target()` は OS を見ず ARCH のみで分岐し、常に linux-musl 名を返す**。そのため**macOS では `--update` は未対応**（release.yml は `*-apple-darwin` バイナリも配布するが、self-update は Linux musl 名でアセットを探しに行くので機能しない）。macOS で self-update を有効化するなら `detect_target()` に `std::env::consts::OS` 分岐を足し、darwin アセット名を返すよう拡張すること。
 2. `curl` で `https://api.github.com/repos/tryandhappy/aish/releases/latest` を叩いて `tag_name` を取得。
 3. 現バージョンと一致したら `"Already up to date."` で終了。
 4. `aish-{target}` を一時ファイルへダウンロード。
@@ -533,7 +533,7 @@ ordinal は `6 + index` (native の後ろに連番) で、ring_buffer の sent_m
 6. `chmod 0755` → 現在の実行ファイルパスへ `rename`（クロスFS時は `copy` + 一時削除）。
 7. 成功時 `"Updated to v{latest}"` 表示。
 
-CIワークフロー（`.github/workflows/release.yml`）側で `sha256sum aish-{target} > aish-{target}.sha256` を生成し、リリースアセットとして公開する。
+CIワークフロー（`.github/workflows/release.yml`）側で `aish-{target}.sha256` を生成し、リリースアセットとして公開する。release.yml の build matrix は Linux musl 2種（cross + deb/rpm）に加え macOS darwin 2種（`x86_64-apple-darwin` / `aarch64-apple-darwin`、cargo ビルド・tar.gz と生バイナリのみ）を作る。macOS ランナーには `sha256sum` が無いため checksum は `shasum -a 256` で生成するが、出力形式は `<64-hex>  <filename>`（空白2つ区切り）で `sha256sum` と同一なので self-update のパーサと互換。
 
 ---
 
