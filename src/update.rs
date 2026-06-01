@@ -4,10 +4,20 @@ const REPO_OWNER: &str = "tryandhappy";
 const REPO_NAME: &str = "aish";
 
 fn detect_target() -> Result<&'static str, String> {
-    match std::env::consts::ARCH {
-        "x86_64" => Ok("x86_64-unknown-linux-musl"),
-        "aarch64" => Ok("aarch64-unknown-linux-musl"),
-        arch => Err(format!("Unsupported architecture: {arch}")),
+    target_for(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// OS と ARCH からリリースアセットの target triple を決める純関数。
+/// `std::env::consts::{OS,ARCH}` はコンパイル時にビルドターゲットへ固定されるので、
+/// 配布バイナリは自分のプラットフォームを必ず正しく自己申告する (実行時探索は不要)。
+/// Rust の ARCH は Apple Silicon でも "aarch64" (shell の `uname -m` の "arm64" 問題は無い)。
+fn target_for(os: &str, arch: &str) -> Result<&'static str, String> {
+    match (os, arch) {
+        ("linux", "x86_64") => Ok("x86_64-unknown-linux-musl"),
+        ("linux", "aarch64") => Ok("aarch64-unknown-linux-musl"),
+        ("macos", "x86_64") => Ok("x86_64-apple-darwin"),
+        ("macos", "aarch64") => Ok("aarch64-apple-darwin"),
+        _ => Err(format!("Unsupported platform: {os}/{arch}")),
     }
 }
 
@@ -54,10 +64,17 @@ fn fetch_expected_sha256(url: &str) -> Result<String, Box<dyn std::error::Error>
 }
 
 fn compute_sha256(path: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let output = Command::new("sha256sum").arg(path).output()?;
+    // Linux は sha256sum (coreutils / Alpine は busybox applet)、macOS は sha256sum が
+    // 無いので shasum -a 256 にフォールバックする。sha256sum を先に試すことで Linux の
+    // 挙動は従来どおり維持し、コマンド不在 (spawn 失敗) のときだけ shasum に落ちる。
+    // 出力形式はどちらも "<64-hex>  <filename>" で parse_sha256_hash と互換。
+    let output = match Command::new("sha256sum").arg(path).output() {
+        Ok(o) => o,
+        Err(_) => Command::new("shasum").args(["-a", "256", path]).output()?,
+    };
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("sha256sum failed: {stderr}").into());
+        return Err(format!("checksum command failed: {stderr}").into());
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     parse_sha256_hash(&stdout).map_err(|e| e.into())
@@ -151,6 +168,37 @@ pub fn run_update() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn target_for_linux() {
+        assert_eq!(
+            target_for("linux", "x86_64").unwrap(),
+            "x86_64-unknown-linux-musl"
+        );
+        assert_eq!(
+            target_for("linux", "aarch64").unwrap(),
+            "aarch64-unknown-linux-musl"
+        );
+    }
+
+    #[test]
+    fn target_for_macos() {
+        assert_eq!(
+            target_for("macos", "x86_64").unwrap(),
+            "x86_64-apple-darwin"
+        );
+        assert_eq!(
+            target_for("macos", "aarch64").unwrap(),
+            "aarch64-apple-darwin"
+        );
+    }
+
+    #[test]
+    fn target_for_unsupported() {
+        assert!(target_for("windows", "x86_64").is_err());
+        assert!(target_for("linux", "riscv64").is_err());
+        assert!(target_for("freebsd", "x86_64").is_err());
+    }
 
     #[test]
     fn parse_hash_alone() {

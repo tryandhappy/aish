@@ -521,17 +521,19 @@ ordinal は `6 + index` (native の後ろに連番) で、ring_buffer の sent_m
 
 ## 12. セルフアップデート (`--update`)
 
-1. `std::env::consts::ARCH` で対応ターゲットを決定（`x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl`）。他は拒否。**`detect_target()` は OS を見ず ARCH のみで分岐し、常に linux-musl 名を返す**。そのため**macOS では `--update` は未対応**（release.yml は `*-apple-darwin` バイナリも配布するが、self-update は Linux musl 名でアセットを探しに行くので機能しない）。macOS で self-update を有効化するなら `detect_target()` に `std::env::consts::OS` 分岐を足し、darwin アセット名を返すよう拡張すること。
+1. `detect_target()` が `std::env::consts::{OS, ARCH}` の組で対応ターゲットを決定する（`target_for(os, arch)` 純関数に委譲）。マッピング: linux/x86_64 → `x86_64-unknown-linux-musl`、linux/aarch64 → `aarch64-unknown-linux-musl`、macos/x86_64 → `x86_64-apple-darwin`、macos/aarch64 → `aarch64-apple-darwin`。それ以外は `Unsupported platform: {os}/{arch}` で拒否。`OS`/`ARCH` はコンパイル時にビルドターゲットへ固定される定数なので、各バイナリは自分のプラットフォームを正しく自己申告する（Rust の ARCH は Apple Silicon でも `aarch64`）。
 2. `curl` で `https://api.github.com/repos/tryandhappy/aish/releases/latest` を叩いて `tag_name` を取得。
 3. 現バージョンと一致したら `"Already up to date."` で終了。
 4. `aish-{target}` を一時ファイルへダウンロード。
 5. **SHA256 チェックサム検証**:
    - 同じリリースから `aish-{target}.sha256` を取得（`sha256sum` 形式: `<64-hex>  <filename>`）。
-   - ローカルで `sha256sum` コマンドにより一時ファイルのハッシュを計算。
+   - ローカルで一時ファイルのハッシュを計算。**`sha256sum` を先に試し、spawn 失敗 (= macOS に `sha256sum` が無い) なら `shasum -a 256` にフォールバック**。出力形式は両者同一なので `parse_sha256_hash` で共通に扱える。
    - 一致しない場合は一時ファイルを削除してエラー終了（インストールは行わない）。
    - リリース側で `.sha256` が公開されていない場合もエラー終了（fail-closed）。
-6. `chmod 0755` → 現在の実行ファイルパスへ `rename`（クロスFS時は `copy` + 一時削除）。
+6. `chmod 0755` → 現在の実行ファイルパスへ `rename`（クロスFS時は `copy` + 一時削除）。書き込み先は `current_exe()` なのでインストール場所に依存せず、macOS でも実行中バイナリを置換できる（旧 inode は実行中プロセスが保持）。
 7. 成功時 `"Updated to v{latest}"` 表示。
+
+インストール先の規約: **手動インストール / self-update は `/usr/local/bin/aish`**（全 OS 共通。FHS でパッケージ管理外ソフトの正規の場所、かつ macOS の SIP で `/usr/bin` に書けない問題も回避。PATH 優先度も `/usr/bin` より高い）。一方 **deb/rpm パッケージの dest は `/usr/bin/aish`**（`Cargo.toml` の `[package.metadata.deb]`）で、こちらはパッケージマネージャ管理下なので FHS 上 `/usr/bin` が正しい。両者は意図的に置き場が異なる。
 
 CIワークフロー（`.github/workflows/release.yml`）側で `aish-{target}.sha256` を生成し、リリースアセットとして公開する。release.yml の build matrix は Linux musl 2種（cross + deb/rpm）に加え macOS darwin 2種（`x86_64-apple-darwin` / `aarch64-apple-darwin`、cargo ビルド・tar.gz と生バイナリのみ）を作る。macOS ランナーには `sha256sum` が無いため checksum は `shasum -a 256` で生成するが、出力形式は `<64-hex>  <filename>`（空白2つ区切り）で `sha256sum` と同一なので self-update のパーサと互換。
 

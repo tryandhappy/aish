@@ -50,10 +50,21 @@ https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
 
 ## インストール
 
+Linux / macOS (Intel・Apple Silicon) 共通。OS とアーキテクチャを自動判定して `/usr/local/bin` に入れます。
+
 ```bash
-sudo curl -fsSL -o /usr/bin/aish https://github.com/tryandhappy/aish/releases/latest/download/aish-$(uname -m)-unknown-linux-musl
-sudo chmod 755 /usr/bin/aish
+sudo mkdir -p /usr/local/bin
+ARCH=$(uname -m); case "$ARCH" in arm64|aarch64) ARCH=aarch64;; x86_64|amd64) ARCH=x86_64;; esac
+case "$(uname -s)" in
+  Linux)  TGT="$ARCH-unknown-linux-musl";;
+  Darwin) TGT="$ARCH-apple-darwin";;
+esac
+sudo curl -fsSL -o /usr/local/bin/aish \
+  "https://github.com/tryandhappy/aish/releases/latest/download/aish-$TGT"
+sudo chmod 755 /usr/local/bin/aish
 ```
+
+> 旧バージョンを `/usr/bin/aish` に入れていた場合: `aish --update` は実行中のファイルをそのまま上書きするので壊れません。`/usr/local/bin` へ移行したいときは旧 `/usr/bin/aish` を削除してください (PATH 上は `/usr/local/bin` が優先されます)。
 
 ## アップデート
 
@@ -62,10 +73,11 @@ sudo aish --update
 ```
 
 
-### ソースからビルド＆インストール (開発版を /usr/bin/aish に上書き)
+### ソースからビルド＆インストール (開発版を /usr/local/bin/aish に上書き)
 
 ```bash
-cargo build --release && sudo install -m 755 target/release/aish /usr/bin/aish
+sudo mkdir -p /usr/local/bin
+cargo build --release && sudo install -m 755 target/release/aish /usr/local/bin/aish
 ```
 
 
