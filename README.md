@@ -50,17 +50,23 @@ https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
 
 ## インストール
 
-Linux / macOS (Intel・Apple Silicon) 共通。OS とアーキテクチャを自動判定して `/usr/local/bin` に入れます。
+OS とアーキテクチャを自動判定して `/usr/local/bin` に入れます。
+
+### macOS (Intel・Apple Silicon)
 
 ```bash
 sudo mkdir -p /usr/local/bin
 ARCH=$(uname -m); case "$ARCH" in arm64|aarch64) ARCH=aarch64;; x86_64|amd64) ARCH=x86_64;; esac
-case "$(uname -s)" in
-  Linux)  TGT="$ARCH-unknown-linux-musl";;
-  Darwin) TGT="$ARCH-apple-darwin";;
-esac
 sudo curl -fsSL -o /usr/local/bin/aish \
-  "https://github.com/tryandhappy/aish/releases/latest/download/aish-$TGT"
+  "https://github.com/tryandhappy/aish/releases/latest/download/aish-$ARCH-apple-darwin"
+sudo chmod 755 /usr/local/bin/aish
+```
+
+### Linux
+
+```bash
+sudo curl -fsSL -o /usr/local/bin/aish \
+  "https://github.com/tryandhappy/aish/releases/latest/download/aish-$(uname -m)-unknown-linux-musl"
 sudo chmod 755 /usr/local/bin/aish
 ```
 
