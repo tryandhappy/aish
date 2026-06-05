@@ -486,15 +486,20 @@ fn read_confirm_key_unix() -> Option<ConfirmChoice> {
         let ev = input::next_event(&mut src);
         match ev.tok {
             Tok::Eof => return None,
-            // Ctrl+C / Ctrl+D: 残り全部キャンセル (改行を出してから抜ける)
-            Tok::Ctrl(0x03) | Tok::Ctrl(0x04) => {
+            // Ctrl+C / Ctrl+D / 単独 ESC: 残り全部キャンセル。
+            // **必ず改行を出してから抜ける**。これをしないと、直後にメインループが
+            // 送るシェルプロンプトのリフレッシュ (bash の `\r` + プロンプト文字列;
+            // しかも先頭の改行は drain 側で除去される) が、カーソルがまだ
+            // `Exec? ... [Y/n/a] ` 行末にあるためその行を上書きして消してしまう
+            // (ユーザ報告: キャンセルで最終行がプロンプトに上書きされる)。Y/n や
+            // Ctrl+C は元々 echo で改行が入るのでクリーンだったが、ESC だけ
+            // 「echo はしない」で改行が無く上書きしていた。ここで揃える。
+            Tok::Ctrl(0x03) | Tok::Ctrl(0x04) | Tok::Esc => {
                 let mut stdout = io::stdout();
                 let _ = stdout.write_all(b"\n");
                 let _ = stdout.flush();
                 return None;
             }
-            // 単独 ESC: キャンセル (echo はしない)
-            Tok::Esc => return None,
             // Enter = デフォルト Yes。入力 char が無いのでデフォルト表記の 'Y' を echo。
             Tok::Enter => {
                 echo_confirm('Y');
