@@ -552,6 +552,35 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                     last_pty_output = Instant::now();
                     continue;
                 }
+                // AI 対話を始める前に、bash readline に残っている打ちかけ
+                // (ユーザが Ctrl+/ の前に Enter せず入力していた未確定文字列) を
+                // 「カーソルが bash の readline モデルと同期しているこのタイミング」で
+                // 消去しておく。show_minibuffer が DSR でカーソルを bash プロンプト
+                // 位置 (= 打ちかけ末尾) に絶対座標復元した直後であり、ここまでに AI 出力は
+                // 一切描画していない (slash command は上の分岐で continue 済み) ので、
+                // 実カーソル == bash の readline カーソル である。この状態で Ctrl+A+Ctrl+K
+                // (0x01,0x0b) を送ると、bash の消去 redisplay (折り返した打ちかけを畳む
+                // ための cursor-up 等) は打ちかけ自身の行に正しく当たり、暴走しない。
+                //
+                // これを入れないと: 打ちかけが端末幅を超えて複数行に折り返している場合、
+                // 対話終了後リフレッシュ (この下の対話ループ末尾 = 約 770 行目) で送る
+                // 0x01 (Ctrl+A) に対し bash が `ESC[A` (cursor-up) を複数行ぶん吐き、その
+                // 上移動が「aish が stdout に出した Exec? 行 (bash は与り知らない)」の上で
+                // 起き、シェルプロンプトが Exec? 行を上書きしてしまう (= ユーザ報告の不具合)。
+                // 打ちかけを先に空にしておけば readline バッファは 1 行に収まり、末尾
+                // リフレッシュは cursor-up を一切吐かず、プロンプトは必ず新しい行に出る。
+                //
+                // 消去に伴う bash の redisplay バイトは pty_rx に届くので drain して取り除く
+                // (放置すると次の main loop drain で AI 出力の後に描画され画面が乱れる)。
+                // 画面には転送せず捨てる: 折り返した打ちかけは画面/scrollback に残るが
+                // (ユーザが打った内容の記録として無害)、cursor 制御エスケープを今 stdout に
+                // 流すと AI 出力の開始位置がずれるため。ring_buffer には従来どおり追記して
+                // 「PTY 出力は全て ring_buffer に入る」不変条件を保つ。
+                let _ = pty.write(&[0x01, 0x0b]);
+                thread::sleep(Duration::from_millis(150));
+                while let Ok(data) = pty_rx.try_recv() {
+                    ring_buffer.append(&data);
+                }
                 let context = ring_buffer.get_unsent_for(kind);
                 let spinner = ui::Spinner::start(&config.display);
                 let mut ai_result = ai_session.send(&ai::AiRequest {
