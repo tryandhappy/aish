@@ -105,6 +105,8 @@ aish user@example.com   # SSH接続 (sshと同じ引数)
 
 ## 対話シェルを常に aish にする
 
+### bash
+
 `~/.bashrc` の **末尾** に以下を追加。
 
 ```bash
@@ -113,6 +115,19 @@ if [[ $- == *i* && -z "$AISH_PID" ]]; then
     PROMPT_COMMAND='unset PROMPT_COMMAND; command -v aish >/dev/null && aish'
     # Exit closes the terminal.
     #PROMPT_COMMAND='unset PROMPT_COMMAND; command -v aish >/dev/null && exec aish'
+fi
+```
+
+### zsh (macOS のデフォルト)
+
+`~/.zprofile` の **末尾** に以下を追加。`.zprofile` はログインシェルでだけ読まれ、aish が起動する子 zsh はログインシェルではないので再帰しません (`AISH_PID` ガードは保険)。
+
+```zsh
+if [[ -o interactive && -z "$AISH_PID" ]]; then
+    # Exit returns to zsh.
+    command -v aish >/dev/null && aish
+    # Exit closes the terminal.
+    #command -v aish >/dev/null && exec aish
 fi
 ```
 
