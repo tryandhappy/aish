@@ -25,6 +25,7 @@ https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
 #### 対応OS
 
 - Linux (テストしているのは Ubuntu 24.04)
+- macOS (Intel・Apple Silicon)
 - Windows WSL2 (テストしているのは Ubuntu 24.04)
 
 #### 必要なコマンド
@@ -35,7 +36,7 @@ https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
   - [Google Gemini CLI](https://cloud.google.com/blog/ja/topics/developers-practitioners/introducing-gemini-cli/)
   - [Qwen Code](https://qwen.ai/qwencode)
 - OpenSSH (リモートSSH)
-- bash (ローカルシェル)
+- bash または zsh (ローカルシェル)
 - curl (aish --update)
 
 
