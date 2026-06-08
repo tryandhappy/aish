@@ -26,8 +26,8 @@ https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
 #### 対応OS
 
 - Linux (Testing on Ubuntu 24.04)
-- macOS (Intel・Apple Silicon)
 - Windows WSL2 (Testing on Ubuntu 24.04)
+- macOS (Intel・Apple Silicon) ※テスト不十分
 
 #### 必要なコマンド
 
@@ -44,10 +44,10 @@ https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
 
 ## 対応AI CLI
 
-- Claude Code CLI (API, Pro, Max, Team, Enterprise) ※FreeはClaude Codeが使えないので未対応 (デフォルト)
-- OpenAI ChatGPT Codex
-- Google Gemini
-- Qwen Code (未テスト)
+- Claude Code (API, Pro, Max, Team, Enterprise) ※FreeはClaude Codeが使えないので未対応 (デフォルト)
+- OpenAI ChatGPT Codex ※テスト不十分
+- Google Gemini ※テスト不十分
+- Qwen Code ※テスト不十分
 
 
 ## インストール
@@ -89,7 +89,7 @@ cargo build --release && sudo install -m 755 target/release/aish /usr/local/bin/
 ```
 
 
-## 基本的な使い方
+## 使い方
 
 AI Agentにログインして、aishコマンドを実行。あとはいつもどおりSSH/Terminal。
 AIへの問い合わせは Crtl + /
