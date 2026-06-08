@@ -53,6 +53,14 @@ https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
 
 OS とアーキテクチャを自動判定して `/usr/local/bin` に入れます。
 
+### Linux
+
+```bash
+sudo curl -fsSL -o /usr/local/bin/aish \
+  "https://github.com/tryandhappy/aish/releases/latest/download/aish-$(uname -m)-unknown-linux-musl"
+sudo chmod 755 /usr/local/bin/aish
+```
+
 ### macOS (Intel・Apple Silicon)
 
 ```bash
@@ -60,14 +68,6 @@ sudo mkdir -p /usr/local/bin
 ARCH=$(uname -m); case "$ARCH" in arm64|aarch64) ARCH=aarch64;; x86_64|amd64) ARCH=x86_64;; esac
 sudo curl -fsSL -o /usr/local/bin/aish \
   "https://github.com/tryandhappy/aish/releases/latest/download/aish-$ARCH-apple-darwin"
-sudo chmod 755 /usr/local/bin/aish
-```
-
-### Linux
-
-```bash
-sudo curl -fsSL -o /usr/local/bin/aish \
-  "https://github.com/tryandhappy/aish/releases/latest/download/aish-$(uname -m)-unknown-linux-musl"
 sudo chmod 755 /usr/local/bin/aish
 ```
 
