@@ -314,11 +314,57 @@ impl Drop for Spinner {
     }
 }
 
+/// AI 由来の 1 論理行 (改行を含まない前提) 内の制御文字を caret 記法で可視化する。
+/// C0 (0x00-0x1f) → `^X` (X = c + 0x40)、DEL (0x7f) → `^?`、その他 `char::is_control()`
+/// (C1 等) も `^?` に潰す。印字可能文字はそのまま。ESC は `^[`、CR は `^M`、TAB は `^I`。
+///
+/// 目的: AI が返す message / commands を端末に出すとき、`\r` や `\x1b[2K` 等で確認画面の
+/// 見た目を送信バイトとズラす偽装 (= ユーザが見て承認した物 ≠ 実際に送る物) を防ぐ。
+/// `\n` は呼び出し側が `.lines()` で分割済みなので通常ここには来ないが、来ても `^J` に可視化される。
+fn visualize_control_line(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_control() {
+            match c {
+                '\x7f' => out.push_str("^?"),
+                c if (c as u32) < 0x20 => {
+                    out.push('^');
+                    // 0x00..=0x1f → '@'(0x40)..='_'(0x5f)
+                    out.push((b'@' + c as u8) as char);
+                }
+                // C1 等の非 ASCII 制御文字はまとめて `^?` に潰す (稀)。
+                _ => out.push_str("^?"),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// シェルへ送る 1 コマンドとして不正な制御文字 (改行/CR/ESC/NUL/TAB/その他 C0/DEL/C1) を含むか。
+/// 正当な単一行シェルコマンドに制御文字は不要なので、含むものは承認 UI に載せず実行も拒否する
+/// (`src/main.rs` の実行ループ先頭ガード)。これにより `pty.write` には制御文字フリーの
+/// コマンドだけが到達し、「画面で承認した物 = サーバで実行される物」が保たれる。
+pub fn command_has_control_chars(cmd: &str) -> bool {
+    cmd.chars().any(|c| c.is_control())
+}
+
+/// 制御文字を含むため実行を拒否したコマンドを、可視化したうえで理由付きで表示する。
+pub fn print_rejected_command(cmd: &str, display: &DisplayConfig) {
+    let color = build_color_start(&display.confirm_color);
+    let safe = visualize_control_line(cmd);
+    println!("\n{color}制御文字を含むため実行しません: {safe}\x1b[K\x1b[0m");
+    io::stdout().flush().ok();
+}
+
 pub fn print_ai_message(message: &str, kind: BackendKind, display: &DisplayConfig) {
     let color = build_color_start(&display.ai_color);
     let label = format!("[ai/{}]> ", kind.as_str());
     let mut first = true;
     for line in message.lines() {
+        // AI 出力は未信頼。行内の制御文字を可視化してから描画する。
+        let line = visualize_control_line(line);
         if first {
             println!("{color}{label}{line}\x1b[K\x1b[0m");
             first = false;
@@ -349,6 +395,8 @@ pub fn print_ai_commands(commands: &[String], display: &DisplayConfig) {
     let color = build_color_start(&display.ai_color);
     println!("{color}Proposed commands:\x1b[K\x1b[0m");
     for (i, cmd) in commands.iter().enumerate() {
+        // AI 提案コマンドは未信頼。制御文字を可視化してから描画する。
+        let cmd = visualize_control_line(cmd);
         println!("{}  {}: {}\x1b[K\x1b[0m", color, i + 1, cmd);
     }
     io::stdout().flush().ok();
@@ -369,6 +417,8 @@ pub fn print_single_confirm_prompt(cmd: &str, index: usize, total: usize, displa
     // これを入れないと混ざってしまう。1つ目の前は空行になるが
     // `Proposed commands:` リストとの区切りになり視認性が上がる。
     // cmd 前後のスペースは色を付けないように、各セグメント境界で \x1b[0m リセットする。
+    // cmd は AI 由来 (未信頼) なので制御文字を可視化し、確認画面の見た目を送信バイトと一致させる。
+    let cmd = visualize_control_line(cmd);
     print!("\n{color}{label_on}Exec?\x1b[0m {color}{cmd}\x1b[0m {color}{hl_on}[{options}]\x1b[0m ");
     io::stdout().flush().ok();
 }
@@ -1162,6 +1212,48 @@ fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn visualize_control_line_cr() {
+        assert_eq!(visualize_control_line("a\rb"), "a^Mb");
+    }
+
+    #[test]
+    fn visualize_control_line_esc_sequence() {
+        // `\x1b[2K` (行クリア) は `^[[2K` として丸見えになり、画面偽装に使えない。
+        assert_eq!(visualize_control_line("\x1b[2K"), "^[[2K");
+    }
+
+    #[test]
+    fn visualize_control_line_nul_tab_del() {
+        assert_eq!(visualize_control_line("\0\t\x7f"), "^@^I^?");
+    }
+
+    #[test]
+    fn visualize_control_line_keeps_printable() {
+        assert_eq!(visualize_control_line("ls -la /tmp"), "ls -la /tmp");
+        // マルチバイト印字文字は素通し。
+        assert_eq!(visualize_control_line("日本語"), "日本語");
+    }
+
+    #[test]
+    fn command_has_control_chars_clean() {
+        assert!(!command_has_control_chars("ls -la"));
+        assert!(!command_has_control_chars("echo 'hello world'"));
+    }
+
+    #[test]
+    fn command_has_control_chars_detects_smuggling() {
+        // CR で 2 コマンドに分裂させる古典的偽装。
+        assert!(command_has_control_chars("git status\rrm -rf ~"));
+        // ESC で行を消して危険部分を隠す偽装。
+        assert!(command_has_control_chars("git status\r\x1b[2Krm -rf ~"));
+        // TAB / 改行 / NUL も拒否対象。
+        assert!(command_has_control_chars("a\tb"));
+        assert!(command_has_control_chars("a\nb"));
+        assert!(command_has_control_chars("a\0b"));
+        assert!(command_has_control_chars("echo \x1b[0m"));
+    }
 
     #[test]
     fn parse_dsr_response_typical() {

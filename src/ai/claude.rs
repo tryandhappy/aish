@@ -36,6 +36,29 @@ pub struct ClaudeBackend {
     log_path: Option<String>,
 }
 
+/// AI 自身が直接握ると「提案→確認→PTY 送信」の信頼境界を迂回できてしまうツール。
+/// `allow_unsafe_tools=false` の間は、ユーザの `disallowed_tools` 設定に関わらず常に deny する。
+/// (Read はファイル読み取りのみで相対的に低リスクなので baseline に含めず、default 値で deny する。)
+const MANDATORY_DENY: &[&str] = &["Bash", "Edit", "Write"];
+
+/// claude に渡す実効 `--disallowedTools` 値を計算する。
+/// - `allow_unsafe == false` (既定): `configured` に [`MANDATORY_DENY`] を union する
+///   (baseline を先頭に、重複排除)。`configured` が空でも Bash/Edit/Write は必ず残る。
+/// - `allow_unsafe == true`: `configured` を verbatim で返す (上級者が完全制御)。
+fn effective_disallowed_tools(configured: &str, allow_unsafe: bool) -> String {
+    if allow_unsafe {
+        return configured.to_string();
+    }
+    let mut tools: Vec<String> = MANDATORY_DENY.iter().map(|s| s.to_string()).collect();
+    for t in configured.split(',') {
+        let t = t.trim();
+        if !t.is_empty() && !tools.iter().any(|x| x == t) {
+            tools.push(t.to_string());
+        }
+    }
+    tools.join(",")
+}
+
 impl ClaudeBackend {
     pub fn new(cfg: &AiConfig, log: &LogConfig) -> Self {
         let log_path = if log.enabled {
@@ -47,7 +70,10 @@ impl ClaudeBackend {
         Self {
             session_id: None,
             system_prompt,
-            disallowed_tools: cfg.claude.disallowed_tools.clone(),
+            disallowed_tools: effective_disallowed_tools(
+                &cfg.claude.disallowed_tools,
+                cfg.claude.allow_unsafe_tools,
+            ),
             base_extra_args: cfg.claude.extra_args.clone(),
             model: (!cfg.model.is_empty()).then(|| cfg.model.clone()),
             effort: (!cfg.effort.is_empty()).then(|| cfg.effort.clone()),
@@ -118,8 +144,6 @@ impl AiBackend for ClaudeBackend {
 
         args.push("--output-format".to_string());
         args.push("json".to_string());
-        args.push("--disallowedTools".to_string());
-        args.push(self.disallowed_tools.clone());
         args.push("--json-schema".to_string());
         args.push(AI_RESPONSE_SCHEMA.to_string());
         args.extend(self.base_extra_args.iter().cloned());
@@ -132,6 +156,12 @@ impl AiBackend for ClaudeBackend {
             args.push("--effort".to_string());
             args.push(e.clone());
         }
+        // 安全制約 (--disallowedTools) は args の末尾で付与する。extra_args に
+        // `--disallowedTools ""` 等を後置きされても CLI 後勝ちでこちらが勝ち、
+        // baseline (Bash/Edit/Write) を non-removable に保つため。値は new() で
+        // effective_disallowed_tools により MANDATORY_DENY を union 済み。
+        args.push("--disallowedTools".to_string());
+        args.push(self.disallowed_tools.clone());
         // prompt は引数ではなく stdin で渡す。
         // ターミナルコンテキストを含む prompt が ARG_MAX (~2MB) を超えると
         // execve() が E2BIG (`Argument list too long`, os error 7) で失敗するため。
@@ -266,5 +296,52 @@ impl AiBackend for ClaudeBackend {
             }
         };
         Ok(ai_response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn contains_tool(value: &str, tool: &str) -> bool {
+        value.split(',').any(|t| t.trim() == tool)
+    }
+
+    #[test]
+    fn empty_config_still_denies_baseline() {
+        // disallowed_tools="" でも Bash/Edit/Write は必ず残る (footgun 防止)。
+        let v = effective_disallowed_tools("", false);
+        assert!(contains_tool(&v, "Bash"));
+        assert!(contains_tool(&v, "Edit"));
+        assert!(contains_tool(&v, "Write"));
+    }
+
+    #[test]
+    fn config_extras_are_unioned() {
+        // default 値はそのまま全部含む。
+        let v = effective_disallowed_tools("Bash,Edit,Write,Read", false);
+        for t in ["Bash", "Edit", "Write", "Read"] {
+            assert!(contains_tool(&v, t), "missing {t} in {v}");
+        }
+        // Read のみ指定 → baseline と union され Read も Bash/Edit/Write も含む。
+        let v = effective_disallowed_tools("Read", false);
+        for t in ["Bash", "Edit", "Write", "Read"] {
+            assert!(contains_tool(&v, t), "missing {t} in {v}");
+        }
+    }
+
+    #[test]
+    fn no_duplicate_baseline_entries() {
+        // configured が baseline と重複しても二重に出さない。
+        let v = effective_disallowed_tools("Bash,Bash,Edit", false);
+        let count = v.split(',').filter(|t| t.trim() == "Bash").count();
+        assert_eq!(count, 1, "Bash duplicated in {v}");
+    }
+
+    #[test]
+    fn allow_unsafe_is_verbatim() {
+        // opt-in 時は baseline を強制せず verbatim。
+        assert_eq!(effective_disallowed_tools("", true), "");
+        assert_eq!(effective_disallowed_tools("Read", true), "Read");
     }
 }

@@ -85,6 +85,12 @@ fn default_backend() -> String {
 pub struct ClaudeBackendConfig {
     #[serde(default = "default_disallowed_tools")]
     pub disallowed_tools: String,
+    /// true のとき mandatory baseline (Bash/Edit/Write の常時 deny) の強制を解除し、
+    /// `disallowed_tools` を verbatim で claude に渡す。AI 自身に shell 実行 / ファイル
+    /// 編集を許す危険設定なので、明示的に opt-in した上級者向け。既定 (false) では
+    /// `disallowed_tools` を空にしても Bash/Edit/Write は必ず deny される。
+    #[serde(default)]
+    pub allow_unsafe_tools: bool,
     #[serde(default)]
     pub extra_args: Vec<String>,
 }
@@ -93,6 +99,7 @@ impl Default for ClaudeBackendConfig {
     fn default() -> Self {
         Self {
             disallowed_tools: default_disallowed_tools(),
+            allow_unsafe_tools: false,
             extra_args: Vec::new(),
         }
     }

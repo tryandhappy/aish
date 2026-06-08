@@ -632,6 +632,17 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                             // ユーザが Ctrl+C で残り全部キャンセルを選んだ
                             let mut user_cancelled = false;
                             for (i, cmd) in response.commands.iter().enumerate() {
+                                // AI 提案コマンドに制御文字 (改行/CR/ESC/NUL/TAB 等) が
+                                // 含まれる場合は拒否する。確認画面の見た目を送信バイトと
+                                // ズラす偽装 (\r で行頭復帰・\x1b[2K で行消去して危険部分を
+                                // 隠す等) や、\r が bash に Enter として届いて 1 承認で複数
+                                // コマンドが実行される事故を防ぐため。承認 UI に載せず PTY
+                                // にも送らない。auto_approve (= [a]) 経路もこのガードを通る
+                                // ので、まとめ承認でも制御文字入りは漏れない。
+                                if ui::command_has_control_chars(cmd) {
+                                    ui::print_rejected_command(cmd, &config.display);
+                                    continue;
+                                }
                                 let confirmed = if auto_approve_remaining {
                                     true
                                 } else {

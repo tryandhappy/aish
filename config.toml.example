@@ -64,8 +64,14 @@
 # language = ""                                                  # default: "" — falls back to top-level language
 
 [ai.claude]
-# disallowed_tools = "Bash,Edit,Write,Read"                      # default: "Bash,Edit,Write,Read"
-# extra_args = []                                                # default: [] — extra args appended to `claude -p ...`
+# disallowed_tools = "Bash,Edit,Write,Read"                      # default: "Bash,Edit,Write,Read" — これに追加する形。
+                                                                 # Bash/Edit/Write は allow_unsafe_tools=false の間は常に deny される
+                                                                 # (空文字にしても剥がれない)。Read だけは外せる。
+# allow_unsafe_tools = false                                     # default: false。true で baseline 強制を解除し disallowed_tools を
+                                                                 # そのまま渡す。AI に shell 実行/編集を許す危険設定。通常は触らない。
+# extra_args = []                                                # default: [] — extra args appended to `claude -p ...`。
+                                                                 # 注: --disallowedTools は args 末尾で必ず付与されるので、ここに
+                                                                 # --disallowedTools を書いても上書きできない。値の調整は上の項目で。
 
 # Codex / Gemini / Qwen / Cursor don't have JSON-schema flags, so JSON output is enforced via system prompt.
 # Use extra_args for model selection or other CLI-specific flags.
