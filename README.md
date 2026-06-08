@@ -2,11 +2,12 @@
 
 **AI-assisted SSH shell** — Ask Claude Code for help right inside your SSH session.
 
-- `aish` は AI + SSH です。 `ssh` の代わりに使えるCLIです。
-- SSHしながら、`Ctrl+/` で AIに指示できます。
-- AIは画面の内容を見ているので、エラーやログを貼り付ける必要はありません。
+- `aish` は AI + SSH/Terminal です。
+- ターミナルから `Ctrl+/` で AIに問い合わせできます。
+- AIと相談しながら作業することができます。
+- AIに画面の内容送るので、エラーやログを貼り付ける必要はありません。
 - コマンド実行時は必ず確認が入るので安心です。
-- サーバにAI Agentをインストールする必要がありません。
+- クライアントのAI Agentを使用するので、サーバにインストールする必要がありません。
 
 ![aish screenshot](docs/images/sample1.png)
 
@@ -24,16 +25,16 @@ https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
 
 #### 対応OS
 
-- Linux (テストしているのは Ubuntu 24.04)
+- Linux (Testing on Ubuntu 24.04)
 - macOS (Intel・Apple Silicon)
-- Windows WSL2 (テストしているのは Ubuntu 24.04)
+- Windows WSL2 (Testing on Ubuntu 24.04)
 
 #### 必要なコマンド
 
 - AI CLI (いずれか)
-  - [Claude Code CLI](https://code.claude.com/docs/ja/overview)
-  - [OpenAI ChatGPT Codex](https://openai.com/ja-JP/codex/)
-  - [Google Gemini CLI](https://cloud.google.com/blog/ja/topics/developers-practitioners/introducing-gemini-cli/)
+  - [Claude Code](https://code.claude.com/docs/ja/overview)
+  - [ChatGPT Codex](https://openai.com/ja-JP/codex/)
+  - [Gemini CLI](https://cloud.google.com/blog/ja/topics/developers-practitioners/introducing-gemini-cli/)
   - [Qwen Code](https://qwen.ai/qwencode)
 - OpenSSH (リモートSSH)
 - bash または zsh (ローカルシェル)
@@ -43,7 +44,7 @@ https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
 
 ## 対応AI CLI
 
-- Claude Code CLI (API, Pro?, Max?, Team?, Enterprise?) ※FreeはClaude Codeが使えないので未対応
+- Claude Code CLI (API, Pro, Max, Team, Enterprise) ※FreeはClaude Codeが使えないので未対応 (デフォルト)
 - OpenAI ChatGPT Codex
 - Google Gemini
 - Qwen Code (未テスト)
@@ -51,13 +52,12 @@ https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
 
 ## インストール
 
-OS とアーキテクチャを自動判定して `/usr/local/bin` に入れます。
-
 ### Linux
 
 ```bash
 sudo curl -fsSL -o /usr/local/bin/aish \
   "https://github.com/tryandhappy/aish/releases/latest/download/aish-$(uname -m)-unknown-linux-musl"
+
 sudo chmod 755 /usr/local/bin/aish
 ```
 
@@ -65,13 +65,15 @@ sudo chmod 755 /usr/local/bin/aish
 
 ```bash
 sudo mkdir -p /usr/local/bin
+
 ARCH=$(uname -m); case "$ARCH" in arm64|aarch64) ARCH=aarch64;; x86_64|amd64) ARCH=x86_64;; esac
+
 sudo curl -fsSL -o /usr/local/bin/aish \
   "https://github.com/tryandhappy/aish/releases/latest/download/aish-$ARCH-apple-darwin"
+
 sudo chmod 755 /usr/local/bin/aish
 ```
 
-> 旧バージョンを `/usr/bin/aish` に入れていた場合: `aish --update` は実行中のファイルをそのまま上書きするので壊れません。`/usr/local/bin` へ移行したいときは旧 `/usr/bin/aish` を削除してください (PATH 上は `/usr/local/bin` が優先されます)。
 
 ## アップデート
 
@@ -80,33 +82,74 @@ sudo aish --update
 ```
 
 
-### ソースからビルド＆インストール (開発版を /usr/local/bin/aish に上書き)
+### 開発用 ビルド＆インストール (開発版を /usr/local/bin/aish に上書き)
 
 ```bash
-sudo mkdir -p /usr/local/bin
 cargo build --release && sudo install -m 755 target/release/aish /usr/local/bin/aish
 ```
 
 
-## 使い方
+## 基本的な使い方
 
+AI Agentにログインして、aishコマンドを実行。あとはいつもどおりSSH/Terminal。
+AIへの問い合わせは Crtl + /
+
+### Claude Code (Default)
 ```bash
+# Login
 claude login
 
-aish                    # ローカルシェル
-aish user@example.com   # SSH接続 (sshと同じ引数)
+# Sample
+aish
+aish --ai claude
+aish --ai claude --model opus
+aish --ai claude --model opus --effort xhigh
+
+# Usage
+aish --ai claude \
+  --model sonnet|opus|haiku|best|claude-opus-4-8|sonnet[1m]|opus[1m] \
+  --effort low|medium|high|xhigh|max|ultracode
 ```
 
-| 入力 | 動作 |
-|------|------|
-| `Ctrl+/` | AIプロンプト入力 |
-| `exit` | 終了 |
+### Codex
+```bash
+# Login
+codex login
 
+# Sample
+aish --ai codex
+aish --ai codex --model gpt-5.5
+aish --ai codex --model gpt-5.5 --effort xhigh
+
+# Usage
+aish --ai \
+  codex --model gpt-5.5|gpt-5.4|gpt-g.4-mini \
+  --effort low|medium|high|xhigh
+```
+
+### Gemini
+``` bash
+# Login
+gemini login
+
+# Sample
+aish --ai gemini
+```
+
+### Qwen
+```bash
+qwen
+
+aish --ai qwen
+```
 
 
 ## 対話シェルを常に aish にする
 
-### bash
+極めて便利です。
+aishいらないときはexitしてください。
+
+### bash (Linux / WSL2 Ubuntu等)
 
 `~/.bashrc` の **末尾** に以下を追加。
 
