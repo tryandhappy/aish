@@ -34,7 +34,7 @@ CLI SSH + AI (Claude Code) ツール。クライアント側のClaude Codeから
 
 | モード | 起動条件 | 挙動 |
 |---|---|---|
-| **Local** | SSH引数なし (`aish`) | `$SHELL`（未定義なら`/bin/bash`）をPTYで起動 |
+| **Local** | SSH引数なし (`aish`) | `$SHELL`（macOSは通常zsh、未定義なら`/bin/bash`）をPTYで起動 |
 | **Remote** | SSH引数あり (`aish user@host` 等) | `ssh` をPTYで起動。引数はそのままsshに渡す |
 
 両モードとも `accepts_shell_command()` は true。終了は `exit` コマンド、または PTY プロセス終了。
@@ -562,3 +562,4 @@ CIワークフロー（`.github/workflows/release.yml`）側で `aish-{target}.s
 - **Shift+Enterによる改行**: kitty keyboard protocol (`\x1b[>1u`) を有効化しないと届かない。有効化するとEnter/Esc/BSなど他のキーも別形式になり、既存ハンドラと不整合が起きる。ターミナル横断で安定動作しないため**非対応**。改行は `Alt+Enter` を使う。
 - **Windows**: `pty_handler` は portable-pty で対応しているが、`save_terminal_settings` 等のUI部はUnix限定。Windowsビルドは `read_line_cooked` フォールバックのみ。
 - **リングバッファのUTF-8境界**: `String::from_utf8_lossy` でマルチバイトが切れていたら置換文字になる。
+- **シェル互換性**: aish は **readline / emacs 互換の行編集を持つ対話シェル** を前提とする。bash と zsh の emacs モード (= macOS のデフォルト) が該当し、macOS では `$SHELL`（=zsh）がそのまま起動して追加対応なしで動作する。打ちかけ入力の消去に使う `Ctrl+A`+`Ctrl+K` (`0x01,0x0b`) は emacs 行編集に依存するため、**zsh を vi モード (`bindkey -v`) にしている場合のみ** 劣化し、折り返した打ちかけが綺麗に畳まれず `^A^K` がリテラルで残ることがある（vim 等の TUI 子プロセスへ届いたときと同じ穏当な失敗モードで、クラッシュや「承認していないコマンドの実行」には至らない）。プロンプト戻り検出は `%`（zsh 一般ユーザ）/ `#`（root）を終端集合に含む（§ 9 参照）ので zsh プロンプトでも機能する。
