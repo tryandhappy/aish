@@ -582,7 +582,14 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                     ring_buffer.append(&data);
                 }
                 let context = ring_buffer.get_unsent_for(kind);
-                let spinner = ui::Spinner::start(&config.display);
+                let sp_model = ai_session.model();
+                let sp_effort = ai_session.effort();
+                let spinner = ui::Spinner::start(
+                    &config.display,
+                    kind,
+                    sp_model.as_deref(),
+                    sp_effort.as_deref(),
+                );
                 let mut ai_result = ai_session.send(&ai::AiRequest {
                     terminal_context: &context,
                     user_prompt: &prompt,
@@ -772,7 +779,14 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                             // 実行結果をAIに送信して分析を継続
                             let follow_up_context = ring_buffer.get_unsent_for(kind);
                             println!();
-                            let spinner = ui::Spinner::start(&config.display);
+                            let sp_model = ai_session.model();
+                            let sp_effort = ai_session.effort();
+                            let spinner = ui::Spinner::start(
+                                &config.display,
+                                kind,
+                                sp_model.as_deref(),
+                                sp_effort.as_deref(),
+                            );
                             let follow_up_text = if user_cancelled {
                                 format!(
                                     "ユーザが Ctrl+C で残りのコマンドをキャンセルしました。実行されたコマンド: {}。出力は terminal フェンスに含まれます。実行された分だけで分析してください。",

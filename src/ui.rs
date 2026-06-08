@@ -264,11 +264,31 @@ pub struct Spinner {
 }
 
 impl Spinner {
-    pub fn start(display: &DisplayConfig) -> Self {
+    pub fn start(
+        display: &DisplayConfig,
+        kind: BackendKind,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> Self {
         let running = Arc::new(AtomicBool::new(true));
         let running_clone = running.clone();
         let color = build_color_start(&display.thinking_color);
-        let message = display.thinking_message.clone();
+        // 思考中バックエンド情報を `[backend model effort] ` プレフィックスとして付ける。
+        // backend 名のみ backend 色 (起動バナーと統一)、続けて `\x1b[0m` でリセットしてから
+        // thinking 色 (`color`) を再付与し、model/effort/メッセージを thinking 色に戻す。
+        // model/effort が None の欄はスペースごと省略する。
+        let backend_seq = format!("\x1b[1;38;5;{}m", backend_color_for_kind(kind));
+        let mut prefix = format!("[{backend_seq}{}\x1b[0m{color}", kind.as_str());
+        if let Some(m) = model {
+            prefix.push(' ');
+            prefix.push_str(m);
+        }
+        if let Some(e) = effort {
+            prefix.push(' ');
+            prefix.push_str(e);
+        }
+        prefix.push_str("] ");
+        let message = format!("{prefix}{}", display.thinking_message);
 
         let handle = std::thread::spawn(move || {
             let mut stdout = io::stdout();
