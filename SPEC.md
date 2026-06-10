@@ -82,7 +82,8 @@ CLI SSH + AI (Claude Code) ツール。クライアント側のClaude Codeから
 - `compute_visual_layout` が論理行と折り返しを計算:
   - 第1論理行の先頭はラベル（幅 `label_width`）分を差し引いた幅で折り返し。
   - 継続行（ソフトラップ / `\n` 後の新しい論理行）は `label_width` 分の空白インデントまたはラベルを付ける。
-- DECSTBMを `rows_used` に応じて動的に `\x1b[1;{rows - rows_used}r` に調整。縮小時は不要になった行を `\x1b[2K` でクリア。
+- 伸長時は cursor を実画面最下行に置いた LF の **全画面スクロール** で行を確保する（DECSTBM の scroll region は使わない。region が全画面でないスクロールは押し出された行を scrollback に保存せず破棄するのが xterm 系端末の標準挙動のため）。押し出された行は通常のシェル出力と同様 scrollback に退避される。
+- 縮小時は不要になった行を `\x1b[2K` でクリア（スクロールは戻さない）。スクロール確保済み行数は高水位マーク `reserved_rows`（縮小でも減らさない）で追跡し、縮小→再伸長では高水位を超えるまで再スクロールしない。
 - 総可視行数が `max_rows` を超える場合、カーソル行が見える位置までスクロール (`scroll_top`)。
 
 ### 4.4 起動時の表示確保
@@ -381,7 +382,7 @@ claude -p --resume <session_id> \
 - `restore_terminal_settings` で終了時に元の状態に戻す。
 
 ### 10.2 ANSIエスケープ
-- DECSTBM `\x1b[{top};{bottom}r`: スクロール領域。ステータスバー常時表示とミニバッファ拡張に使用。
+- DECSTBM `\x1b[r`: ミニバッファ終了時の防御的フルリセットのみ（aish は scroll region を設定しない。region 内スクロールは scrollback に行が残らないため、ミニバッファ拡張は全画面スクロールで行う）。
 - DECSC/DECRC `\x1b7` / `\x1b8`: カーソル位置の保存・復元。シェル側の入力位置を保全。
 - CUP `\x1b[{row};{col}H`: カーソル位置指定。
 - EL `\x1b[K` / `\x1b[2K`: 行末までクリア / 行全体クリア。

@@ -766,12 +766,13 @@ fn query_cursor_position_dsr(stdout: &mut io::Stdout) -> Option<(u16, u16)> {
 }
 
 /// aishプロンプト（ミニバッファ）を現在の状態で再描画する。
-/// 入力長に応じて縦方向に拡張し、DECSTBMを動的に調整する。
-/// 戻り値: 新しくミニバッファが占有する行数。
+/// 入力長に応じて縦方向に拡張する。伸長分の行は cursor を実画面最下行に置いた
+/// LF の全画面 scroll で確保する (DECSTBM の scroll region は使わない)。
+/// `out` はテストで `Vec<u8>` に差し替えるためジェネリック (実運用は stdout)。
 #[cfg(unix)]
 #[allow(clippy::too_many_arguments)]
-fn redraw_minibuffer(
-    stdout: &mut io::Stdout,
+fn redraw_minibuffer<W: Write>(
+    out: &mut W,
     term_rows: u16,
     term_cols: u16,
     max_rows: u16,
@@ -781,6 +782,7 @@ fn redraw_minibuffer(
     chars: &[char],
     cursor_pos: usize,
     rows_used: &mut u16,
+    reserved_rows: &mut u16,
     total_scrolled: &mut u16,
 ) {
     let total_cols = term_cols as usize;
@@ -803,33 +805,40 @@ fn redraw_minibuffer(
 
     let new_rows_used = visible_count as u16;
 
-    // DECSTBM を更新（シュリンク時は不要行を消去、グロー時は bash 出力を scroll 退避）
+    // 行数変化の処理（シュリンク時は不要行を消去、グロー時は全画面 scroll で行を確保）
     if new_rows_used != *rows_used {
         if new_rows_used < *rows_used {
             let clear_from = term_rows - *rows_used + 1;
             let clear_to = term_rows - new_rows_used;
             for r in clear_from..=clear_to {
-                let _ = write!(stdout, "\x1b[{r};1H\x1b[2K");
+                let _ = write!(out, "\x1b[{r};1H\x1b[2K");
             }
-        } else if *rows_used > 0 {
-            // grow: 現 DECSTBM の bottom に cursor を置いて \n を delta 個出し、
-            // 現 scroll 領域内で bash 出力を上に退避してから minibuffer の伸長を許す。
-            // was_at_bottom に関わらず常に scroll する: 画面上半分始まりでも
-            // minibuffer は常に最下行起点で伸ばすため、scroll しないと minibuffer
-            // 直上の行 (= bash 履歴) を上書きしてしまう。scroll で履歴を上に
-            // 退避させて保護する。scroll 量は total_scrolled に積算して終了時の
-            // cursor 復元に使う。stdout 専用、PTY には送らない。
-            let delta = new_rows_used - *rows_used;
-            let current_bottom = term_rows.saturating_sub(*rows_used).max(1);
-            let _ = write!(stdout, "\x1b[{current_bottom};1H");
+        } else if new_rows_used > *reserved_rows {
+            // grow: cursor を実画面最下行に置いて \n を超過分だけ出し、全画面 scroll で
+            // 伸長分の行を確保する。DECSTBM の scroll region は使わない: region が
+            // 全画面でない間のスクロールは、上端から押し出された行を scrollback に
+            // 保存せず破棄するのが xterm 系端末の標準挙動で、minibuffer が伸びるたびに
+            // 画面の行が恒久消失していた。全画面 scroll なら通常のシェル出力と同じく
+            // scrollback に退避される (下に改行追加される普通の見え方)。
+            // (旧実装はさらに、初回 grow で region 未設定のまま cursor を
+            // term_rows - rows_used 行 = bottom margin でない位置に置いていたため
+            // LF がスクロールせず、直上の bash プロンプト行を再描画が上書きする
+            // off-by-one もあった。cursor を term_rows に置く限り LF は必ず scroll する。)
+            // was_at_bottom に関わらず常に scroll する: 画面上半分始まりでも minibuffer
+            // は常に最下行起点で伸ばすため、scroll しないと直上の行を上書きしてしまう。
+            // reserved_rows は scroll 確保済み行数の高水位マーク (shrink でも減らさない)。
+            // shrink 済みの行は \x1b[2K クリア済みの空白なので、そこへの再 grow は
+            // scroll 不要で再描画だけで足りる。scroll 量は total_scrolled に積算して
+            // 終了時の cursor 復元に使う。stdout 専用、PTY には送らない。
+            let delta = new_rows_used - *reserved_rows;
+            let _ = write!(out, "\x1b[{term_rows};1H");
             for _ in 0..delta {
                 #[allow(clippy::write_with_newline)]
-                let _ = write!(stdout, "\n");
+                let _ = write!(out, "\n");
             }
             *total_scrolled = total_scrolled.saturating_add(delta);
+            *reserved_rows = new_rows_used;
         }
-        let scroll_bottom = term_rows.saturating_sub(new_rows_used).max(1);
-        let _ = write!(stdout, "\x1b[1;{scroll_bottom}r");
         *rows_used = new_rows_used;
     }
 
@@ -839,19 +848,19 @@ fn redraw_minibuffer(
         let vi = scroll_top + disp;
         let row = start_row + disp as u16;
         let (s, e, is_first_line) = vlines[vi];
-        let _ = write!(stdout, "\x1b[{row};1H\x1b[0m\x1b[2K");
+        let _ = write!(out, "\x1b[{row};1H\x1b[0m\x1b[2K");
         if is_first_line {
-            let _ = write!(stdout, "{label}");
+            let _ = write!(out, "{label}");
         } else {
             // 継続行はラベル幅ぶん空白でインデント
             for _ in 0..indent_width {
-                let _ = stdout.write_all(b" ");
+                let _ = out.write_all(b" ");
             }
         }
-        let _ = write!(stdout, "{input_bg}");
+        let _ = write!(out, "{input_bg}");
         let line_str: String = chars[s..e].iter().collect();
-        let _ = stdout.write_all(line_str.as_bytes());
-        let _ = write!(stdout, "\x1b[K");
+        let _ = out.write_all(line_str.as_bytes());
+        let _ = write!(out, "\x1b[K");
     }
 
     let cursor_display_line = cvline - scroll_top;
@@ -862,8 +871,8 @@ fn redraw_minibuffer(
         indent_width
     };
     let cursor_col = prefix_w + cvcol + 1;
-    let _ = write!(stdout, "\x1b[{cursor_row};{cursor_col}H");
-    let _ = stdout.flush();
+    let _ = write!(out, "\x1b[{cursor_row};{cursor_col}H");
+    let _ = out.flush();
 }
 
 /// aishプロンプト用のマルチラインエディタ。
@@ -889,6 +898,9 @@ fn read_minibuffer_line(
     let mut chars: Vec<char> = Vec::new();
     let mut cursor_pos: usize = 0;
     let mut rows_used: u16 = 1;
+    // scroll で確保済みの行数の高水位マーク。shrink しても減らさず、これを超える
+    // grow のときだけ追加 scroll する (grow-shrink-grow で scroll を積み増さない)。
+    let mut reserved_rows: u16 = 1;
 
     // 履歴ナビゲーション
     let hist_len = prompt_history().lock().map_or(0, |h| h.len());
@@ -911,6 +923,7 @@ fn read_minibuffer_line(
         &chars,
         cursor_pos,
         &mut rows_used,
+        &mut reserved_rows,
         total_scrolled,
     );
 
@@ -955,6 +968,7 @@ fn read_minibuffer_line(
                 &chars,
                 cursor_pos,
                 &mut rows_used,
+                &mut reserved_rows,
                 total_scrolled,
             );
             continue;
@@ -1087,14 +1101,16 @@ fn read_minibuffer_line(
             &chars,
             cursor_pos,
             &mut rows_used,
+            &mut reserved_rows,
             total_scrolled,
         );
     }
 }
 
-/// aishプロンプトをステータスバー行に表示し、ユーザ入力を受け付ける。
-/// 入力確定後にステータスバーを復元し、InputEventを送信する。
-/// 入力が長いとき縦方向に拡張し、終了時に DECSTBM を元に戻す。
+/// aishプロンプトを画面最下部に表示し、ユーザ入力を受け付ける。
+/// 入力確定後に表示を消して cursor を復元し、InputEventを送信する。
+/// 入力が長いとき縦方向に拡張する (伸長は全画面 scroll で確保。表示中に
+/// DECSTBM は設定せず、終了時の `\x1b[r` は防御的リセットのみ)。
 #[cfg(unix)]
 fn show_minibuffer(
     stdout: &mut io::Stdout,
@@ -1137,7 +1153,8 @@ fn show_minibuffer(
         &mut total_scrolled,
     );
 
-    // DECSTBM をフルリセット (1..rows)、ミニバッファが使用した追加行をクリア
+    // DECSTBM を防御的にフルリセット (minibuffer 自身は region を設定しないが
+    // 念のため 1..rows に戻す)、ミニバッファが使用した追加行をクリア
     let _ = write!(stdout, "\x1b[0m\x1b[r");
     if rows_used > 1 {
         let clear_from = rows - rows_used + 1;
@@ -1149,9 +1166,13 @@ fn show_minibuffer(
         // 1 行ミニバッファでも最終行に入力跡が残っているのでクリア
         let _ = write!(stdout, "\x1b[{rows};1H\x1b[2K");
     }
-    // cursor を絶対座標で復元。total_scrolled は入口 scroll + grow scroll の合計で、
+    // cursor を絶対座標で復元。total_scrolled は入口 scroll + grow scroll の合計
+    // (どちらも全画面 scroll なので「実際に画面が上へ動いた行数」と常に一致する) で、
     // bash 入力欄がその行数ぶん上に動いているので保存位置から引く。
     // 画面下端起点 / 上半分起点いずれも同じロジックで扱える。
+    // saved_row が小さい (clear 直後等) のに grow が多いと saturating_sub の clamp で
+    // プロンプト行自体が scrollback へ逃げるが、内容は失われず bash の次のプロンプト
+    // 再描画で回復する既知の劣化モード。
     let restored_row = saved_row.saturating_sub(total_scrolled).max(1);
     let _ = write!(stdout, "\x1b[{restored_row};{saved_col}H");
     let _ = stdout.flush();
@@ -1364,5 +1385,143 @@ mod tests {
         assert_eq!(match_confirm_char('い'), None);
         assert_eq!(match_confirm_char('や'), None); // "ya" は受け付けない
         assert_eq!(match_confirm_char('な'), None); // "na" も受け付けない
+    }
+
+    // ---- redraw_minibuffer の golden test 群 ----
+    // 端末 24x80 / max_rows 12 / ラベル "[aish] " (幅 7、ANSI なし) で Vec<u8> に
+    // 書き出し、grow / shrink 時に出るエスケープ列を固定する。
+    // 守りたい不変条件:
+    //   (1) grow の scroll は cursor を実画面最下行 (term_rows) に置いた LF の
+    //       全画面 scroll で行う (region scroll は scrollback に行を保存しないため)
+    //   (2) DECSTBM (CSI ... r) を一切出力しない
+    //   (3) reserved_rows の高水位を超えない再 grow では scroll しない
+
+    #[cfg(unix)]
+    struct MbState {
+        rows_used: u16,
+        reserved_rows: u16,
+        total_scrolled: u16,
+    }
+
+    #[cfg(unix)]
+    fn redraw_for_test(input: &str, st: &mut MbState) -> Vec<u8> {
+        let chars: Vec<char> = input.chars().collect();
+        let mut out: Vec<u8> = Vec::new();
+        redraw_minibuffer(
+            &mut out,
+            24,
+            80,
+            12,
+            "[aish] ",
+            7,
+            "",
+            &chars,
+            chars.len(),
+            &mut st.rows_used,
+            &mut st.reserved_rows,
+            &mut st.total_scrolled,
+        );
+        out
+    }
+
+    #[cfg(unix)]
+    fn fresh_state() -> MbState {
+        MbState {
+            rows_used: 1,
+            reserved_rows: 1,
+            total_scrolled: 0,
+        }
+    }
+
+    #[cfg(unix)]
+    fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    /// 出力中の CSI シーケンスに final byte `r` (DECSTBM) があるか走査する。
+    #[cfg(unix)]
+    fn contains_decstbm(out: &[u8]) -> bool {
+        let mut i = 0;
+        while i + 1 < out.len() {
+            if out[i] == 0x1b && out[i + 1] == b'[' {
+                let mut j = i + 2;
+                while j < out.len() && (out[j].is_ascii_digit() || out[j] == b';') {
+                    j += 1;
+                }
+                if j < out.len() && out[j] == b'r' {
+                    return true;
+                }
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+        false
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn minibuffer_grow_scrolls_at_screen_bottom() {
+        let mut st = fresh_state();
+        let out = redraw_for_test("aaa\nbbb", &mut st);
+        assert_eq!(st.rows_used, 2);
+        assert_eq!(st.total_scrolled, 1);
+        // cursor を実画面最下行 (24) に置いた LF で全画面 scroll する
+        assert!(contains_bytes(&out, b"\x1b[24;1H\n"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn minibuffer_grow_emits_no_decstbm() {
+        let mut st = fresh_state();
+        let out0 = redraw_for_test("", &mut st);
+        let out1 = redraw_for_test("aaa\nbbb", &mut st);
+        let out2 = redraw_for_test("aaa", &mut st); // shrink
+        assert!(!contains_decstbm(&out0));
+        assert!(!contains_decstbm(&out1));
+        assert!(!contains_decstbm(&out2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn minibuffer_grow_delta_2() {
+        let mut st = fresh_state();
+        let out = redraw_for_test("a\nb\nc", &mut st);
+        assert_eq!(st.rows_used, 3);
+        assert_eq!(st.total_scrolled, 2);
+        // 1 → 3 行: 最下行で LF を 2 個連続で出す
+        assert!(contains_bytes(&out, b"\x1b[24;1H\n\n"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn minibuffer_shrink_clears_rows() {
+        let mut st = fresh_state();
+        let _ = redraw_for_test("a\nb\nc", &mut st);
+        let out = redraw_for_test("a", &mut st);
+        assert_eq!(st.rows_used, 1);
+        // 3 → 1 行: 不要になった 22, 23 行目を消去。scroll (LF) は出さない
+        assert!(contains_bytes(&out, b"\x1b[22;1H\x1b[2K"));
+        assert!(contains_bytes(&out, b"\x1b[23;1H\x1b[2K"));
+        assert!(!out.contains(&b'\n'));
+        assert_eq!(st.total_scrolled, 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn minibuffer_grow_after_shrink_does_not_rescroll() {
+        let mut st = fresh_state();
+        let _ = redraw_for_test("a\nb\nc", &mut st); // 1 → 3 (scroll 2)
+        let _ = redraw_for_test("a", &mut st); // 3 → 1 (クリアのみ)
+        let out = redraw_for_test("a\nb", &mut st); // 1 → 2: 高水位 3 以下なので no scroll
+        assert_eq!(st.rows_used, 2);
+        assert_eq!(st.total_scrolled, 2);
+        assert!(!out.contains(&b'\n'));
+        // 高水位 3 を超える 4 行目で初めて超過 1 行ぶんだけ scroll する
+        let out = redraw_for_test("a\nb\nc\nd", &mut st);
+        assert_eq!(st.rows_used, 4);
+        assert_eq!(st.total_scrolled, 3);
+        assert_eq!(out.iter().filter(|&&b| b == b'\n').count(), 1);
+        assert!(contains_bytes(&out, b"\x1b[24;1H\n"));
     }
 }

@@ -884,8 +884,8 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
     // \x1b[r は VT100 仕様上、引数有無にかかわらずカーソルを (1,1) に
     // 移動させる副作用があり、aish 終了直後に親シェル画面の先頭に
     // カーソルが飛んでしまう。
-    // minibuffer 終了時 (ui::show_minibuffer) と TUI コマンド復旧時
-    // (main loop / 確認ループ内) でそれぞれ \x1b[r を送っているので、
+    // aish 自身は DECSTBM を設定しない (minibuffer の伸長も全画面 scroll 方式で
+    // region 不使用。ui::show_minibuffer 終了時に防御的な \x1b[r を送るのみ) ので、
     // 通常の終了経路ではここでリセットしなくても DECSTBM は default のはず。
 
     // aish 終了メッセージ。raw モードのまま出すので CRLF を明示する。
