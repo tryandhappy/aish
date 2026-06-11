@@ -539,15 +539,9 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                     &mut ring_buffer,
                 ) {
                     ui::print_slash_result(&msg);
-                    // shell プロンプトをリフレッシュする。ユーザが Ctrl+/ の前に打ちかけた
-                    // 未確定 shell 入力が bash readline に残っている可能性があるため、`\n` を
-                    // 送る前に Ctrl+A + Ctrl+K (0x01, 0x0b) で行を消去する。これをしないと、
-                    // ユーザが Enter していない打ちかけコマンドを `\n` が勝手に実行してしまう
-                    // (信頼の根幹: 承認していないコマンドを実行しない)。0x01,0x0b は SIGINT を
-                    // 発火させない安全な行消去で、AI 提案コマンド実行直前と同一イディオム。
-                    // 打ちかけは bash の kill-ring に退避するので Ctrl+Y で復元可能。
-                    let _ = pty.write(&[0x01, 0x0b]);
-                    let _ = pty.write(b"\n");
+                    // shell プロンプトをリフレッシュする。打ちかけ消去 + 改行の不可分な
+                    // 組み合わせは PtyHandler::refresh_prompt に固定されている (信頼の根幹)。
+                    let _ = pty.refresh_prompt();
                     pending_input = true;
                     last_pty_output = Instant::now();
                     continue;
@@ -576,7 +570,7 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                 // (ユーザが打った内容の記録として無害)、cursor 制御エスケープを今 stdout に
                 // 流すと AI 出力の開始位置がずれるため。ring_buffer には従来どおり追記して
                 // 「PTY 出力は全て ring_buffer に入る」不変条件を保つ。
-                let _ = pty.write(&[0x01, 0x0b]);
+                let _ = pty.kill_line();
                 thread::sleep(Duration::from_millis(150));
                 while let Ok(data) = pty_rx.try_recv() {
                     ring_buffer.append(&data);
@@ -692,13 +686,10 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                                 }
 
                                 // 最初に実行する AI 提案コマンドの直前で、bash の打ちかけ
-                                // 入力を Ctrl+A (行頭へ) + Ctrl+K (行末までキル) で消去する。
-                                // SIGINT は発火させないので vim/top 等の子プロセスを意図せず
-                                // kill しない。bash プロンプト直後 (打ちかけなし) でも no-op
-                                // で害なし。後続コマンドは前のコマンドが完了して bash
+                                // 入力を消去する。後続コマンドは前のコマンドが完了して bash
                                 // プロンプトに戻った状態で送られるので、追加不要。
                                 if !any_executed {
-                                    pty.write(&[0x01, 0x0b])?;
+                                    pty.kill_line()?;
                                 }
 
                                 any_executed = true;
@@ -818,12 +809,10 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
 
                 // AI対話終了後、シェルのプロンプトを再表示させる。
                 // 提案コマンドを1つも実行しなかった場合 (全拒否 / 提案なし) は
-                // any_executed 経路の Ctrl+A+Ctrl+K 行消去を通っていないため、ユーザが
-                // Ctrl+/ 前に打ちかけた未確定入力が bash readline に残る。`\n` の前に
-                // 0x01,0x0b で消去し、打ちかけの勝手な実行を防ぐ (実行済み経路では行が
-                // 空なので no-op)。
-                let _ = pty.write(&[0x01, 0x0b]);
-                pty.write(b"\n")?;
+                // any_executed 経路の kill_line を通っていないため、ユーザが Ctrl+/ 前に
+                // 打ちかけた未確定入力が bash readline に残る。refresh_prompt が改行前に
+                // 消去し、打ちかけの勝手な実行を防ぐ (実行済み経路では行が空なので no-op)。
+                pty.refresh_prompt()?;
                 thread::sleep(Duration::from_millis(200));
                 let mut first = true;
                 while let Ok(data) = pty_rx.try_recv() {

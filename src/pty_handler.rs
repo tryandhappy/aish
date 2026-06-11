@@ -75,6 +75,26 @@ impl PtyHandler {
         Ok(())
     }
 
+    /// bash readline の打ちかけ行を消去する (Ctrl+A + Ctrl+K = 0x01,0x0b)。
+    /// SIGINT を発火させないため Ctrl+C (0x03) は使わない (vim/top 等の子プロセスを
+    /// 意図せず kill しないため)。打ちかけが無ければ no-op。打ちかけは bash の
+    /// kill-ring に退避するので Ctrl+Y で復元可能。emacs 行編集以外 (vim 等の TUI、
+    /// zsh vi モード) に届くと ^A^K がリテラルで残る既知の穏当な劣化モード。
+    pub fn kill_line(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.write(&[0x01, 0x0b])
+    }
+
+    /// 打ちかけ消去 + 改行でシェルプロンプトを再表示させる。
+    /// 消去せず `\n` だけ送ると、ユーザが Enter していない打ちかけコマンドを
+    /// 勝手に実行してしまう (信頼の根幹: 承認していないコマンドを実行しない)。
+    /// 2 送信を分離できないようメソッドに固定する。
+    /// エラー処理は旧コード互換: 消去側の write エラーは無視し、改行側の Result を
+    /// 返す (呼び出し側の `let _` / `?` 使い分けを保つため。消去側を `?` にしないこと)。
+    pub fn refresh_prompt(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let _ = self.write(&[0x01, 0x0b]);
+        self.write(b"\n")
+    }
+
     pub fn resize(&self, rows: u16, cols: u16) -> Result<(), Box<dyn std::error::Error>> {
         self.master.resize(PtySize {
             rows,
