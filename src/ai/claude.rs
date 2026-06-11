@@ -1,13 +1,9 @@
 use super::common::{
-    build_system_prompt_claude, check_stdin_cancel, expand_tilde, extract_json,
-    extract_model_from_args, shell_join, write_log,
+    build_system_prompt_claude, expand_tilde, extract_json, extract_model_from_args,
+    run_cli_capture_stdout,
 };
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
 use crate::config::{AiConfig, LogConfig};
-use std::io::{Read, Write};
-use std::process::{Command, Stdio};
-use std::thread;
-use std::time::Duration;
 
 const AI_RESPONSE_SCHEMA: &str = r#"{
   "type": "object",
@@ -166,81 +162,8 @@ impl AiBackend for ClaudeBackend {
         // ターミナルコンテキストを含む prompt が ARG_MAX (~2MB) を超えると
         // execve() が E2BIG (`Argument list too long`, os error 7) で失敗するため。
 
-        let mut child = Command::new("claude")
-            .args(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-
-        write_log(&self.log_path, &format!("claude {}", shell_join(&args)));
-        write_log(&self.log_path, &format!("[prompt via stdin]\n{prompt}"));
-
-        // prompt を子プロセスの stdin に書き込み、EOF を伝えるために close する。
-        // close しないと claude は入力待ちで永遠にブロックする。
-        {
-            let mut stdin = child.stdin.take().expect("stdin should be piped");
-            stdin.write_all(prompt.as_bytes())?;
-            // stdin はスコープを抜けて drop されると close される
-        }
-
-        // stdout/stderrを別スレッドで読み取り
-        let child_stdout = child.stdout.take().unwrap();
-        let child_stderr = child.stderr.take().unwrap();
-
-        let stdout_handle = thread::spawn(move || {
-            let mut buf = Vec::new();
-            let mut r = child_stdout;
-            let _ = r.read_to_end(&mut buf);
-            buf
-        });
-
-        let stderr_handle = thread::spawn(move || {
-            let mut buf = Vec::new();
-            let mut r = child_stderr;
-            let _ = r.read_to_end(&mut buf);
-            buf
-        });
-
-        // 子プロセス完了を待ちつつ、Ctrl+Cをチェック
-        let status = loop {
-            match child.try_wait()? {
-                Some(status) => break status,
-                None => {
-                    if check_stdin_cancel() {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        let _ = stdout_handle.join();
-                        let _ = stderr_handle.join();
-                        return Err(AiError::Cancelled);
-                    }
-                    thread::sleep(Duration::from_millis(50));
-                }
-            }
-        };
-
-        let stdout_bytes = stdout_handle.join().unwrap_or_default();
-        let stderr_bytes = stderr_handle.join().unwrap_or_default();
-        let stdout = String::from_utf8_lossy(&stdout_bytes);
-        let stderr = String::from_utf8_lossy(&stderr_bytes);
-
-        write_log(&self.log_path, stdout.trim());
-        if !stderr.trim().is_empty() {
-            write_log(&self.log_path, &format!("[stderr]\n{}", stderr.trim()));
-        }
-
-        if !status.success() {
-            return Err(AiError::NonZeroExit {
-                stderr: stderr.into_owned(),
-            });
-        }
-
+        let stdout = run_cli_capture_stdout("claude", &args, &prompt, &self.log_path)?;
         let stdout_trimmed = stdout.trim();
-        if stdout_trimmed.is_empty() {
-            return Err(AiError::EmptyOutput {
-                stderr: stderr.into_owned(),
-            });
-        }
 
         // claude CLIの出力にJSON以外のテキストが含まれる場合があるため、
         // JSON部分を抽出する
