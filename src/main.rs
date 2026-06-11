@@ -1,6 +1,7 @@
 mod ai;
 mod config;
 mod input;
+mod input_gate;
 mod mode;
 mod prompt_sniffer;
 mod pty_handler;
@@ -462,9 +463,9 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
         }
     });
 
-    let mut pending_input = true; // 入力スレッド起動待ち
-    let mut input_idle = true;
-    let mut last_pty_output = Instant::now();
+    // 入力スレッド再開の 3 状態 (idle / pending / 静音タイマ) は InputGate に集約。
+    // ばらの変数で持ち回ると再設定漏れで入力ハングを再発させるため。
+    let mut gate = input_gate::InputGate::new(prompt_tx.clone());
 
     // メインループ
     'main_loop: loop {
@@ -481,15 +482,11 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                 io::stdout().flush()?;
             }
             ring_buffer.append(&data);
-            last_pty_output = Instant::now();
+            gate.note_pty_output();
         }
 
         // PTY出力が落ち着いたら入力スレッドを起動
-        if pending_input && input_idle && last_pty_output.elapsed() > Duration::from_millis(50) {
-            let _ = prompt_tx.send(ui::InputRequest::Passthrough(String::new()));
-            pending_input = false;
-            input_idle = false;
-        }
+        gate.maybe_request_passthrough();
 
         // PTYプロセスの終了チェック。
         // EOF 検出 (alive_rx) だけだと、子プロセスが exit しても master read が
@@ -516,18 +513,13 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                 continue;
             }
             Ok(ui::InputEvent::PassthroughEnded) => {
-                // 入力スレッドがidle状態に戻った
-                input_idle = true;
-                // PTY出力が落ち着いてから[aish]プロンプトを再表示し入力を再開
-                pending_input = true;
-                last_pty_output = Instant::now();
+                // 入力スレッドが idle に戻った。PTY 出力が落ち着いてから入力を再開する。
+                gate.arm_passthrough();
                 continue;
             }
             Ok(ui::InputEvent::AiPrompt(prompt)) => {
-                input_idle = true;
                 if prompt.is_empty() {
-                    pending_input = true;
-                    last_pty_output = Instant::now();
+                    gate.arm_passthrough();
                     continue;
                 }
                 // slash command (/help, /effort, /model, /clear, /ai) はローカルで処理し AI には送らない。
@@ -542,8 +534,7 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                     // shell プロンプトをリフレッシュする。打ちかけ消去 + 改行の不可分な
                     // 組み合わせは PtyHandler::refresh_prompt に固定されている (信頼の根幹)。
                     let _ = pty.refresh_prompt();
-                    pending_input = true;
-                    last_pty_output = Instant::now();
+                    gate.arm_passthrough();
                     continue;
                 }
                 // AI 対話を始める前に、bash readline に残っている打ちかけ
@@ -833,25 +824,18 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                     }
                     ring_buffer.append(&data);
                 }
-                input_idle = true;
-                pending_input = true;
-                last_pty_output = Instant::now();
+                gate.arm_passthrough();
             }
-            Ok(ui::InputEvent::Line(line)) => {
-                input_idle = true;
-                match ui::parse_input(&line) {
-                    ui::UserInput::Exit => {
-                        pty.write(b"exit\n")?;
-                        pending_input = true;
-                        last_pty_output = Instant::now();
-                    }
-                    ui::UserInput::ShellCommand(cmd) => {
-                        pty.write(format!("{cmd}\n").as_bytes())?;
-                        pending_input = true;
-                        last_pty_output = Instant::now();
-                    }
+            Ok(ui::InputEvent::Line(line)) => match ui::parse_input(&line) {
+                ui::UserInput::Exit => {
+                    pty.write(b"exit\n")?;
+                    gate.arm_passthrough();
                 }
-            }
+                ui::UserInput::ShellCommand(cmd) => {
+                    pty.write(format!("{cmd}\n").as_bytes())?;
+                    gate.arm_passthrough();
+                }
+            },
             Ok(ui::InputEvent::ReadLineCancelled) => {
                 // メインループでは ReadLine を発行していない (AI 確認時のみ) ので
                 // ここに来るのは想定外。安全側で無視する。
