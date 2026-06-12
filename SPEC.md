@@ -556,7 +556,7 @@ CIワークフロー（`.github/workflows/release.yml`）側で `aish-{target}.s
 | 設定ファイルパース／読み込みエラー（`--config` 明示） | エラー終了（`exit 1`） |
 | `--update` SHA256 検証失敗 | 一時ファイルを削除してエラー終了 |
 | `--update` `.sha256` 取得失敗 | fail-closed でエラー終了 |
-| claude 実行失敗 (非ゼロ終了) | `AI error: ...` 表示してループ継続 |
+| AI CLI 実行失敗 (非ゼロ終了) | `[{ai}] AI CLI failed: ...` と `Please check your login or usage limit.` を表示してループ継続 |
 | claude 出力が空 | `claude returned empty output` でエラー |
 | claude 出力にJSONなし | `No JSON found in claude output: ...` |
 | AIキャンセル (Ctrl+C中) | `^C` 表示後、対話ループ終了。aishは継続 |

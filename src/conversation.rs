@@ -168,7 +168,7 @@ impl AiConversation<'_> {
                     if matches!(e, ai::AiError::Cancelled) {
                         eprintln!("^C");
                     } else {
-                        eprintln!("AI error: {e}");
+                        eprintln!("{}", format_ai_error(self.kind, &e));
                     }
                     break;
                 }
@@ -291,6 +291,14 @@ impl AiConversation<'_> {
             cancelled: false,
         })
     }
+}
+
+fn format_ai_error(kind: ai::BackendKind, error: &ai::AiError) -> String {
+    format!(
+        "[{}] {}\nPlease check your login or usage limit.",
+        kind.as_str(),
+        error
+    )
 }
 
 /// Y/n/a 確認の入力イベントを 1 決定に解決するまで待つ。
@@ -475,5 +483,16 @@ mod tests {
         // 入力スレッド消滅 (退出間際) は Skip 扱い (旧実装の Err(_) => break false 互換)。
         let rx = rx_with(vec![]);
         assert_eq!(wait_confirm_decision(&rx), ConfirmDecision::Skip);
+    }
+
+    #[test]
+    fn ai_error_message_names_backend_and_hints_login_or_limit() {
+        let error = ai::AiError::NonZeroExit {
+            stderr: "rate limit exceeded".to_string(),
+        };
+        assert_eq!(
+            format_ai_error(ai::BackendKind::Claude, &error),
+            "[claude] AI CLI failed: rate limit exceeded\nPlease check your login or usage limit."
+        );
     }
 }
