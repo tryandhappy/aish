@@ -19,13 +19,19 @@ CLI SSH + AI (Claude Code) ツール。クライアント側のClaude Codeから
 
 | ファイル | 役割 |
 |---|---|
-| `main.rs` | メインループ。PTY読み取りスレッド、ユーザ入力スレッド、イベントループの3構成 |
-| `ui.rs` | ターミナル制御。rawモード（セッション全体で維持）、ライン編集、パススルー、ANSI色、ステータスバー、ミニバッファ |
-| `ai.rs` | Claude Code CLI連携。JSON Schema構造化レスポンス、セッション維持 (`--resume`)、ログ出力 |
+| `main.rs` | メインループ。PTY読み取りスレッド、ユーザ入力スレッド、イベントループの3構成。slash command 処理 |
+| `conversation.rs` | AI 対話 1 セッションの制御フロー (`AiConversation::run`)。打ちかけ消去 → send → Y/n/a 確認 (`ConfirmDecision` / `Approval`) → 実行 → 完了 passive 検出 → follow-up → 終了 refresh |
+| `ui.rs` | ターミナル制御。rawモード（セッション全体で維持）、ライン編集、パススルー、ANSI色、ミニバッファ |
+| `input.rs` | 低レベル端末入力の framing (唯一の場所)。`ByteSource` → `next_event` → `Tok` |
+| `input_gate.rs` | パススルー入力スレッド再開の 3 状態管理 (`InputGate` + `rearm_on_drop` RAII guard) |
+| `ai/` | AI backend 層。`AiBackend` trait + claude/codex/gemini/qwen/cursor/copilot/generic の各実装、factory、共通 prompt/spawn (`common.rs`) |
 | `config.rs` | TOML設定ロード |
-| `pty_handler.rs` | portable-pty によるSSH / ローカルシェル起動。実端末サイズで起動し SIGWINCH で追従 |
+| `pty_handler.rs` | portable-pty によるSSH / ローカルシェル起動。実端末サイズで起動し SIGWINCH で追従。`kill_line` / `refresh_prompt` / `send_approved_command` |
+| `pty_drain.rs` | PTY 出力吸い出しの一元化 (`drain_pty` + `DrainOpts`)。表示方針・先頭改行 trim・sniffer 連携 |
+| `prompt_sniffer.rs` | シェルプロンプト復帰の passive 検出 (終端文字学習つき) |
+| `vetted_command.rs` | AI 提案コマンドの制御文字検証 newtype (`VettedCommand`)。「承認した物 = 実行される物」の型保証 |
 | `update.rs` | セルフアップデート (`--update`)。GitHub Releases APIから最新バイナリをダウンロード |
-| `ring_buffer.rs` | 1MBリングバッファ。ANSIエスケープ除去、差分送信 (`mark_sent` / `get_unsent`) |
+| `ring_buffer.rs` | 1MBリングバッファ。ANSIエスケープ除去、backend 別差分送信、AI 注釈記録 (`record_ai_exchange`) |
 | `mode.rs` | `Local` / `Remote` の2モード定義 |
 
 ---
