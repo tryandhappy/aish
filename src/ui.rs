@@ -1,5 +1,6 @@
 use crate::ai::BackendKind;
 use crate::config::DisplayConfig;
+use crate::vetted_command::VettedCommand;
 use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
@@ -362,15 +363,8 @@ fn visualize_control_line(s: &str) -> String {
     out
 }
 
-/// シェルへ送る 1 コマンドとして不正な制御文字 (改行/CR/ESC/NUL/TAB/その他 C0/DEL/C1) を含むか。
-/// 正当な単一行シェルコマンドに制御文字は不要なので、含むものは承認 UI に載せず実行も拒否する
-/// (`src/main.rs` の実行ループ先頭ガード)。これにより `pty.write` には制御文字フリーの
-/// コマンドだけが到達し、「画面で承認した物 = サーバで実行される物」が保たれる。
-pub fn command_has_control_chars(cmd: &str) -> bool {
-    cmd.chars().any(|c| c.is_control())
-}
-
 /// 制御文字を含むため実行を拒否したコマンドを、可視化したうえで理由付きで表示する。
+/// (検証自体は `crate::vetted_command::VettedCommand::vet` が行う)
 pub fn print_rejected_command(cmd: &str, display: &DisplayConfig) {
     let color = build_color_start(&display.confirm_color);
     let safe = visualize_control_line(cmd);
@@ -422,7 +416,15 @@ pub fn print_ai_commands(commands: &[String], display: &DisplayConfig) {
     io::stdout().flush().ok();
 }
 
-pub fn print_single_confirm_prompt(cmd: &str, index: usize, total: usize, display: &DisplayConfig) {
+/// Y/n/a 確認プロンプトを表示する。`VettedCommand` (制御文字フリー検証済み) しか
+/// 受け付けないため、ここで表示される文字列 = `send_approved_command` で送られる
+/// バイト列が型レベルで一致する (確認画面の偽装防止)。
+pub fn print_single_confirm_prompt(
+    cmd: &VettedCommand<'_>,
+    index: usize,
+    total: usize,
+    display: &DisplayConfig,
+) {
     let color = &display.confirm_color;
     // 残コマンドがある (= 最後ではない) ときだけ [Y/n/a] を出す。
     // a = 残り全部を自動承認 (apt / sudo の慣習)。
@@ -437,8 +439,9 @@ pub fn print_single_confirm_prompt(cmd: &str, index: usize, total: usize, displa
     // これを入れないと混ざってしまう。1つ目の前は空行になるが
     // `Proposed commands:` リストとの区切りになり視認性が上がる。
     // cmd 前後のスペースは色を付けないように、各セグメント境界で \x1b[0m リセットする。
-    // cmd は AI 由来 (未信頼) なので制御文字を可視化し、確認画面の見た目を送信バイトと一致させる。
-    let cmd = visualize_control_line(cmd);
+    // VettedCommand は制御文字フリーだが、可視化は防御的に残す (vet と可視化の
+    // 対象集合が将来ズレても「見た目 ≠ 送信バイト」の偽装だけは成立しないように)。
+    let cmd = visualize_control_line(cmd.as_str());
     print!("\n{color}{label_on}Exec?\x1b[0m {color}{cmd}\x1b[0m {color}{hl_on}[{options}]\x1b[0m ");
     io::stdout().flush().ok();
 }
@@ -1275,25 +1278,6 @@ mod tests {
         assert_eq!(visualize_control_line("ls -la /tmp"), "ls -la /tmp");
         // マルチバイト印字文字は素通し。
         assert_eq!(visualize_control_line("日本語"), "日本語");
-    }
-
-    #[test]
-    fn command_has_control_chars_clean() {
-        assert!(!command_has_control_chars("ls -la"));
-        assert!(!command_has_control_chars("echo 'hello world'"));
-    }
-
-    #[test]
-    fn command_has_control_chars_detects_smuggling() {
-        // CR で 2 コマンドに分裂させる古典的偽装。
-        assert!(command_has_control_chars("git status\rrm -rf ~"));
-        // ESC で行を消して危険部分を隠す偽装。
-        assert!(command_has_control_chars("git status\r\x1b[2Krm -rf ~"));
-        // TAB / 改行 / NUL も拒否対象。
-        assert!(command_has_control_chars("a\tb"));
-        assert!(command_has_control_chars("a\nb"));
-        assert!(command_has_control_chars("a\0b"));
-        assert!(command_has_control_chars("echo \x1b[0m"));
     }
 
     #[test]

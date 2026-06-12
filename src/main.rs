@@ -9,6 +9,7 @@ mod pty_handler;
 mod ring_buffer;
 mod ui;
 mod update;
+mod vetted_command;
 
 use mode::Mode;
 use std::io::{self, Read, Write};
@@ -682,22 +683,24 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                             // Ctrl+C で残り全部キャンセルされたか (follow-up 文面の分岐用)
                             let mut user_cancelled = false;
                             for (i, cmd) in response.commands.iter().enumerate() {
-                                // AI 提案コマンドに制御文字 (改行/CR/ESC/NUL/TAB 等) が
-                                // 含まれる場合は拒否する。確認画面の見た目を送信バイトと
-                                // ズラす偽装 (\r で行頭復帰・\x1b[2K で行消去して危険部分を
-                                // 隠す等) や、\r が bash に Enter として届いて 1 承認で複数
-                                // コマンドが実行される事故を防ぐため。承認 UI に載せず PTY
-                                // にも送らない。Approval::All (= [a]) 経路もこのガードを
-                                // 通るので、まとめ承認でも制御文字入りは漏れない。
-                                if ui::command_has_control_chars(cmd) {
-                                    ui::print_rejected_command(cmd, &config.display);
-                                    continue;
-                                }
+                                // AI 提案コマンドの制御文字検証 (偽装・密輸の拒否理由は
+                                // vetted_command.rs のドキュメント参照)。Approval 分岐より
+                                // 前に置くことで Approval::All (= [a]) のまとめ承認経路も
+                                // 必ずこのガードを通る。以降この iteration では検証済みの
+                                // VettedCommand だけを扱い、表示 (confirm prompt) と送信
+                                // (send_approved_command) が同一の検証済み値になる。
+                                let cmd = match vetted_command::VettedCommand::vet(cmd) {
+                                    Ok(vetted) => vetted,
+                                    Err(raw) => {
+                                        ui::print_rejected_command(raw, &config.display);
+                                        continue;
+                                    }
+                                };
                                 let decision = match approval {
                                     Approval::All => ConfirmDecision::Run,
                                     Approval::AskEach => {
                                         ui::print_single_confirm_prompt(
-                                            cmd,
+                                            &cmd,
                                             i + 1,
                                             total,
                                             &config.display,
@@ -726,7 +729,7 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                                 }
 
                                 // ユーザが承認したコマンドをそのまま PTY に送る。ラップしない。
-                                pty.write(format!("{cmd}\n").as_bytes())?;
+                                pty.send_approved_command(&cmd)?;
                                 debug_log(&format!("=== exec start: {cmd}"));
 
                                 // コマンド実行完了待ち（passive 検出）。

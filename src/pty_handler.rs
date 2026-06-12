@@ -1,3 +1,4 @@
+use crate::vetted_command::VettedCommand;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 
@@ -93,6 +94,17 @@ impl PtyHandler {
     pub fn refresh_prompt(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let _ = self.write(&[0x01, 0x0b]);
         self.write(b"\n")
+    }
+
+    /// ユーザが画面で承認した AI 提案コマンド + 改行を PTY に送る。
+    /// `VettedCommand` (制御文字フリーが検証済みの型) しか受け付けないため、
+    /// 未検証文字列が AI 提案経路から PTY に届くコードパスは型レベルで存在しない。
+    /// コマンドはラップ・変形せずそのまま送る (信頼の根幹)。
+    pub fn send_approved_command(
+        &mut self,
+        cmd: &VettedCommand<'_>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.write(format!("{}\n", cmd.as_str()).as_bytes())
     }
 
     pub fn resize(&self, rows: u16, cols: u16) -> Result<(), Box<dyn std::error::Error>> {
