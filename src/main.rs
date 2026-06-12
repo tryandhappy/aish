@@ -17,6 +17,19 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// AI 提案コマンドの完了判定に使う PTY 静音時間。出力末尾がプロンプト形でも、
+/// この時間静まるまでは「出力途中にたまたまプロンプト風の行が出た」可能性を排除しない。
+const PROMPT_QUIET_THRESHOLD: Duration = Duration::from_millis(200);
+/// コマンド実行完了待ちループの poll 間隔 (CPU を占有しないための休止)。
+const EXEC_POLL_INTERVAL: Duration = Duration::from_millis(20);
+/// kill_line (打ちかけ消去) 送信後、bash の消去 redisplay が pty_rx に到着するのを待つ時間。
+/// SSH 越しでは取りこぼし得るが、その場合も次の main loop drain で追従するだけで実害はない。
+const KILL_LINE_REDISPLAY_WAIT: Duration = Duration::from_millis(150);
+/// 子プロセス死亡検出後、logout メッセージ等の残り出力が pty_rx に届くのを待つ時間。
+const FINAL_DRAIN_WAIT: Duration = Duration::from_millis(50);
+/// refresh_prompt (打ちかけ消去 + 改行) 送信後、シェルプロンプトの再表示出力を待つ時間。
+const PROMPT_REFRESH_WAIT: Duration = Duration::from_millis(200);
+
 struct AishArgs {
     config_path: Option<String>,
     ai_backend: Option<String>,
@@ -296,7 +309,7 @@ fn discard_stale_readline_input(
     ring_buffer: &mut ring_buffer::RingBuffer,
 ) -> io::Result<()> {
     let _ = pty.kill_line();
-    thread::sleep(Duration::from_millis(150));
+    thread::sleep(KILL_LINE_REDISPLAY_WAIT);
     pty_drain::drain_pty(
         pty_rx,
         ring_buffer,
@@ -304,6 +317,79 @@ fn discard_stale_readline_input(
         pty_drain::DrainOpts::default(), // Hidden: 表示せず記録のみ
     )?;
     Ok(())
+}
+
+/// `wait_for_command_completion` の結果。
+enum CommandWait {
+    /// 出力末尾がプロンプト形に戻り静音した (= コマンド完了とみなす)。
+    PromptReturned,
+    /// 子プロセス (ssh / shell) が死んだ。残り出力は drain 済み。
+    /// 呼び出し側は main loop ごと抜けること。
+    PtyDied,
+}
+
+/// AI 提案コマンド送信後の実行完了待ち (passive 検出)。
+/// - PTY 出力をドレインして画面 / リングバッファ / sniffer へ
+/// - stdin → PTY 転送（パスワード入力・Ctrl+C 中断・対話応答）
+/// - SIGWINCH 検知（リサイズ追従）
+/// - 完了判定: PTY 出力末尾がプロンプト形 + `PROMPT_QUIET_THRESHOLD` 静音
+///
+/// 子プロセス死亡時 (sudo reboot 等で SSH が切れた後はプロンプトに戻らないため、
+/// sniffer ベースの完了判定だと永遠にハングする) は残り出力をドレインして
+/// `PtyDied` を返す。
+fn wait_for_command_completion(
+    pty: &mut pty_handler::PtyHandler,
+    pty_rx: &mpsc::Receiver<Vec<u8>>,
+    ring_buffer: &mut ring_buffer::RingBuffer,
+) -> Result<CommandWait, Box<dyn std::error::Error>> {
+    let mut sniffer = prompt_sniffer::PromptSniffer::new();
+    let mut last_pty_activity = Instant::now();
+    let mut chunk_count = 0usize;
+    loop {
+        if !pty.is_alive() {
+            thread::sleep(FINAL_DRAIN_WAIT);
+            pty_drain::drain_pty(
+                pty_rx,
+                ring_buffer,
+                &mut io::stdout(),
+                pty_drain::DrainOpts {
+                    display: pty_drain::DrainDisplay::Always,
+                    ..Default::default()
+                },
+            )?;
+            io::stdout().flush().ok();
+            return Ok(CommandWait::PtyDied);
+        }
+        if ui::check_and_clear_sigwinch() {
+            let (new_rows, new_cols) = ui::terminal_size();
+            let _ = pty.resize(new_rows, new_cols);
+        }
+        let got_pty = pty_drain::drain_pty(
+            pty_rx,
+            ring_buffer,
+            &mut io::stdout(),
+            pty_drain::DrainOpts {
+                display: pty_drain::DrainDisplay::Always,
+                flush_each_chunk: true,
+                sniffer: Some(&mut sniffer),
+                debug_chunk_count: Some(&mut chunk_count),
+                ..Default::default()
+            },
+        )?;
+        if got_pty {
+            last_pty_activity = Instant::now();
+        }
+        let stdin_bytes = ui::drain_stdin_nonblocking();
+        if !stdin_bytes.is_empty() {
+            pty.write(&stdin_bytes)?;
+        }
+        if last_pty_activity.elapsed() >= PROMPT_QUIET_THRESHOLD && sniffer.matches_prompt() {
+            sniffer.record_match();
+            debug_log(&format!("exec end: chunks={chunk_count}"));
+            return Ok(CommandWait::PromptReturned);
+        }
+        thread::sleep(EXEC_POLL_INTERVAL);
+    }
 }
 
 /// AI 提案コマンドの Y/n/a 確認 1 回分の結果。
@@ -589,7 +675,7 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
         // child.try_wait() による能動検出も併用する。
         if alive_rx.try_recv().is_ok() || !pty.is_alive() {
             // 残りのPTY出力（logoutメッセージ等）を表示してから終了する
-            thread::sleep(Duration::from_millis(50));
+            thread::sleep(FINAL_DRAIN_WAIT);
             pty_drain::drain_pty(
                 &pty_rx,
                 &mut ring_buffer,
@@ -735,67 +821,18 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                                 pty.send_approved_command(&cmd)?;
                                 debug_log(&format!("=== exec start: {cmd}"));
 
-                                // コマンド実行完了待ち（passive 検出）。
-                                // - PTY 出力をドレインして画面 / リングバッファ / sniffer へ
-                                // - stdin → PTY 転送（パスワード入力・Ctrl+C 中断・対話応答）
-                                // - SIGWINCH 検知（リサイズ追従）
-                                // - 完了判定: PTY 出力末尾がプロンプト形 + 200ms 静音
-                                let quiet_threshold = Duration::from_millis(200);
-                                let mut sniffer = prompt_sniffer::PromptSniffer::new();
-                                let mut last_pty_activity = Instant::now();
-                                let mut chunk_count = 0usize;
-                                loop {
-                                    // 子プロセス (ssh / shell) が死んだら待っても意味がない。
-                                    // sudo reboot 等で SSH が切れた後はプロンプトに戻らないため、
-                                    // sniffer ベースの完了判定だと永遠にハングする。
-                                    // 残り出力をドレインしてメインループごと抜ける。
-                                    if !pty.is_alive() {
-                                        thread::sleep(Duration::from_millis(50));
-                                        pty_drain::drain_pty(
-                                            &pty_rx,
-                                            &mut ring_buffer,
-                                            &mut io::stdout(),
-                                            pty_drain::DrainOpts {
-                                                display: pty_drain::DrainDisplay::Always,
-                                                ..Default::default()
-                                            },
-                                        )?;
-                                        io::stdout().flush().ok();
-                                        break 'main_loop;
-                                    }
-                                    if ui::check_and_clear_sigwinch() {
-                                        let (new_rows, new_cols) = ui::terminal_size();
-                                        let _ = pty.resize(new_rows, new_cols);
-                                    }
-                                    let got_pty = pty_drain::drain_pty(
+                                // コマンド実行完了待ち（passive 検出）。子プロセス死亡時は
+                                // 待っても意味がないのでメインループごと抜ける。
+                                if matches!(
+                                    wait_for_command_completion(
+                                        &mut pty,
                                         &pty_rx,
-                                        &mut ring_buffer,
-                                        &mut io::stdout(),
-                                        pty_drain::DrainOpts {
-                                            display: pty_drain::DrainDisplay::Always,
-                                            flush_each_chunk: true,
-                                            sniffer: Some(&mut sniffer),
-                                            debug_chunk_count: Some(&mut chunk_count),
-                                            ..Default::default()
-                                        },
-                                    )?;
-                                    if got_pty {
-                                        last_pty_activity = Instant::now();
-                                    }
-                                    let stdin_bytes = ui::drain_stdin_nonblocking();
-                                    if !stdin_bytes.is_empty() {
-                                        pty.write(&stdin_bytes)?;
-                                    }
-                                    if last_pty_activity.elapsed() >= quiet_threshold
-                                        && sniffer.matches_prompt()
-                                    {
-                                        sniffer.record_match();
-                                        break;
-                                    }
-                                    thread::sleep(Duration::from_millis(20));
+                                        &mut ring_buffer
+                                    )?,
+                                    CommandWait::PtyDied
+                                ) {
+                                    break 'main_loop;
                                 }
-
-                                debug_log(&format!("exec end: chunks={chunk_count}"));
 
                                 executed_summary.push(format!("`{cmd}`"));
                             }
@@ -850,7 +887,7 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                 // 打ちかけた未確定入力が bash readline に残る。refresh_prompt が改行前に
                 // 消去し、打ちかけの勝手な実行を防ぐ (実行済み経路では行が空なので no-op)。
                 pty.refresh_prompt()?;
-                thread::sleep(Duration::from_millis(200));
+                thread::sleep(PROMPT_REFRESH_WAIT);
                 // 先頭の改行を表示からだけ除去してプロンプトだけ見せる (記録は完全)
                 pty_drain::drain_pty(
                     &pty_rx,
