@@ -33,11 +33,26 @@ impl InputGate {
     }
 
     /// 入力スレッドが idle に戻った。次に PTY 出力が静まったら Passthrough を再発行する。
-    /// AiPrompt arm の全出口 / slash command 処理後 / Line 処理後 / PassthroughEnded の共通出口。
-    pub fn arm_passthrough(&mut self) {
+    ///
+    /// private: 直接呼ばず、`rearm_on_drop()` guard を「idle に戻る arm」の入口で
+    /// 取得すること。旧実装はこの呼び出しを全 exit point (continue / break / `?`) に
+    /// 手書きしており、呼び忘れ = 入力ハングを 2 回起こした。guard ならスコープ離脱の
+    /// 経路を問わず必ず発火する。
+    fn arm_passthrough(&mut self) {
         self.idle = true;
         self.pending = true;
         self.last_pty_output = Instant::now();
+    }
+
+    /// Drop 時に必ず `arm_passthrough()` する RAII ガードを返す。
+    ///
+    /// 「入力スレッドが idle に戻る arm」(AiPrompt / Line / PassthroughEnded) の入口で
+    /// `let _rearm = gate.rearm_on_drop();` と取得する。arm の処理がどの経路で終わっても
+    /// (正常完了 / continue / break / `?` エラー伝播) guard の Drop で再 arm されるため、
+    /// 出口ごとの呼び忘れが構造的に起きない。PtyData arm (入力スレッド継続中) では
+    /// 取得しないこと。guard 生存中は InputGate を他から触れない (借用で保証)。
+    pub fn rearm_on_drop(&mut self) -> RearmOnDrop<'_> {
+        RearmOnDrop(self)
     }
 
     /// PTY 出力を観測した (静音タイマをリセット)。
@@ -57,6 +72,15 @@ impl InputGate {
             self.pending = false;
             self.idle = false;
         }
+    }
+}
+
+/// `InputGate::rearm_on_drop` が返す RAII ガード。Drop で必ず再 arm する。
+pub struct RearmOnDrop<'a>(&'a mut InputGate);
+
+impl Drop for RearmOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.arm_passthrough();
     }
 }
 
@@ -104,6 +128,24 @@ mod tests {
         gate.maybe_request_passthrough();
         let _ = rx.try_recv();
         gate.arm_passthrough();
+        force_quiet(&mut gate);
+        gate.maybe_request_passthrough();
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ui::InputRequest::Passthrough(_))
+        ));
+    }
+
+    #[test]
+    fn guard_rearms_on_scope_exit() {
+        let (mut gate, rx) = gate_with_rx();
+        force_quiet(&mut gate);
+        gate.maybe_request_passthrough();
+        let _ = rx.try_recv();
+        // arm を直接呼ばず guard のスコープ離脱だけで再 arm されること
+        {
+            let _rearm = gate.rearm_on_drop();
+        }
         force_quiet(&mut gate);
         gate.maybe_request_passthrough();
         assert!(matches!(
