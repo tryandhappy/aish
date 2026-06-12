@@ -611,22 +611,14 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                 loop {
                     match ai_result {
                         Ok(response) => {
-                            // 注釈を ring_buffer に積んでから mark_sent_for(kind) で current の cursor を末尾へ。
-                            // この順序により、current は自分の発話を catch-up で受信せず、
-                            // 一方で他 backend は後で切替えられたとき注釈をまとめて受信できる。
-                            let kind_label = kind.as_str();
-                            ring_buffer.append_text(&format!(
-                                "\n[aish→{kind_label}]> {last_prompt_for_annotation}\n"
-                            ));
-                            ring_buffer
-                                .append_text(&format!("[ai/{kind_label}]> {}\n", response.message));
-                            if !response.commands.is_empty() {
-                                ring_buffer.append_text(&format!(
-                                    "[ai/{kind_label} suggests] {}\n",
-                                    response.commands.join(" ; ")
-                                ));
-                            }
-                            ring_buffer.mark_sent_for(kind);
+                            // 注釈 append → mark_sent_for の順序不変条件ごと
+                            // record_ai_exchange にカプセル化されている。
+                            ring_buffer.record_ai_exchange(
+                                kind,
+                                &last_prompt_for_annotation,
+                                &response.message,
+                                &response.commands,
+                            );
 
                             ui::print_ai_message(&response.message, kind, &config.display);
 

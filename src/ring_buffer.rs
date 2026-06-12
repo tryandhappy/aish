@@ -62,6 +62,32 @@ impl RingBuffer {
         self.sent_marks.insert(kind.ordinal(), self.total_written);
     }
 
+    /// AI 1 ターン分の注釈 (送信 prompt / 応答 message / 提案 commands) を append し、
+    /// 直後に `mark_sent_for(kind)` するところまでを 1 メソッドで行う不可分操作。
+    ///
+    /// 「append してから mark」の順序を呼び出し側に委ねると、逆順 (mark → append) に
+    /// 書かれたとき current AI が自分の発話を次ターンの catch-up で再受信してループする。
+    /// この順序不変条件はここに閉じ、main loop にばらの append + mark を再導入しないこと。
+    /// 注釈ラベル (`[aish→…]` / `[ai/…]` / `[ai/… suggests]`) のフォーマットもここが唯一の定義。
+    pub fn record_ai_exchange(
+        &mut self,
+        kind: BackendKind,
+        sent_prompt: &str,
+        message: &str,
+        commands: &[String],
+    ) {
+        let kind_label = kind.as_str();
+        self.append_text(&format!("\n[aish→{kind_label}]> {sent_prompt}\n"));
+        self.append_text(&format!("[ai/{kind_label}]> {message}\n"));
+        if !commands.is_empty() {
+            self.append_text(&format!(
+                "[ai/{kind_label} suggests] {}\n",
+                commands.join(" ; ")
+            ));
+        }
+        self.mark_sent_for(kind);
+    }
+
     /// 全 backend の cursor を末尾に進める。`/clear` 用。
     /// native (`all_native()`) と `all_generics()` 両方を更新する。
     /// まだ HashMap に entry が無い backend にも entry を作って総書き込み量と同期させる
@@ -232,6 +258,50 @@ mod tests {
         buf.append(b"-beta");
         assert_eq!(buf.get_unsent_for(BackendKind::Generic(0)), "-beta");
         assert_eq!(buf.get_unsent_for(BackendKind::Generic(1)), "alpha-beta");
+    }
+
+    #[test]
+    fn record_ai_exchange_marks_current_but_not_others() {
+        let mut buf = RingBuffer::new();
+        buf.record_ai_exchange(
+            BackendKind::Claude,
+            "disk full?",
+            "df を見ます",
+            &["df -h".to_string()],
+        );
+        // current は自分の発話を catch-up で再受信しない。
+        assert_eq!(buf.get_unsent_for(BackendKind::Claude), "");
+        // 他 backend には 3 注釈が全部見える。
+        let other = buf.get_unsent_for(BackendKind::Codex);
+        assert!(other.contains("[aish→claude]> disk full?"));
+        assert!(other.contains("[ai/claude]> df を見ます"));
+        assert!(other.contains("[ai/claude suggests] df -h"));
+    }
+
+    #[test]
+    fn record_ai_exchange_format_is_stable() {
+        // 注釈フォーマットの golden 固定。変更すると他 backend の catch-up 文脈や
+        // SPEC.md の注釈仕様とズレるので、意図的な変更時のみテストごと更新する。
+        let mut buf = RingBuffer::new();
+        buf.record_ai_exchange(
+            BackendKind::Claude,
+            "p",
+            "m",
+            &["a".to_string(), "b".to_string()],
+        );
+        assert_eq!(
+            buf.get_unsent_for(BackendKind::Codex),
+            "\n[aish→claude]> p\n[ai/claude]> m\n[ai/claude suggests] a ; b\n"
+        );
+    }
+
+    #[test]
+    fn record_ai_exchange_omits_suggests_when_no_commands() {
+        let mut buf = RingBuffer::new();
+        buf.record_ai_exchange(BackendKind::Claude, "p", "m", &[]);
+        let other = buf.get_unsent_for(BackendKind::Codex);
+        assert!(!other.contains("suggests"));
+        assert_eq!(other, "\n[aish→claude]> p\n[ai/claude]> m\n");
     }
 
     #[test]
