@@ -335,27 +335,53 @@ impl Drop for Spinner {
     }
 }
 
-/// AI 由来の 1 論理行 (改行を含まない前提) 内の制御文字を caret 記法で可視化する。
+/// 制御文字 1 つを caret 記法で `out` に追記する。
 /// C0 (0x00-0x1f) → `^X` (X = c + 0x40)、DEL (0x7f) → `^?`、その他 `char::is_control()`
-/// (C1 等) も `^?` に潰す。印字可能文字はそのまま。ESC は `^[`、CR は `^M`、TAB は `^I`。
+/// (C1 等) も `^?` に潰す。ESC は `^[`、CR は `^M`、TAB は `^I`、LF は `^J`。
+fn push_caret(out: &mut String, c: char) {
+    match c {
+        '\x7f' => out.push_str("^?"),
+        c if (c as u32) < 0x20 => {
+            out.push('^');
+            // 0x00..=0x1f → '@'(0x40)..='_'(0x5f)
+            out.push((b'@' + c as u8) as char);
+        }
+        // C1 等の非 ASCII 制御文字はまとめて `^?` に潰す (稀)。
+        _ => out.push_str("^?"),
+    }
+}
+
+/// AI 由来の 1 論理行 (改行を含まない前提) 内の制御文字を caret 記法で可視化する。
+/// 印字可能文字はそのまま。TAB も含め全制御文字を caret 化する (最大可視化)。
 ///
-/// 目的: AI が返す message / commands を端末に出すとき、`\r` や `\x1b[2K` 等で確認画面の
+/// 目的: AI が返す message / 拒否コマンドを端末に出すとき、`\r` や `\x1b[2K` 等で確認画面の
 /// 見た目を送信バイトとズラす偽装 (= ユーザが見て承認した物 ≠ 実際に送る物) を防ぐ。
 /// `\n` は呼び出し側が `.lines()` で分割済みなので通常ここには来ないが、来ても `^J` に可視化される。
 fn visualize_control_line(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         if c.is_control() {
-            match c {
-                '\x7f' => out.push_str("^?"),
-                c if (c as u32) < 0x20 => {
-                    out.push('^');
-                    // 0x00..=0x1f → '@'(0x40)..='_'(0x5f)
-                    out.push((b'@' + c as u8) as char);
-                }
-                // C1 等の非 ASCII 制御文字はまとめて `^?` に潰す (稀)。
-                _ => out.push_str("^?"),
-            }
+            push_caret(&mut out, c);
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// AI 提案コマンドの 1 行 (改行は呼び出し側が `split('\n')` で分割済みの前提) を表示用に
+/// 可視化する。`visualize_control_line` との違いは **TAB (`\t`) を caret 化せず literal の
+/// まま通す**こと。TAB は `VettedCommand::vet` が許可する制御文字 (字下げ用) であり、上移動・
+/// 行消去ができないので確認画面の偽装に使えないため、字下げの見た目を保つほうを優先する。
+/// `\t`/`\n` 以外の制御文字 (CR/ESC/NUL/DEL/C1 等。vet が拒否する集合) は caret 化する。
+/// この「literal で通す集合 = `\n`/`\t`」は `VettedCommand::vet` の許可集合と一致させること。
+fn visualize_command_segment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c == '\t' {
+            out.push('\t');
+        } else if c.is_control() {
+            push_caret(&mut out, c);
         } else {
             out.push(c);
         }
@@ -409,9 +435,21 @@ pub fn print_ai_commands(commands: &[String], display: &DisplayConfig) {
     let color = build_color_start(&display.ai_color);
     println!("{color}Proposed commands:\x1b[K\x1b[0m");
     for (i, cmd) in commands.iter().enumerate() {
-        // AI 提案コマンドは未信頼。制御文字を可視化してから描画する。
-        let cmd = visualize_control_line(cmd);
-        println!("{}  {}: {}\x1b[K\x1b[0m", color, i + 1, cmd);
+        // 複数行コマンド (heredoc / スクリプト) は各行を 1 行として描画し、2 行目以降は
+        // 番号プレフィクス幅ぶん字下げして揃える (= ユーザが送信される全行を漏れなく見る)。
+        // `\n` で分割し、CR/ESC 等の偽装用制御文字は caret 化、TAB は字下げ literal で残す。
+        let prefix = format!("  {}: ", i + 1);
+        let indent = " ".repeat(prefix.len());
+        let mut first = true;
+        for line in cmd.split('\n') {
+            let line = visualize_command_segment(line);
+            if first {
+                println!("{color}{prefix}{line}\x1b[K\x1b[0m");
+                first = false;
+            } else {
+                println!("{color}{indent}{line}\x1b[K\x1b[0m");
+            }
+        }
     }
     io::stdout().flush().ok();
 }
@@ -439,10 +477,25 @@ pub fn print_single_confirm_prompt(
     // これを入れないと混ざってしまう。1つ目の前は空行になるが
     // `Proposed commands:` リストとの区切りになり視認性が上がる。
     // cmd 前後のスペースは色を付けないように、各セグメント境界で \x1b[0m リセットする。
-    // VettedCommand は制御文字フリーだが、可視化は防御的に残す (vet と可視化の
-    // 対象集合が将来ズレても「見た目 ≠ 送信バイト」の偽装だけは成立しないように)。
-    let cmd = visualize_control_line(cmd.as_str());
-    print!("\n{color}{label_on}Exec?\x1b[0m {color}{cmd}\x1b[0m {color}{hl_on}[{options}]\x1b[0m ");
+    // VettedCommand は `\n`/`\t` 以外の制御文字フリーだが、可視化は防御的に残す
+    // (vet と可視化の対象集合が将来ズレても「見た目 ≠ 送信バイト」の偽装だけは成立しないように)。
+    let raw = cmd.as_str();
+    if raw.contains('\n') {
+        // 複数行コマンド: "Exec?" を独立行に出し、本文を 2 空白字下げで全行描画してから
+        // [Y/n/a] を独立行に出す。各行は `\n` で分割し、TAB は字下げ literal・他の制御文字は
+        // caret 化する。送信される全行を承認前に漏れなく見せるのが目的 (隠れた行を作らせない)。
+        print!("\n{color}{label_on}Exec?\x1b[0m");
+        for line in raw.split('\n') {
+            let line = visualize_command_segment(line);
+            print!("\n{color}  {line}\x1b[0m");
+        }
+        print!("\n{color}{hl_on}[{options}]\x1b[0m ");
+    } else {
+        let cmd = visualize_command_segment(raw);
+        print!(
+            "\n{color}{label_on}Exec?\x1b[0m {color}{cmd}\x1b[0m {color}{hl_on}[{options}]\x1b[0m "
+        );
+    }
     io::stdout().flush().ok();
 }
 
@@ -1278,6 +1331,22 @@ mod tests {
         assert_eq!(visualize_control_line("ls -la /tmp"), "ls -la /tmp");
         // マルチバイト印字文字は素通し。
         assert_eq!(visualize_control_line("日本語"), "日本語");
+    }
+
+    #[test]
+    fn visualize_command_segment_keeps_tab_literal() {
+        // コマンド表示用は TAB を字下げとして literal で残す (vet が許可する集合に合わせる)。
+        assert_eq!(visualize_command_segment("\techo hi"), "\techo hi");
+    }
+
+    #[test]
+    fn visualize_command_segment_carets_other_controls() {
+        // TAB 以外の制御文字 (CR/ESC/NUL/DEL) は偽装防止のため caret 化する。
+        assert_eq!(visualize_command_segment("a\rb"), "a^Mb");
+        assert_eq!(visualize_command_segment("\x1b[2K"), "^[[2K");
+        assert_eq!(visualize_command_segment("\0\x7f"), "^@^?");
+        // `\n` は呼び出し側が分割済みの前提だが、来たら `^J` に潰す (隠れ行を作らせない)。
+        assert_eq!(visualize_command_segment("a\nb"), "a^Jb");
     }
 
     #[test]
