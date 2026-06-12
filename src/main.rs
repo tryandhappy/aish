@@ -4,6 +4,7 @@ mod input;
 mod input_gate;
 mod mode;
 mod prompt_sniffer;
+mod pty_drain;
 mod pty_handler;
 mod ring_buffer;
 mod ui;
@@ -262,6 +263,48 @@ fn try_handle_slash_command(
     }
 }
 
+/// AI 対話を始める直前に、bash readline に残っている打ちかけ (ユーザが Ctrl+/ の前に
+/// Enter せず入力していた未確定文字列) を消去し、消去 redisplay を画面に流さず
+/// ring_buffer にだけ吸収する。
+///
+/// 「カーソルが bash の readline モデルと同期しているこのタイミング」でしか正しく
+/// 消せない。show_minibuffer が DSR でカーソルを bash プロンプト位置 (= 打ちかけ末尾)
+/// に絶対座標復元した直後であり、まだ AI 出力を 1 文字も stdout に描いていない
+/// (slash command は手前の分岐で continue 済み) ので、実カーソル == bash の readline
+/// カーソル。この状態でだけ kill_line の消去 redisplay (折り返した打ちかけを畳むための
+/// cursor-up 等) が打ちかけ自身の行に正しく当たり、暴走しない。
+///
+/// これを入れないと: 打ちかけが端末幅を超えて複数行に折り返している場合、対話終了後
+/// リフレッシュ (refresh_prompt) で送る Ctrl+A に対し bash が `ESC[A` (cursor-up) を
+/// 複数行ぶん吐き、その上移動が「aish が stdout に出した Exec? 行 (bash は与り知らない)」
+/// の上で起き、シェルプロンプトが Exec? 行を上書きしてしまう (= ユーザ報告の不具合)。
+/// 先に空にしておけば readline バッファは 1 行に収まり、末尾リフレッシュは cursor-up を
+/// 一切吐かず、プロンプトは必ず新しい行に出る。撤去する場合は折り返し打ちかけ +
+/// n キャンセルで Exec? 行が上書きされないことを pyte ドライバ等で必ず再検証すること。
+///
+/// 消去に伴う bash の redisplay バイトは pty_rx に届くので drain して取り除く (放置すると
+/// 次の main loop drain で AI 出力の後に描画され画面が乱れる)。画面には転送せず捨てる:
+/// 折り返した打ちかけは画面/scrollback に残るが (ユーザが打った内容の記録として無害)、
+/// cursor 制御エスケープを今 stdout に流すと AI 出力の開始位置がずれるため。
+/// ring_buffer には従来どおり追記して「PTY 出力は全て ring_buffer に入る」不変条件を保つ。
+/// sleep(150ms) は消去 redisplay の到着待ち (SSH 越しでは取りこぼし得るが、その場合でも
+/// 次 main loop drain で追従するだけで上書きは起きない)。
+fn discard_stale_readline_input(
+    pty: &mut pty_handler::PtyHandler,
+    pty_rx: &mpsc::Receiver<Vec<u8>>,
+    ring_buffer: &mut ring_buffer::RingBuffer,
+) -> io::Result<()> {
+    let _ = pty.kill_line();
+    thread::sleep(Duration::from_millis(150));
+    pty_drain::drain_pty(
+        pty_rx,
+        ring_buffer,
+        &mut io::stdout(),
+        pty_drain::DrainOpts::default(), // Hidden: 表示せず記録のみ
+    )?;
+    Ok(())
+}
+
 /// 終了時にユーザに表示する情報をまとめた構造体。
 /// 端末を cooked モードに戻した後で表示するために `run()` の戻り値とする。
 struct ExitInfo {
@@ -476,12 +519,16 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
         }
 
         // PTY出力をチェック
-        while let Ok(data) = pty_rx.try_recv() {
-            if !ui::minibuffer_active() {
-                io::stdout().write_all(&data)?;
-                io::stdout().flush()?;
-            }
-            ring_buffer.append(&data);
+        if pty_drain::drain_pty(
+            &pty_rx,
+            &mut ring_buffer,
+            &mut io::stdout(),
+            pty_drain::DrainOpts {
+                display: pty_drain::DrainDisplay::UnlessMinibuffer,
+                flush_each_chunk: true,
+                ..Default::default()
+            },
+        )? {
             gate.note_pty_output();
         }
 
@@ -496,12 +543,15 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
         if alive_rx.try_recv().is_ok() || !pty.is_alive() {
             // 残りのPTY出力（logoutメッセージ等）を表示してから終了する
             thread::sleep(Duration::from_millis(50));
-            while let Ok(data) = pty_rx.try_recv() {
-                if !ui::minibuffer_active() {
-                    io::stdout().write_all(&data)?;
-                }
-                ring_buffer.append(&data);
-            }
+            pty_drain::drain_pty(
+                &pty_rx,
+                &mut ring_buffer,
+                &mut io::stdout(),
+                pty_drain::DrainOpts {
+                    display: pty_drain::DrainDisplay::UnlessMinibuffer,
+                    ..Default::default()
+                },
+            )?;
             io::stdout().flush().ok();
             break;
         }
@@ -537,35 +587,7 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                     gate.arm_passthrough();
                     continue;
                 }
-                // AI 対話を始める前に、bash readline に残っている打ちかけ
-                // (ユーザが Ctrl+/ の前に Enter せず入力していた未確定文字列) を
-                // 「カーソルが bash の readline モデルと同期しているこのタイミング」で
-                // 消去しておく。show_minibuffer が DSR でカーソルを bash プロンプト
-                // 位置 (= 打ちかけ末尾) に絶対座標復元した直後であり、ここまでに AI 出力は
-                // 一切描画していない (slash command は上の分岐で continue 済み) ので、
-                // 実カーソル == bash の readline カーソル である。この状態で Ctrl+A+Ctrl+K
-                // (0x01,0x0b) を送ると、bash の消去 redisplay (折り返した打ちかけを畳む
-                // ための cursor-up 等) は打ちかけ自身の行に正しく当たり、暴走しない。
-                //
-                // これを入れないと: 打ちかけが端末幅を超えて複数行に折り返している場合、
-                // 対話終了後リフレッシュ (この下の対話ループ末尾 = 約 770 行目) で送る
-                // 0x01 (Ctrl+A) に対し bash が `ESC[A` (cursor-up) を複数行ぶん吐き、その
-                // 上移動が「aish が stdout に出した Exec? 行 (bash は与り知らない)」の上で
-                // 起き、シェルプロンプトが Exec? 行を上書きしてしまう (= ユーザ報告の不具合)。
-                // 打ちかけを先に空にしておけば readline バッファは 1 行に収まり、末尾
-                // リフレッシュは cursor-up を一切吐かず、プロンプトは必ず新しい行に出る。
-                //
-                // 消去に伴う bash の redisplay バイトは pty_rx に届くので drain して取り除く
-                // (放置すると次の main loop drain で AI 出力の後に描画され画面が乱れる)。
-                // 画面には転送せず捨てる: 折り返した打ちかけは画面/scrollback に残るが
-                // (ユーザが打った内容の記録として無害)、cursor 制御エスケープを今 stdout に
-                // 流すと AI 出力の開始位置がずれるため。ring_buffer には従来どおり追記して
-                // 「PTY 出力は全て ring_buffer に入る」不変条件を保つ。
-                let _ = pty.kill_line();
-                thread::sleep(Duration::from_millis(150));
-                while let Ok(data) = pty_rx.try_recv() {
-                    ring_buffer.append(&data);
-                }
+                discard_stale_readline_input(&mut pty, &pty_rx, &mut ring_buffer)?;
                 let context = ring_buffer.get_unsent_for(kind);
                 let sp_model = ai_session.model();
                 let sp_effort = ai_session.effort();
@@ -705,10 +727,15 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                                     // 残り出力をドレインしてメインループごと抜ける。
                                     if !pty.is_alive() {
                                         thread::sleep(Duration::from_millis(50));
-                                        while let Ok(data) = pty_rx.try_recv() {
-                                            io::stdout().write_all(&data)?;
-                                            ring_buffer.append(&data);
-                                        }
+                                        pty_drain::drain_pty(
+                                            &pty_rx,
+                                            &mut ring_buffer,
+                                            &mut io::stdout(),
+                                            pty_drain::DrainOpts {
+                                                display: pty_drain::DrainDisplay::Always,
+                                                ..Default::default()
+                                            },
+                                        )?;
                                         io::stdout().flush().ok();
                                         break 'main_loop;
                                     }
@@ -716,23 +743,18 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                                         let (new_rows, new_cols) = ui::terminal_size();
                                         let _ = pty.resize(new_rows, new_cols);
                                     }
-                                    let mut got_pty = false;
-                                    while let Ok(data) = pty_rx.try_recv() {
-                                        chunk_count += 1;
-                                        if chunk_count <= 3 {
-                                            debug_log(&format!(
-                                                "pty chunk #{} ({} bytes): {}",
-                                                chunk_count,
-                                                data.len(),
-                                                debug_bytes(&data, 200)
-                                            ));
-                                        }
-                                        io::stdout().write_all(&data)?;
-                                        io::stdout().flush()?;
-                                        ring_buffer.append(&data);
-                                        sniffer.feed(&data);
-                                        got_pty = true;
-                                    }
+                                    let got_pty = pty_drain::drain_pty(
+                                        &pty_rx,
+                                        &mut ring_buffer,
+                                        &mut io::stdout(),
+                                        pty_drain::DrainOpts {
+                                            display: pty_drain::DrainDisplay::Always,
+                                            flush_each_chunk: true,
+                                            sniffer: Some(&mut sniffer),
+                                            debug_chunk_count: Some(&mut chunk_count),
+                                            ..Default::default()
+                                        },
+                                    )?;
                                     if got_pty {
                                         last_pty_activity = Instant::now();
                                     }
@@ -805,25 +827,18 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                 // 消去し、打ちかけの勝手な実行を防ぐ (実行済み経路では行が空なので no-op)。
                 pty.refresh_prompt()?;
                 thread::sleep(Duration::from_millis(200));
-                let mut first = true;
-                while let Ok(data) = pty_rx.try_recv() {
-                    let output = if first {
-                        first = false;
-                        // 先頭の改行を除去してプロンプトだけ表示
-                        let trimmed = data
-                            .iter()
-                            .position(|&b| b != b'\r' && b != b'\n')
-                            .unwrap_or(data.len());
-                        &data[trimmed..]
-                    } else {
-                        &data
-                    };
-                    if !output.is_empty() {
-                        io::stdout().write_all(output)?;
-                        io::stdout().flush()?;
-                    }
-                    ring_buffer.append(&data);
-                }
+                // 先頭の改行を表示からだけ除去してプロンプトだけ見せる (記録は完全)
+                pty_drain::drain_pty(
+                    &pty_rx,
+                    &mut ring_buffer,
+                    &mut io::stdout(),
+                    pty_drain::DrainOpts {
+                        display: pty_drain::DrainDisplay::Always,
+                        flush_each_chunk: true,
+                        skip_leading_newline: true,
+                        ..Default::default()
+                    },
+                )?;
                 gate.arm_passthrough();
             }
             Ok(ui::InputEvent::Line(line)) => match ui::parse_input(&line) {
