@@ -305,6 +305,52 @@ fn discard_stale_readline_input(
     Ok(())
 }
 
+/// AI 提案コマンドの Y/n/a 確認 1 回分の結果。
+/// 旧実装の bool 2 つ (confirmed / user_cancelled) の組み合わせ表現を置き換え、
+/// 「このコマンドをどうするか」と「残り全部をどうするか」を 1 つの値で運ぶ。
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum ConfirmDecision {
+    /// y/Y/Enter/Space: このコマンドを実行する。
+    Run,
+    /// n/N (または入力 channel 切断): このコマンドをスキップして次へ。
+    Skip,
+    /// a/A: このコマンドを実行し、以降の残りも自動承認する。
+    RunRest,
+    /// Ctrl+C / Ctrl+D / ESC: このコマンドを含む残り全部をキャンセル。
+    CancelRest,
+}
+
+/// 確認ループの承認モード。`RunRest` 確定後は `All` になり以降の確認を省略する。
+/// 旧実装の `auto_approve_remaining: bool` の置き換えで、`CancelRest` が即 break する
+/// 制御フローと合わせて「自動承認中かつキャンセル済み」の矛盾状態を表現不能にする。
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum Approval {
+    AskEach,
+    All,
+}
+
+/// Y/n/a 確認の入力イベントを 1 決定に解決するまで待つ。
+/// 確認待ち中に届く無関係イベント (Line / PtyData / PassthroughEnded / AiPrompt) は
+/// 無視して読み直す。channel 切断 (入力スレッド消滅 = 退出間際) は Skip 扱い (旧挙動互換)。
+fn wait_confirm_decision(input_rx: &mpsc::Receiver<ui::InputEvent>) -> ConfirmDecision {
+    loop {
+        match input_rx.recv() {
+            Ok(ui::InputEvent::Confirm(choice)) => match choice {
+                ui::ConfirmChoice::Yes => return ConfirmDecision::Run,
+                ui::ConfirmChoice::No => return ConfirmDecision::Skip,
+                ui::ConfirmChoice::All => return ConfirmDecision::RunRest,
+            },
+            // Ctrl+C / Ctrl+D / ESC: 残りすべてをキャンセル
+            Ok(ui::InputEvent::ReadLineCancelled) => return ConfirmDecision::CancelRest,
+            Ok(ui::InputEvent::Line(_))
+            | Ok(ui::InputEvent::PtyData(_))
+            | Ok(ui::InputEvent::PassthroughEnded)
+            | Ok(ui::InputEvent::AiPrompt(_)) => continue,
+            Err(_) => return ConfirmDecision::Skip,
+        }
+    }
+}
+
 /// 終了時にユーザに表示する情報をまとめた構造体。
 /// 端末を cooked モードに戻した後で表示するために `run()` の戻り値とする。
 struct ExitInfo {
@@ -631,11 +677,9 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
 
                             // コマンドを1つずつ確認＋実行
                             let total = response.commands.len();
-                            let mut any_executed = false;
                             let mut executed_summary: Vec<String> = Vec::new();
-                            // ユーザが [a] (= all) を選んだ後は残りを自動承認する
-                            let mut auto_approve_remaining = false;
-                            // ユーザが Ctrl+C で残り全部キャンセルを選んだ
+                            let mut approval = Approval::AskEach;
+                            // Ctrl+C で残り全部キャンセルされたか (follow-up 文面の分岐用)
                             let mut user_cancelled = false;
                             for (i, cmd) in response.commands.iter().enumerate() {
                                 // AI 提案コマンドに制御文字 (改行/CR/ESC/NUL/TAB 等) が
@@ -643,61 +687,43 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                                 // ズラす偽装 (\r で行頭復帰・\x1b[2K で行消去して危険部分を
                                 // 隠す等) や、\r が bash に Enter として届いて 1 承認で複数
                                 // コマンドが実行される事故を防ぐため。承認 UI に載せず PTY
-                                // にも送らない。auto_approve (= [a]) 経路もこのガードを通る
-                                // ので、まとめ承認でも制御文字入りは漏れない。
+                                // にも送らない。Approval::All (= [a]) 経路もこのガードを
+                                // 通るので、まとめ承認でも制御文字入りは漏れない。
                                 if ui::command_has_control_chars(cmd) {
                                     ui::print_rejected_command(cmd, &config.display);
                                     continue;
                                 }
-                                let confirmed = if auto_approve_remaining {
-                                    true
-                                } else {
-                                    ui::print_single_confirm_prompt(
-                                        cmd,
-                                        i + 1,
-                                        total,
-                                        &config.display,
-                                    );
-                                    let _ = prompt_tx.send(ui::InputRequest::ReadConfirmKey);
-                                    loop {
-                                        match input_rx.recv() {
-                                            Ok(ui::InputEvent::Confirm(choice)) => match choice {
-                                                ui::ConfirmChoice::Yes => break true,
-                                                ui::ConfirmChoice::No => break false,
-                                                ui::ConfirmChoice::All => {
-                                                    auto_approve_remaining = true;
-                                                    break true;
-                                                }
-                                            },
-                                            Ok(ui::InputEvent::ReadLineCancelled) => {
-                                                // Ctrl+C: 残りすべてをキャンセル
-                                                user_cancelled = true;
-                                                break false;
-                                            }
-                                            Ok(ui::InputEvent::Line(_))
-                                            | Ok(ui::InputEvent::PtyData(_))
-                                            | Ok(ui::InputEvent::PassthroughEnded) => continue,
-                                            Ok(ui::InputEvent::AiPrompt(_)) => continue,
-                                            Err(_) => break false,
-                                        }
+                                let decision = match approval {
+                                    Approval::All => ConfirmDecision::Run,
+                                    Approval::AskEach => {
+                                        ui::print_single_confirm_prompt(
+                                            cmd,
+                                            i + 1,
+                                            total,
+                                            &config.display,
+                                        );
+                                        let _ = prompt_tx.send(ui::InputRequest::ReadConfirmKey);
+                                        wait_confirm_decision(&input_rx)
                                     }
                                 };
-
-                                if !confirmed {
-                                    if user_cancelled {
+                                match decision {
+                                    ConfirmDecision::Skip => continue,
+                                    ConfirmDecision::CancelRest => {
+                                        user_cancelled = true;
                                         break;
                                     }
-                                    continue;
+                                    ConfirmDecision::RunRest => approval = Approval::All,
+                                    ConfirmDecision::Run => {}
                                 }
 
                                 // 最初に実行する AI 提案コマンドの直前で、bash の打ちかけ
                                 // 入力を消去する。後続コマンドは前のコマンドが完了して bash
                                 // プロンプトに戻った状態で送られるので、追加不要。
-                                if !any_executed {
+                                // (executed_summary への push はコマンド完了後なので、
+                                //  「空 = まだ何も実行していない」が成立する)
+                                if executed_summary.is_empty() {
                                     pty.kill_line()?;
                                 }
-
-                                any_executed = true;
 
                                 // ユーザが承認したコマンドをそのまま PTY に送る。ラップしない。
                                 pty.write(format!("{cmd}\n").as_bytes())?;
@@ -768,7 +794,7 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                                 executed_summary.push(format!("`{cmd}`"));
                             }
 
-                            if !any_executed {
+                            if executed_summary.is_empty() {
                                 break;
                             }
 
@@ -814,7 +840,7 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
 
                 // AI対話終了後、シェルのプロンプトを再表示させる。
                 // 提案コマンドを1つも実行しなかった場合 (全拒否 / 提案なし) は
-                // any_executed 経路の kill_line を通っていないため、ユーザが Ctrl+/ 前に
+                // 初回実行直前の kill_line を通っていないため、ユーザが Ctrl+/ 前に
                 // 打ちかけた未確定入力が bash readline に残る。refresh_prompt が改行前に
                 // 消去し、打ちかけの勝手な実行を防ぐ (実行済み経路では行が空なので no-op)。
                 pty.refresh_prompt()?;
@@ -1005,5 +1031,62 @@ fn main() {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// channel にイベント列を流し込んだ状態の Receiver を作る。
+    fn rx_with(events: Vec<ui::InputEvent>) -> mpsc::Receiver<ui::InputEvent> {
+        let (tx, rx) = mpsc::channel();
+        for ev in events {
+            tx.send(ev).unwrap();
+        }
+        rx
+    }
+
+    #[test]
+    fn confirm_yes_is_run() {
+        let rx = rx_with(vec![ui::InputEvent::Confirm(ui::ConfirmChoice::Yes)]);
+        assert_eq!(wait_confirm_decision(&rx), ConfirmDecision::Run);
+    }
+
+    #[test]
+    fn confirm_no_is_skip() {
+        let rx = rx_with(vec![ui::InputEvent::Confirm(ui::ConfirmChoice::No)]);
+        assert_eq!(wait_confirm_decision(&rx), ConfirmDecision::Skip);
+    }
+
+    #[test]
+    fn confirm_all_is_run_rest() {
+        let rx = rx_with(vec![ui::InputEvent::Confirm(ui::ConfirmChoice::All)]);
+        assert_eq!(wait_confirm_decision(&rx), ConfirmDecision::RunRest);
+    }
+
+    #[test]
+    fn cancel_is_cancel_rest() {
+        let rx = rx_with(vec![ui::InputEvent::ReadLineCancelled]);
+        assert_eq!(wait_confirm_decision(&rx), ConfirmDecision::CancelRest);
+    }
+
+    #[test]
+    fn unrelated_events_are_ignored_until_decision() {
+        let rx = rx_with(vec![
+            ui::InputEvent::Line("ls".to_string()),
+            ui::InputEvent::PtyData(vec![0x41]),
+            ui::InputEvent::PassthroughEnded,
+            ui::InputEvent::AiPrompt("hi".to_string()),
+            ui::InputEvent::Confirm(ui::ConfirmChoice::Yes),
+        ]);
+        assert_eq!(wait_confirm_decision(&rx), ConfirmDecision::Run);
+    }
+
+    #[test]
+    fn disconnected_channel_is_skip() {
+        // 入力スレッド消滅 (退出間際) は Skip 扱い (旧実装の Err(_) => break false 互換)。
+        let rx = rx_with(vec![]);
+        assert_eq!(wait_confirm_decision(&rx), ConfirmDecision::Skip);
     }
 }
