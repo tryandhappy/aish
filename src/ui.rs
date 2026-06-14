@@ -464,9 +464,11 @@ pub fn print_single_confirm_prompt(
     display: &DisplayConfig,
 ) {
     let color = &display.confirm_color;
-    // 残コマンドがある (= 最後ではない) ときだけ [Y/n/a] を出す。
-    // a = 残り全部を自動承認 (apt / sudo の慣習)。
-    let options = if index < total { "Y/n/a" } else { "Y/n" };
+    // 残コマンドがある (= 最後ではない) ときだけ [Y/n/a/q] を出す。
+    // a = 残り全部を自動承認 (apt / sudo の慣習)、q = 残りを中止。
+    // 最後のコマンドでは「残り」が無いので a も q も隠して [Y/n] に畳む
+    // (q は押せば効くが最後では n とほぼ等価)。
+    let options = if index < total { "Y/n/a/q" } else { "Y/n" };
     // "Exec?" をオレンジ文字+暗い茶色背景 (prompt_color 系) で区別する試行。
     // 終了は再度 confirm_color を適用して元の薄黄/グレーに戻す。
     // 選択肢 [Y/n] / [Y/n/a] は bold + reverse で強調。
@@ -504,6 +506,9 @@ pub enum ConfirmChoice {
     Yes,
     No,
     All,
+    /// q/Q: 残りコマンドを中止する。実行済みがあれば AI に follow-up、
+    /// 1 つも実行していなければ通常プロンプトに戻る (中止判断は conversation 側)。
+    Quit,
 }
 
 pub enum UserInput {
@@ -588,8 +593,8 @@ fn echo_confirm(c: char) {
     let _ = stdout.flush();
 }
 
-/// 1 文字を Yes / No / All / なし にマッピングする。
-/// ASCII y/Y/n/N/a/A + IME 経由の全角・ひらがな確定文字をサポート。
+/// 1 文字を Yes / No / All / Quit / なし にマッピングする。
+/// ASCII y/Y/n/N/a/A/q/Q + IME 経由の全角・ひらがな確定文字をサポート。
 /// Enter (`\n` / `\r`) と Space はデフォルト Yes 扱い。
 fn match_confirm_char(c: char) -> Option<ConfirmChoice> {
     match c {
@@ -599,6 +604,8 @@ fn match_confirm_char(c: char) -> Option<ConfirmChoice> {
         'n' | 'N' | 'ｎ' | 'Ｎ' | 'ん' => Some(ConfirmChoice::No),
         // All: ASCII / 全角小文字 / 全角大文字 / ひらがな「あ」(romaji "a" 確定の自然結果)
         'a' | 'A' | 'ａ' | 'Ａ' | 'あ' => Some(ConfirmChoice::All),
+        // Quit: ASCII / 全角小文字 / 全角大文字 (「q」に対応する自然なひらがなは無いので付けない)
+        'q' | 'Q' | 'ｑ' | 'Ｑ' => Some(ConfirmChoice::Quit),
         _ => None,
     }
 }
@@ -612,19 +619,25 @@ fn read_confirm_key_unix() -> Option<ConfirmChoice> {
         let ev = input::next_event(&mut src);
         match ev.tok {
             Tok::Eof => return None,
-            // Ctrl+C / Ctrl+D / 単独 ESC: 残り全部キャンセル。
+            // Ctrl+C / Ctrl+D: 残り全部中止 + AI に問い合わせない (None = ReadLineCancelled)。
             // **必ず改行を出してから抜ける**。これをしないと、直後にメインループが
             // 送るシェルプロンプトのリフレッシュ (bash の `\r` + プロンプト文字列;
             // しかも先頭の改行は drain 側で除去される) が、カーソルがまだ
-            // `Exec? ... [Y/n/a] ` 行末にあるためその行を上書きして消してしまう
-            // (ユーザ報告: キャンセルで最終行がプロンプトに上書きされる)。Y/n や
-            // Ctrl+C は元々 echo で改行が入るのでクリーンだったが、ESC だけ
-            // 「echo はしない」で改行が無く上書きしていた。ここで揃える。
-            Tok::Ctrl(0x03) | Tok::Ctrl(0x04) | Tok::Esc => {
+            // `Exec? ... [Y/n/a/q] ` 行末にあるためその行を上書きして消してしまう
+            // (ユーザ報告: キャンセルで最終行がプロンプトに上書きされる)。Y/n/a/q は
+            // echo で改行が入るのでクリーン。Ctrl+C/Ctrl+D だけ echo char が無いので
+            // ここで明示的に改行を出して揃える。
+            Tok::Ctrl(0x03) | Tok::Ctrl(0x04) => {
                 let mut stdout = io::stdout();
                 let _ = stdout.write_all(b"\n");
                 let _ = stdout.flush();
                 return None;
+            }
+            // 単独 ESC = n と同じ (このコマンド 1 回分だけスキップ)。入力 char が
+            // 無いので「スキップした」視覚表現として 'n' を echo (末尾 `\n` でプロンプト行はクリーン)。
+            Tok::Esc => {
+                echo_confirm('n');
+                return Some(ConfirmChoice::No);
             }
             // Enter = デフォルト Yes。入力 char が無いのでデフォルト表記の 'Y' を echo。
             Tok::Enter => {
@@ -1399,6 +1412,8 @@ mod tests {
         assert_eq!(match_confirm_char('N'), Some(ConfirmChoice::No));
         assert_eq!(match_confirm_char('a'), Some(ConfirmChoice::All));
         assert_eq!(match_confirm_char('A'), Some(ConfirmChoice::All));
+        assert_eq!(match_confirm_char('q'), Some(ConfirmChoice::Quit));
+        assert_eq!(match_confirm_char('Q'), Some(ConfirmChoice::Quit));
     }
 
     #[test]
@@ -1414,6 +1429,7 @@ mod tests {
         assert_eq!(match_confirm_char('ｙ'), Some(ConfirmChoice::Yes));
         assert_eq!(match_confirm_char('ｎ'), Some(ConfirmChoice::No));
         assert_eq!(match_confirm_char('ａ'), Some(ConfirmChoice::All));
+        assert_eq!(match_confirm_char('ｑ'), Some(ConfirmChoice::Quit));
     }
 
     #[test]
@@ -1421,6 +1437,7 @@ mod tests {
         assert_eq!(match_confirm_char('Ｙ'), Some(ConfirmChoice::Yes));
         assert_eq!(match_confirm_char('Ｎ'), Some(ConfirmChoice::No));
         assert_eq!(match_confirm_char('Ａ'), Some(ConfirmChoice::All));
+        assert_eq!(match_confirm_char('Ｑ'), Some(ConfirmChoice::Quit));
     }
 
     #[test]

@@ -38,15 +38,26 @@ pub enum ConversationEnd {
 
 /// `confirm_and_execute` の結果。
 enum ExecReport {
-    /// 確認ループを最後まで (またはキャンセルで) 抜けた。
+    /// 確認ループを最後まで (または中止で) 抜けた。
     Done {
         /// 実行したコマンドの要約 (`` `cmd` `` 形式)。空 = 1 つも実行していない。
         executed: Vec<String>,
-        /// Ctrl+C で残り全部キャンセルされたか (follow-up 文面の分岐用)。
-        cancelled: bool,
+        /// 抜けた理由 (follow-up するか / 文面の分岐用)。
+        outcome: ExecOutcome,
     },
     /// コマンド実行待ち中に子プロセスが死んだ。
     PtyDied,
+}
+
+/// 確認ループを抜けた理由。follow-up の有無と文面を決める。
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum ExecOutcome {
+    /// 全コマンドを処理し終えた (実行 / スキップ含む)。
+    Completed,
+    /// q: 残りを中止。実行済みがあれば AI に follow-up する。
+    Quit,
+    /// Ctrl+C / Ctrl+D: 残りを中止し、実行有無に関わらず AI に問い合わせない。
+    Abort,
 }
 
 /// AI 提案コマンドの Y/n/a 確認 1 回分の結果。
@@ -60,8 +71,11 @@ enum ConfirmDecision {
     Skip,
     /// a/A: このコマンドを実行し、以降の残りも自動承認する。
     RunRest,
-    /// Ctrl+C / Ctrl+D / ESC: このコマンドを含む残り全部をキャンセル。
-    CancelRest,
+    /// q/Q: このコマンドを含む残りを中止。実行済みがあれば AI に follow-up する。
+    QuitRest,
+    /// Ctrl+C / Ctrl+D: このコマンドを含む残り全部を中止し、AI に問い合わせない。
+    /// (ESC はここではなく Skip = n と同じ「1 回分スキップ」に変更済み)
+    AbortNoAi,
 }
 
 /// 確認ループの承認モード。`RunRest` 確定後は `All` になり以降の確認を省略する。
@@ -134,15 +148,18 @@ impl AiConversation<'_> {
 
                     ui::print_ai_commands(&response.commands, self.display);
 
-                    let (executed, cancelled) =
-                        match self.confirm_and_execute(&response.commands)? {
-                            ExecReport::PtyDied => return Ok(ConversationEnd::PtyDied),
-                            ExecReport::Done {
-                                executed,
-                                cancelled,
-                            } => (executed, cancelled),
-                        };
+                    let (executed, outcome) = match self.confirm_and_execute(&response.commands)? {
+                        ExecReport::PtyDied => return Ok(ConversationEnd::PtyDied),
+                        ExecReport::Done { executed, outcome } => (executed, outcome),
+                    };
 
+                    // Ctrl+C / Ctrl+D: 残りを中止し、実行有無に関わらず AI に
+                    // 問い合わせない (executed が非空でも follow-up しない)。
+                    if matches!(outcome, ExecOutcome::Abort) {
+                        break;
+                    }
+
+                    // q で 1 つも実行していない / 全スキップ等 → follow-up せず通常プロンプトへ。
                     if executed.is_empty() {
                         break;
                     }
@@ -150,9 +167,9 @@ impl AiConversation<'_> {
                     // 実行結果をAIに送信して分析を継続
                     let follow_up_context = self.ring_buffer.get_unsent_for(self.kind);
                     println!();
-                    let follow_up_text = if cancelled {
+                    let follow_up_text = if matches!(outcome, ExecOutcome::Quit) {
                         format!(
-                            "ユーザが Ctrl+C で残りのコマンドをキャンセルしました。実行されたコマンド: {}。出力は terminal フェンスに含まれます。実行された分だけで分析してください。",
+                            "ユーザが残りのコマンドの実行を中止しました。実行されたコマンド: {}。出力は terminal フェンスに含まれます。実行された分だけで分析してください。",
                             executed.join(", ")
                         )
                     } else {
@@ -252,10 +269,16 @@ impl AiConversation<'_> {
             };
             match decision {
                 ConfirmDecision::Skip => continue,
-                ConfirmDecision::CancelRest => {
+                ConfirmDecision::QuitRest => {
                     return Ok(ExecReport::Done {
                         executed,
-                        cancelled: true,
+                        outcome: ExecOutcome::Quit,
+                    });
+                }
+                ConfirmDecision::AbortNoAi => {
+                    return Ok(ExecReport::Done {
+                        executed,
+                        outcome: ExecOutcome::Abort,
                     });
                 }
                 ConfirmDecision::RunRest => approval = Approval::All,
@@ -288,7 +311,7 @@ impl AiConversation<'_> {
         }
         Ok(ExecReport::Done {
             executed,
-            cancelled: false,
+            outcome: ExecOutcome::Completed,
         })
     }
 }
@@ -311,9 +334,11 @@ fn wait_confirm_decision(input_rx: &mpsc::Receiver<ui::InputEvent>) -> ConfirmDe
                 ui::ConfirmChoice::Yes => return ConfirmDecision::Run,
                 ui::ConfirmChoice::No => return ConfirmDecision::Skip,
                 ui::ConfirmChoice::All => return ConfirmDecision::RunRest,
+                ui::ConfirmChoice::Quit => return ConfirmDecision::QuitRest,
             },
-            // Ctrl+C / Ctrl+D / ESC: 残りすべてをキャンセル
-            Ok(ui::InputEvent::ReadLineCancelled) => return ConfirmDecision::CancelRest,
+            // Ctrl+C / Ctrl+D: 残りすべてを中止し、AI に問い合わせない
+            // (ESC は ConfirmChoice::No 経由で Skip = 1 回スキップに変更済み)
+            Ok(ui::InputEvent::ReadLineCancelled) => return ConfirmDecision::AbortNoAi,
             Ok(ui::InputEvent::Line(_))
             | Ok(ui::InputEvent::PtyData(_))
             | Ok(ui::InputEvent::PassthroughEnded)
@@ -461,9 +486,16 @@ mod tests {
     }
 
     #[test]
-    fn cancel_is_cancel_rest() {
+    fn confirm_quit_is_quit_rest() {
+        let rx = rx_with(vec![ui::InputEvent::Confirm(ui::ConfirmChoice::Quit)]);
+        assert_eq!(wait_confirm_decision(&rx), ConfirmDecision::QuitRest);
+    }
+
+    #[test]
+    fn cancel_is_abort_no_ai() {
+        // Ctrl+C / Ctrl+D 由来の ReadLineCancelled は AbortNoAi (AI 問い合わせなし)。
         let rx = rx_with(vec![ui::InputEvent::ReadLineCancelled]);
-        assert_eq!(wait_confirm_decision(&rx), ConfirmDecision::CancelRest);
+        assert_eq!(wait_confirm_decision(&rx), ConfirmDecision::AbortNoAi);
     }
 
     #[test]
