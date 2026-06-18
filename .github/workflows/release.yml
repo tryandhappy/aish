@@ -156,6 +156,10 @@ jobs:
           find artifacts -type f \( -name 'aish-*-unknown-linux-musl' -o -name 'aish-*-apple-darwin' \) -exec mv {} dist/ \;
           ls -la dist/
 
+      # SemVer のハイフン付きタグ (v0.9.0-rc.1, v0.9.0-beta.1 等) を prerelease として
+      # 公開し、GitHub の `Latest` バッジを付けない (= 安定版チャネルには載せない)。
+      # ハイフン無しタグ (v0.9.0) は prerelease=false で `Latest` に昇格する。
+      # aish --update は安定版=/releases/latest, --prerelease=/releases 先頭 で取得する。
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
@@ -163,4 +167,4 @@ jobs:
           name: ${{ steps.version.outputs.tag }}
           files: dist/*
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(steps.version.outputs.tag, '-') }}

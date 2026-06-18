@@ -3,6 +3,18 @@ use std::process::Command;
 const REPO_OWNER: &str = "tryandhappy";
 const REPO_NAME: &str = "aish";
 
+/// 自己更新で追従するリリースチャネル。
+/// `Stable` は GitHub の `Latest` リリース (= prerelease を除いた最新)、
+/// `Prerelease` は prerelease を含む絶対最新を取得する。命名の注意:
+/// GitHub API では「安定版」が `/releases/latest` (単数) で取れるのに対し、
+/// 「prerelease 含む最新」は `/releases` (一覧) の先頭。"latest" という語が
+/// 両者でぶつかって紛らわしいので、ユーザ向け flag は `--stable` / `--prerelease`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateChannel {
+    Stable,
+    Prerelease,
+}
+
 fn detect_target() -> Result<&'static str, String> {
     target_for(std::env::consts::OS, std::env::consts::ARCH)
 }
@@ -21,10 +33,10 @@ fn target_for(os: &str, arch: &str) -> Result<&'static str, String> {
     }
 }
 
-fn fetch_latest_version() -> Result<String, Box<dyn std::error::Error>> {
-    let url = format!("https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest");
+/// GitHub REST API へ `curl` で GET し、レスポンス JSON を返す共通ヘルパ。
+fn github_api_get(url: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let output = Command::new("curl")
-        .args(["-fsSL", "-H", "Accept: application/vnd.github+json", &url])
+        .args(["-fsSL", "-H", "Accept: application/vnd.github+json", url])
         .output()?;
 
     if !output.status.success() {
@@ -33,10 +45,47 @@ fn fetch_latest_version() -> Result<String, Box<dyn std::error::Error>> {
     }
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    let tag = json["tag_name"]
+    Ok(json)
+}
+
+/// `/releases/latest` (単一オブジェクト) から `tag_name` を取り出す純関数。
+fn parse_latest_tag(json: &serde_json::Value) -> Result<String, String> {
+    json["tag_name"]
         .as_str()
-        .ok_or("tag_name not found in response")?;
-    Ok(tag.to_string())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "tag_name not found in response".to_string())
+}
+
+/// `/releases` (新しい順の配列) の先頭要素から `tag_name` を取り出す純関数。
+/// prerelease を含む絶対最新を返す。配列が空ならエラー。
+fn parse_newest_tag_from_list(json: &serde_json::Value) -> Result<String, String> {
+    let arr = json
+        .as_array()
+        .ok_or_else(|| "expected a JSON array of releases".to_string())?;
+    let first = arr.first().ok_or_else(|| "no releases found".to_string())?;
+    first["tag_name"]
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "tag_name not found in first release".to_string())
+}
+
+/// 指定チャネルの取得すべきリリースタグを返す。
+/// `Stable` は `/releases/latest` (prerelease 除外の最新)、
+/// `Prerelease` は `/releases` 一覧の先頭 (prerelease 含む絶対最新)。
+fn fetch_version(channel: UpdateChannel) -> Result<String, Box<dyn std::error::Error>> {
+    match channel {
+        UpdateChannel::Stable => {
+            let url =
+                format!("https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest");
+            let json = github_api_get(&url)?;
+            parse_latest_tag(&json).map_err(|e| e.into())
+        }
+        UpdateChannel::Prerelease => {
+            let url = format!("https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases");
+            let json = github_api_get(&url)?;
+            parse_newest_tag_from_list(&json).map_err(|e| e.into())
+        }
+    }
 }
 
 /// `sha256sum file > file.sha256` の出力形式（"<64-hex>  filename"）から
@@ -80,12 +129,16 @@ fn compute_sha256(path: &str) -> Result<String, Box<dyn std::error::Error>> {
     parse_sha256_hash(&stdout).map_err(|e| e.into())
 }
 
-pub fn run_update() -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_update(channel: UpdateChannel) -> Result<(), Box<dyn std::error::Error>> {
     let current = env!("CARGO_PKG_VERSION");
-    println!("aish v{current}");
+    let channel_label = match channel {
+        UpdateChannel::Stable => "stable",
+        UpdateChannel::Prerelease => "prerelease",
+    };
+    println!("aish v{current} (channel: {channel_label})");
 
     let target = detect_target()?;
-    let tag = fetch_latest_version()?;
+    let tag = fetch_version(channel)?;
     let latest = tag.strip_prefix('v').unwrap_or(&tag);
 
     if latest == current {
@@ -251,5 +304,45 @@ mod tests {
             parse_sha256_hash(line).unwrap(),
             "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
         );
+    }
+
+    #[test]
+    fn latest_tag_from_object() {
+        let json = serde_json::json!({ "tag_name": "v0.9.0", "prerelease": false });
+        assert_eq!(parse_latest_tag(&json).unwrap(), "v0.9.0");
+    }
+
+    #[test]
+    fn latest_tag_missing() {
+        let json = serde_json::json!({ "name": "v0.9.0" });
+        assert!(parse_latest_tag(&json).is_err());
+    }
+
+    #[test]
+    fn newest_tag_from_list_picks_first() {
+        // GitHub の /releases は新しい順。先頭が prerelease でもそれを採用する。
+        let json = serde_json::json!([
+            { "tag_name": "v0.10.0-rc.1", "prerelease": true },
+            { "tag_name": "v0.9.0", "prerelease": false },
+        ]);
+        assert_eq!(parse_newest_tag_from_list(&json).unwrap(), "v0.10.0-rc.1");
+    }
+
+    #[test]
+    fn newest_tag_from_empty_list() {
+        let json = serde_json::json!([]);
+        assert!(parse_newest_tag_from_list(&json).is_err());
+    }
+
+    #[test]
+    fn newest_tag_from_non_array() {
+        let json = serde_json::json!({ "tag_name": "v0.9.0" });
+        assert!(parse_newest_tag_from_list(&json).is_err());
+    }
+
+    #[test]
+    fn newest_tag_first_missing_tag_name() {
+        let json = serde_json::json!([{ "name": "v0.9.0" }]);
+        assert!(parse_newest_tag_from_list(&json).is_err());
     }
 }

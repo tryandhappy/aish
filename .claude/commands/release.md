@@ -18,9 +18,18 @@ aish プロジェクトをリリースする。次の手順をこの順で進め
 現在のバージョンと、引数 `$ARGUMENTS` の有無で挙動を分ける:
 
 - `$ARGUMENTS` が指定されていればそれを新バージョンとして採用 (`v` プレフィックス付きでも無しでも受ける。内部では `v` 無しの形式で扱う)
-- 指定が無ければ `AskUserQuestion` でユーザに新バージョンを問い合わせる。デフォルト候補は patch bump (例: 0.4.5 → 0.4.6)、minor bump (0.4.5 → 0.5.0)、major bump (0.4.5 → 1.0.0)
+- 指定が無ければ `AskUserQuestion` でユーザに新バージョンを問い合わせる。デフォルト候補は patch bump (例: 0.4.5 → 0.4.6)、minor bump (0.4.5 → 0.5.0)、major bump (0.4.5 → 1.0.0)、および **prerelease** (例: 0.5.0-rc.1 / 0.5.0-beta.1 — 最新版チャネル向け先行リリース)
 
 採用バージョンを `NEW=<x.y.z>` として以降使う。
+
+### リリースチャネル (安定版 / 最新版)
+
+タグに **SemVer のハイフン付き prerelease 識別子** (`-rc.N` / `-beta.N` / `-alpha.N` 等) が含まれるかで、`release.yml` が GitHub Release の `prerelease` フラグを自動判定する:
+
+- **ハイフン無し** (`v0.9.0`) → `prerelease: false` → GitHub の `Latest` バッジが付く = **安定版**。`aish --update` (既定 `--stable`) が拾う。
+- **ハイフン付き** (`v0.9.0-rc.1`) → `prerelease: true` → `Latest` バッジは付かない = **最新版チャネルのみ**。`aish --update --prerelease` だけが拾う。
+
+prerelease をリリースする場合は **`NEW` に識別子をそのまま含める** (`NEW=0.9.0-rc.1`)。これにより `Cargo.toml` の `version` も `0.9.0-rc.1` になり、`update.rs` の `if latest == current` 比較 (タグから `v` を剥いだ値 vs `CARGO_PKG_VERSION`) が正しく一致する。Cargo.toml を数値だけ (`0.9.0`) にしてタグだけ `-rc.1` にすると、prerelease バイナリが「常に更新あり」と誤判定されるので避けること。
 
 ## 2. バージョン更新
 

@@ -32,9 +32,23 @@ struct AishArgs {
 
 enum CliAction {
     Run(AishArgs),
-    Update,
+    Update(update::UpdateChannel),
     Version,
     Help,
+}
+
+/// `--update` に続く `--stable` / `--prerelease` から更新チャネルを決める。
+/// 既定は `Stable` (フラグ無しの `aish --update` は安定版)。両方指定時は後勝ち。
+fn parse_update_channel(args: &[String]) -> update::UpdateChannel {
+    let mut channel = update::UpdateChannel::Stable;
+    for arg in args {
+        match arg.as_str() {
+            "--stable" => channel = update::UpdateChannel::Stable,
+            "--prerelease" => channel = update::UpdateChannel::Prerelease,
+            _ => {}
+        }
+    }
+    channel
 }
 
 fn parse_args() -> CliAction {
@@ -42,7 +56,7 @@ fn parse_args() -> CliAction {
 
     for arg in &args {
         match arg.as_str() {
-            "--update" => return CliAction::Update,
+            "--update" => return CliAction::Update(parse_update_channel(&args)),
             "--version" | "-V" => return CliAction::Version,
             "--help" => return CliAction::Help,
             _ => {}
@@ -638,7 +652,8 @@ aish v{version} — CLI SSH + AI
 USAGE:
     aish [AISH_OPTIONS] [SSH_ARGS...]   Remote: ssh user@host etc. (引数はそのまま ssh に渡す)
     aish [AISH_OPTIONS]                 Local:  $SHELL を起動
-    aish --version | --update | --help
+    aish --version | --help
+    aish --update [--stable | --prerelease]
 
 AISH OPTIONS:
     --config <PATH>        設定ファイルパス (既定: ~/.aish/config.toml)
@@ -652,7 +667,10 @@ AISH OPTIONS:
 
 OTHER OPTIONS:
     --version, -V          バージョン表示
-    --update               GitHub Releases から自己更新 (例: sudo aish --update)
+    --update [--stable|--prerelease]
+                           GitHub Releases から自己更新 (例: sudo aish --update)
+                           既定 --stable: prerelease を除いた安定版の最新
+                           --prerelease : prerelease を含む最新版 (先端)
     --help                 このヘルプを表示
 
 KEYS (起動後):
@@ -720,8 +738,8 @@ fn main() {
         CliAction::Version => {
             println!("aish {}", env!("CARGO_PKG_VERSION"));
         }
-        CliAction::Update => {
-            if let Err(e) = update::run_update() {
+        CliAction::Update(channel) => {
+            if let Err(e) = update::run_update(channel) {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }
@@ -744,5 +762,46 @@ fn main() {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn to_args(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn update_channel_defaults_to_stable() {
+        let args = to_args(&["--update"]);
+        assert_eq!(parse_update_channel(&args), update::UpdateChannel::Stable);
+    }
+
+    #[test]
+    fn update_channel_explicit_stable() {
+        let args = to_args(&["--update", "--stable"]);
+        assert_eq!(parse_update_channel(&args), update::UpdateChannel::Stable);
+    }
+
+    #[test]
+    fn update_channel_prerelease() {
+        let args = to_args(&["--update", "--prerelease"]);
+        assert_eq!(
+            parse_update_channel(&args),
+            update::UpdateChannel::Prerelease
+        );
+    }
+
+    #[test]
+    fn update_channel_last_wins() {
+        let args = to_args(&["--update", "--prerelease", "--stable"]);
+        assert_eq!(parse_update_channel(&args), update::UpdateChannel::Stable);
+        let args = to_args(&["--update", "--stable", "--prerelease"]);
+        assert_eq!(
+            parse_update_channel(&args),
+            update::UpdateChannel::Prerelease
+        );
     }
 }
