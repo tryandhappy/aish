@@ -353,6 +353,7 @@ fn wait_confirm_decision(input_rx: &mpsc::Receiver<ui::InputEvent>) -> ConfirmDe
             Ok(ui::InputEvent::Line(_))
             | Ok(ui::InputEvent::PtyData(_))
             | Ok(ui::InputEvent::PassthroughEnded)
+            | Ok(ui::InputEvent::MinibufferCancelled)
             | Ok(ui::InputEvent::AiPrompt(_)) => continue,
             Err(_) => return ConfirmDecision::Skip,
         }

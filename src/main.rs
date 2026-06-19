@@ -546,6 +546,18 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                 let _rearm = gate.rearm_on_drop();
                 continue;
             }
+            Ok(ui::InputEvent::MinibufferCancelled) => {
+                // minibuffer キャンセル時もシェルプロンプトを再表示する
+                // (AI 対話終了 / slash command と同じ refresh_prompt 経路)。
+                // refresh_prompt は打ちかけ消去 (Ctrl+A+Ctrl+K) → 改行なので、
+                // 未承認のコマンドを勝手に submit しない (信頼の根幹)。新プロンプト
+                // 出力は次の main loop 先頭の drain_pty が表示する。
+                // キャンセル直後に PassthroughEnded も届くが、両方で再 arm するのは
+                // 送信経路 (AiPrompt + PassthroughEnded) と同じ既存パターン。
+                let _rearm = gate.rearm_on_drop();
+                let _ = pty.refresh_prompt();
+                continue;
+            }
             Ok(ui::InputEvent::AiPrompt(prompt)) => {
                 // この arm はどの経路で終わっても入力スレッドが idle に戻る。
                 // 再 arm は出口ごとの手書きではなく guard の Drop に任せる

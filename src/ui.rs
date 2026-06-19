@@ -27,6 +27,9 @@ pub enum InputEvent {
     Line(String),
     AiPrompt(String),
     PassthroughEnded,
+    /// minibuffer をキャンセル (ESC / Ctrl+C / Ctrl+/ / "exit" / 空 Ctrl+D) した。
+    /// main loop が `refresh_prompt` でシェルプロンプトを再表示する。
+    MinibufferCancelled,
     /// `ReadLine` 中にユーザが Ctrl+C を押した (もしくは EOF)。
     /// 確認プロンプト中なら「残りコマンドを全部キャンセル」を意味する。
     ReadLineCancelled,
@@ -1270,22 +1273,23 @@ fn show_minibuffer(
             let _ = writeln!(stdout);
             let _ = stdout.flush();
             // bash の打ちかけ入力消去 (Ctrl+A + Ctrl+K) はここでは送らない。
-            // ユーザが AI 提案コマンドの実行を承認した直前 (main.rs 側) で初回 1 回
-            // だけ送る。これにより「AI に質問はしたが提案を拒否」したケースで
-            // bash の打ちかけが温存される。
+            // 初回コマンド承認の直前 (confirm_and_execute) と AI 対話終了時
+            // (run() 末尾の refresh_prompt) で送られるので、ここで重ねて送らない。
+            // (= AI に質問した経路では対話終了時に打ちかけは消える。温存されるのは
+            //  minibuffer を空 Enter で抜けた場合だけ。)
             let _ = tx.send(InputEvent::AiPrompt(text));
         }
         None => {
-            // キャンセル (ESC/Ctrl+C/Ctrl+//exit) → 1 行改行を出して bash プロンプト跡が
-            // 同じ行に表示されるのを避ける ([aish] と bash プロンプトの混在防止)。
-            // 打ちかけは画面と bash readline に残る。Ctrl+/ を誤って押した後でも
-            // shell 入力中のテキストが失われない。改行で cursor は bash 入力欄の
-            // 1 行下に移動するが、bash readline 側の cursor 認識はそのままなので、
-            // 次の入力 byte は bash 側で受理され echoback で正しい位置 (新しい行) に
-            // 描画される。最下行の場合は ONLCR の \n が scroll を引き起こし、bash
-            // プロンプト 1 行ぶんが上に退避するだけで内容は失われない。
-            let _ = writeln!(stdout);
-            let _ = stdout.flush();
+            // キャンセル (ESC/Ctrl+C/Ctrl+//exit/空 Ctrl+D) → main loop に通知し、
+            // AI 対話終了 / slash command と同じ refresh_prompt でシェルプロンプトを
+            // 再表示させる。ここでは stdout に `\n` を出さない: refresh_prompt が PTY に
+            // 送る改行で bash 自身が新プロンプトを改行付きで描くため (二重の空行防止)。
+            // カーソルは上で saved 位置 (= bash readline の認識位置) に復元済みなので、
+            // refresh_prompt の行消去 redisplay + 改行が正しい位置に当たる。
+            // (refresh_prompt は打ちかけを消すので、打ちかけがあった場合は失われるが
+            //  未承認コマンドの実行はしない。打ちかけ温存より「クリーンなプロンプト
+            //  再表示」を優先する仕様。)
+            let _ = tx.send(InputEvent::MinibufferCancelled);
         }
     }
 }
