@@ -105,4 +105,3 @@ git tag -a "v$NEW" -m "Release v$NEW"
 - バージョン番号は SemVer (`X.Y.Z` 数値のみ) を期待する。`v` プレフィックスは tag 側にだけ付与し、Cargo.toml 内では付けない
 - 既に同名の tag が存在する場合は `git tag -l "v$NEW"` で事前検出して中止すること (force 上書きはしない)
 - `cargo build` が失敗 / 警告ありで終わった場合は commit 前に必ず止まる
-- ユーザ承認なしに `--no-verify` や `git push --force` 等の destructive オプションは絶対に使わない
