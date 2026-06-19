@@ -91,6 +91,9 @@ enum Approval {
 enum CommandWait {
     /// 出力末尾がプロンプト形に戻り静音した (= コマンド完了とみなす)。
     PromptReturned,
+    /// 実行中に Ctrl+C (0x03) が押された。PTY へ転送済みで、コマンドは中断され
+    /// プロンプトに復帰した。残りコマンドは実行せず中止する。
+    Interrupted,
     /// 子プロセス (ssh / shell) が死んだ。残り出力は drain 済み。
     PtyDied,
 }
@@ -300,11 +303,19 @@ impl AiConversation<'_> {
 
             // コマンド実行完了待ち（passive 検出）。子プロセス死亡時は
             // 待っても意味がないので対話ごと抜ける (main loop も終了する)。
-            if matches!(
-                wait_for_command_completion(self.pty, self.pty_rx, self.ring_buffer)?,
-                CommandWait::PtyDied
-            ) {
-                return Ok(ExecReport::PtyDied);
+            match wait_for_command_completion(self.pty, self.pty_rx, self.ring_buffer)? {
+                CommandWait::PtyDied => return Ok(ExecReport::PtyDied),
+                CommandWait::Interrupted => {
+                    // 実行中コマンドへ Ctrl+C は転送済み (中断済み)。このコマンド
+                    // 自体は「実行した」として記録し、残りは送らず中止する。
+                    // 確認画面での Ctrl+C と同じく follow-up はしない。
+                    executed.push(format!("`{cmd}`"));
+                    return Ok(ExecReport::Done {
+                        executed,
+                        outcome: ExecOutcome::Abort,
+                    });
+                }
+                CommandWait::PromptReturned => {}
             }
 
             executed.push(format!("`{cmd}`"));
@@ -350,9 +361,14 @@ fn wait_confirm_decision(input_rx: &mpsc::Receiver<ui::InputEvent>) -> ConfirmDe
 
 /// AI 提案コマンド送信後の実行完了待ち (passive 検出)。
 /// - PTY 出力をドレインして画面 / リングバッファ / sniffer へ
-/// - stdin → PTY 転送（パスワード入力・Ctrl+C 中断・対話応答）
+/// - stdin → PTY 転送（パスワード入力・対話応答・Ctrl+C 中断）
 /// - SIGWINCH 検知（リサイズ追従）
 /// - 完了判定: PTY 出力末尾がプロンプト形 + `PROMPT_QUIET_THRESHOLD` 静音
+///
+/// stdin に Ctrl+C (0x03) が含まれていたら、バイトはそのまま PTY へ転送して実行中
+/// コマンドを中断させつつ中断フラグを立て、プロンプト復帰時に `Interrupted` を返す
+/// (呼び出し側が残りコマンドを中止する)。Ctrl+D (0x04) は対話プログラムでの EOF を
+/// 壊さないよう転送のみで中止扱いにはしない。
 ///
 /// 子プロセス死亡時 (sudo reboot 等で SSH が切れた後はプロンプトに戻らないため、
 /// sniffer ベースの完了判定だと永遠にハングする) は残り出力をドレインして
@@ -365,6 +381,7 @@ fn wait_for_command_completion(
     let mut sniffer = prompt_sniffer::PromptSniffer::new();
     let mut last_pty_activity = Instant::now();
     let mut chunk_count = 0usize;
+    let mut interrupted = false;
     loop {
         if !pty.is_alive() {
             thread::sleep(crate::FINAL_DRAIN_WAIT);
@@ -401,12 +418,25 @@ fn wait_for_command_completion(
         }
         let stdin_bytes = ui::drain_stdin_nonblocking();
         if !stdin_bytes.is_empty() {
+            // Ctrl+C はそのまま実行中コマンドへ転送して中断させる。残りコマンドの
+            // 中止判定はプロンプト復帰時に行う (この場で抜けると ^C + プロンプトの
+            // 出力を取りこぼし、画面とリングバッファがずれる)。Ctrl+D (0x04) は
+            // 対話プログラムの EOF として正当なので中止扱いにはしない。
+            if stdin_bytes.contains(&0x03) {
+                interrupted = true;
+            }
             pty.write(&stdin_bytes)?;
         }
         if last_pty_activity.elapsed() >= PROMPT_QUIET_THRESHOLD && sniffer.matches_prompt() {
             sniffer.record_match();
-            debug_log(&format!("exec end: chunks={chunk_count}"));
-            return Ok(CommandWait::PromptReturned);
+            debug_log(&format!(
+                "exec end: chunks={chunk_count} interrupted={interrupted}"
+            ));
+            return Ok(if interrupted {
+                CommandWait::Interrupted
+            } else {
+                CommandWait::PromptReturned
+            });
         }
         thread::sleep(EXEC_POLL_INTERVAL);
     }
