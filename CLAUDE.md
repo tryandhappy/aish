@@ -1,34 +1,33 @@
 # aish
 
-CLI SSH + AI (Claude Code)。ローカルシェル または SSH接続先サーバを、クライアント側のClaude Codeから調査・操作する対話型ツール。
+CLI SSH + AI (Claude Code)。ローカルシェル / SSH 接続先サーバを、クライアント側 Claude Code から調査・操作する対話型ツール。
 
 ## 開発環境
-- 言語: Rust
-- ビルド: `export PATH="$HOME/.cargo/bin:$PATH" && cargo build`
-- 対応OS: Linux (Ubuntu), macOS, Windows（UI部はUnix限定、Windowsは `read_line_cooked` フォールバック）
-- CI: `.github/workflows/ci.yml` が全 push で `cargo fmt --all -- --check` / `cargo clippy --all-targets -- -D warnings` (ubuntu) と `cargo test` (ubuntu + macOS) を回す。**push 前にこの 3 つをローカルで通すこと**。`release.yml` (タグ push でのリリース) とは独立。
-  - **テスト実行は `cargo test`。`--lib` を付けない**: aish は bin-only crate (`src/lib.rs` なし) なので `cargo test --lib` はターゲット不在で 0 件になる。
-  - **clippy `-D warnings` は構造的 lint を一部 `#[allow(clippy::...)]` で抑制している** (`utf8_char_len` の `if_same_then_else`、minibuffer/echo の `write_with_newline`、`compute_visual_layout` の `needless_range_loop`、minibuffer 関数群の `too_many_arguments`、入力スレッドの `while_let_loop`)。いずれも trust-critical / 意図的なコードを温存するためで、**安易に外して writeln! 化やリファクタをしない**。
+- 言語: Rust。ビルド: `export PATH="$HOME/.cargo/bin:$PATH" && cargo build`
+- 対応 OS: Linux (Ubuntu) / macOS / Windows（UI 部は Unix 限定、Windows は `read_line_cooked` フォールバック）
+- CI (`.github/workflows/ci.yml`): 全 push で `cargo fmt --all -- --check` / `cargo clippy --all-targets -- -D warnings` (ubuntu) / `cargo test` (ubuntu + macOS)。**push 前に 3 つともローカルで通す**。`release.yml`（タグ push でのリリース）とは独立。
+  - **テストは `cargo test`、`--lib` を付けない**: bin-only crate（`src/lib.rs` なし）なので `cargo test --lib` は 0 件。
+  - **clippy `-D warnings` は構造的 lint を一部 `#[allow(clippy::...)]` で抑制**（`utf8_char_len` の `if_same_then_else`、minibuffer/echo の `write_with_newline`、`compute_visual_layout` の `needless_range_loop`、minibuffer 関数群の `too_many_arguments`、入力スレッドの `while_let_loop`）。trust-critical / 意図的コード温存のためで、**安易に外して writeln! 化やリファクタしない**。
 
 ## 仕様
 
-詳細な仕様（アーキテクチャ、動作モード、UI要素、キー入力、AI連携、リングバッファ、スレッド構成、設定ファイル、エラー挙動、既知の制約、**実装ノート/落とし穴**など）は **[SPEC.md](./SPEC.md)** を参照。
+アーキテクチャ・動作モード・UI・キー入力・AI 連携・リングバッファ・スレッド構成・設定ファイル・エラー挙動・既知の制約・**実装ノート/落とし穴**などの詳細は **[SPEC.md](./SPEC.md)** を参照。
 
 ## 信頼の根幹
 
-aish は SSH でサーバを管理する道具なので、**ユーザが画面で承認したコマンド = サーバで実行されるコマンド** を保つこと、**サーバ側に勝手な書き込みをしないこと** が大原則。
+SSH でサーバを管理する道具なので、**ユーザが画面で承認したコマンド = サーバで実行されるコマンド** を保ち、**サーバ側に勝手な書き込みをしない**ことが大原則。
 
-具体的に避けるべき行為:
-- AI 提案コマンドをラップして別の文字列に変形する（マーカーラッパ等）
-- `PROMPT_COMMAND` / `precmd` / `set +o history` で shell 環境を黙って書き換える
+避けるべき行為:
+- AI 提案コマンドをラップして別文字列に変形（マーカーラッパ等）
+- `PROMPT_COMMAND` / `precmd` / `set +o history` で shell 環境を黙って書き換え
 - `HISTCONTROL=ignorespace` 依存等の「履歴に残さない工夫」
 - 任意の shell 統合シーケンスの自動セットアップ
 
-完了判定や exit code 取得が必要でも、**passive 検出**（PTY 出力を観察するだけ）の範囲で実現する。それで取れない情報は諦める。
+完了判定や exit code 取得が必要でも **passive 検出**（PTY 出力を観察するだけ）の範囲で実現し、取れない情報は諦める。
 
 ## 実装上の注意
 
-コードから直ちに読み取れず間違えやすいルール。**各ルールの背景・理由・過去バグ経緯・エッジケースは [SPEC.md](./SPEC.md) § 15「実装ノート（落とし穴）」を参照**。trust-critical な「〜しないこと」は必ず守る（消えているのは長い説明だけで、根拠は § 15 にある）。
+コードから直ちに読み取れず間違えやすいルール。**各ルールの背景・理由・過去バグ経緯・エッジケースは [SPEC.md](./SPEC.md) § 15「実装ノート（落とし穴）」を参照**（CLAUDE.md=ルール、SPEC.md § 15=詳細）。trust-critical な「〜しないこと」は必ず守る（消えているのは長い説明だけで根拠は § 15 にある）。
 
 端末入力 / termios（§ 15.1）:
 - **raw モードはセッション全体で維持**（`save_terminal_settings`）。`passthrough` / `read_confirm_key` 個別での再設定・復元はしない。
@@ -78,15 +77,14 @@ AI backends（§ 15.10）:
 
 ## 開発フロー
 
-ユーザから明示的に依頼された作業を行うときは、以下のフローに従う。これは CLAUDE.md「信頼の根幹」を守るための運用ルールであり、デフォルトの「commit は明示要求があるときだけ」を上書きする。
+ユーザから明示依頼された作業を行うときのフロー（「信頼の根幹」を守る運用ルールであり、デフォルトの「commit は明示要求時のみ」を上書きする）:
 
-- **ユーザのプロンプトが疑問文で終わっている場合、それは質問であって作業依頼ではない**。勝手にソースコードを修正してはいけない。まず質問に答え、必要であれば修正案を提示してユーザの指示を待つ。
-- **ソースコードを修正する前に、仕様や要件に疑問点があれば全て必ずユーザに確認する**。曖昧な前提のまま作業を進めない。判断に迷ったら手を動かす前に聞く。
-- **コードに新しい仕様 / 落とし穴 / 不変条件を導入する変更を行ったら、同じ作業フローの中でドキュメントへの追記を必ず行う**。CLAUDE.md「実装上の注意」に **1 行ルール**を足し、その**背景・理由・過去バグ経緯・エッジケースは SPEC.md § 15「実装ノート」**に書く（CLAUDE.md=ルール、SPEC.md § 15=詳細、という住み分けを保つ）。対象は、コードから直ちには読み取れず後から見て間違える可能性のある挙動。typo 修正・cosmetic refactor・既存仕様の範囲内の小さな修正は対象外。判断に迷ったら追記する側に倒す。
-- **依頼された作業が完了したら、コード変更と CLAUDE.md / SPEC.md の追記を 1 つの commit にまとめて自動作成してよい**。ユーザに「commit しますか？」と都度確認しなくてよい。コミットメッセージは既存スタイル (`Feat:` / `Fix:` / `Refactor:` / `Docs:` / `Chore:` 等の日本語プレフィックス + 短い説明、必要なら body) に従う。
-- **push は別途ユーザに確認する**。リモートに公開する操作は引き続き確認が必要。
-- **タグ付け / git tag タグをつける。git push --tagsでGitHub Actionが動き出し、リリースされるが、git pushは自動では行わない。
+- **プロンプトが疑問文で終わるなら質問であって作業依頼ではない**。勝手にソースを修正せず、まず答え、必要なら修正案を提示して指示を待つ。
+- **ソース修正前に、仕様や要件の疑問点は全て必ずユーザに確認する**。曖昧な前提で進めない。迷ったら手を動かす前に聞く。
+- **新しい仕様 / 落とし穴 / 不変条件を導入したら、同じ作業フロー内でドキュメント追記する**: CLAUDE.md「実装上の注意」に **1 行ルール**、背景・理由・過去バグ経緯・エッジケースは SPEC.md § 15 に（住み分けを保つ）。対象はコードから読み取れず後で間違えうる挙動。typo・cosmetic refactor・既存仕様内の小修正は対象外。迷ったら追記する側に倒す。
+- **作業完了時、コード変更 + CLAUDE.md / SPEC.md 追記を 1 commit にまとめて自動作成してよい**（都度「commit しますか？」と聞かなくてよい）。メッセージは既存スタイル（`Feat:`/`Fix:`/`Refactor:`/`Docs:`/`Chore:` 等の日本語プレフィックス + 短い説明、必要なら body）。
+- **push は別途ユーザに確認する**。
+- **タグ付け**: `git tag` でタグを付け、`git push --tags` で GitHub Action が動きリリースされる。`git push` は自動で行わない。
 
 ## 設定ファイル
-- `~/.aish/config.toml` (TOML)。`--config <path>` で変更可能。
-- `config.toml.example` にサンプルあり。
+- `~/.aish/config.toml` (TOML)。`--config <path>` で変更可能。サンプルは `config.toml.example`。
