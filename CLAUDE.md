@@ -54,6 +54,12 @@ minibuffer / 打ちかけ（§ 15.4, 15.5）:
 - **`0x01,0x0b`(Ctrl+A+Ctrl+K) リテラルは `pty_handler.rs` 以外に書かない**（`kill_line`/`refresh_prompt` にカプセル化）。プロンプトリフレッシュ改行は必ず `refresh_prompt()` を使い、素の `pty.write(b"\n")` を書かない（打ちかけの未承認 submit 防止 = 信頼の根幹）。
 - **AI 対話直前（`run` 冒頭）に打ちかけを消去してから drain**（折り返し打ちかけ + n キャンセルで `Exec?` 行が上書きされるのを防ぐ。撤去時は pyte で再検証）。
 
+`/model` `/effort` ピッカー（§ 15.12）:
+- **`ui::show_picker` は confirm と同じく main スレッドが fd0 直読みの同期ブロッキング関数**（`AiPrompt` arm 内 = 入力スレッド parked 前提。`InputEvent`/`InputRequest` 経由にしない）。**termios 再設定はしない**（raw はセッション維持）。stdout 専用で PTY に書かない。
+- **領域は先に `\n`×N で確保→原点へ戻り、以降は最終行末で止まる相対描画**（末尾改行を出さず予約超え scroll を防ぐ。DECSTBM 不使用）。終了時に `\x1b[<L-1>A\r\x1b[0J` で消去し原点へ（後続の `print_slash_result` が原点から出す）。**ナビは純関数 `picker_step` に分離し golden test**（↑↓ クランプ / Enter=Select / Esc・Ctrl+C・Ctrl+D=Cancel）。
+- **候補解決は backend ごと `available_models`/`available_efforts`（trait）= static list > 取得コマンド > 組み込み既定**（`common::resolve_option_list`）。取得コマンドは**ピッカーを開く時だけローカル実行**（起動時に走らせない。サーバ書き込み・承認フローと無関係）。effort 既定は claude/codex/copilot のみ同梱、model 既定は無し。
+- **`/model` `/effort` は常に `Some(...)` を返す**（None だと通常 AI プロンプト扱い）。引数なし=ピッカー、`-`/`clear`=クリア、その他=検証せず set（ヒントのみ）。
+
 drain / 入力スレッド（§ 15.6）:
 - **PTY 吸い出しは全て `pty_drain::drain_pty` 経由**（手書き try_recv ループを再導入しない。全 data を ring_buffer に記録する不変条件を一元保証）。**通常動作中は PTY 出力に独自文字列を挿入しない**。
 - **入力スレッド再開は `InputGate` + `rearm_on_drop()` RAII guard**（idle に戻る arm の入口で取得。手書き arm 呼び出しを増やさない）。

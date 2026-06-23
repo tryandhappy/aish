@@ -36,6 +36,16 @@ pub trait AiBackend: Send {
     /// 該当 CLI フラグを持たない backend (gemini/qwen) は内部に保存するが
     /// 実際のリクエストには反映されない。
     fn set_effort(&mut self, _effort: Option<&str>) {}
+    /// `/model` ピッカーに出す model 候補一覧 (config の static list / 取得コマンド /
+    /// backend 組み込み既定を解決済み)。空なら候補なし。ヒント用途なので set はこの一覧に
+    /// 縛られない。`/model` 呼び出し時にだけ評価される (取得コマンドはここで実行)。
+    fn available_models(&self) -> Vec<String> {
+        Vec::new()
+    }
+    /// `/effort` ピッカーに出す effort 候補一覧。詳細は `available_models` と同じ。
+    fn available_efforts(&self) -> Vec<String> {
+        Vec::new()
+    }
     /// 会話履歴 / セッション ID をリセットする (`/clear` 用)。
     fn clear_history(&mut self) {}
     /// aish 終了時に表示する「このセッションを当該 CLI のインタラクティブモードで再開するための

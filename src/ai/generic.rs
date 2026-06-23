@@ -1,6 +1,7 @@
 use super::common::{
     build_full_prompt, build_system_prompt, expand_tilde, extract_json, extract_model_from_args,
-    parse_ai_response_lossy, parse_jsonl_with_paths, run_cli_capture_stdout, trim_history,
+    parse_ai_response_lossy, parse_jsonl_with_paths, resolve_option_list, run_cli_capture_stdout,
+    trim_history,
 };
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
 use crate::config::{AiConfig, LogConfig, ProviderRecipe};
@@ -89,6 +90,25 @@ impl AiBackend for GenericCliBackend {
 
     fn set_effort(&mut self, effort: Option<&str>) {
         self.effort = effort.map(str::to_string);
+    }
+
+    fn available_models(&self) -> Vec<String> {
+        // generic は recipe 由来のみ (組み込み既定なし)。
+        resolve_option_list(
+            &self.recipe.options.models,
+            &self.recipe.options.models_command,
+            &[],
+            &self.log_path,
+        )
+    }
+
+    fn available_efforts(&self) -> Vec<String> {
+        resolve_option_list(
+            &self.recipe.options.efforts,
+            &self.recipe.options.efforts_command,
+            &[],
+            &self.log_path,
+        )
     }
 
     fn clear_history(&mut self) {
@@ -263,6 +283,7 @@ mod tests {
             color: 208,
             system_prompt_inline: true,
             history_turns: 8,
+            options: crate::config::OptionLists::default(),
         }
     }
 

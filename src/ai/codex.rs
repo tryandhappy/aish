@@ -1,9 +1,13 @@
 use super::common::{
     build_full_prompt, build_system_prompt, expand_tilde, extract_model_from_args,
-    parse_ai_response_lossy, run_cli_capture_stdout, unique_tmp_path, write_log,
+    parse_ai_response_lossy, resolve_option_list, run_cli_capture_stdout, unique_tmp_path,
+    write_log,
 };
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
-use crate::config::{AiConfig, LogConfig};
+use crate::config::{AiConfig, LogConfig, OptionLists};
+
+/// `/effort` ピッカーの組み込み既定 (config 未設定時)。codex の `model_reasoning_effort`。
+const EFFORT_DEFAULTS: &[&str] = &["minimal", "low", "medium", "high"];
 
 /// codex の自律エージェント挙動を無効化するための feature 一覧。
 /// `codex features list` で stable / experimental の tool 系をすべて落とす。
@@ -48,6 +52,8 @@ pub struct CodexBackend {
     /// codex 側 session UUID。初回 send 後に `~/.codex/sessions/` 配下から捕獲する。
     /// `Some` のときは `codex exec resume <UUID>` で連結し、aish 側からは履歴を再送しない。
     session_id: Option<String>,
+    /// `/model` `/effort` ピッカーの候補リスト設定。
+    options: OptionLists,
 }
 
 impl CodexBackend {
@@ -65,6 +71,7 @@ impl CodexBackend {
             model: (!cfg.model.is_empty()).then(|| cfg.model.clone()),
             effort: (!cfg.effort.is_empty()).then(|| cfg.effort.clone()),
             session_id: None,
+            options: cfg.codex.options.clone(),
         }
     }
 }
@@ -90,6 +97,24 @@ impl AiBackend for CodexBackend {
 
     fn set_effort(&mut self, effort: Option<&str>) {
         self.effort = effort.map(str::to_string);
+    }
+
+    fn available_models(&self) -> Vec<String> {
+        resolve_option_list(
+            &self.options.models,
+            &self.options.models_command,
+            &[],
+            &self.log_path,
+        )
+    }
+
+    fn available_efforts(&self) -> Vec<String> {
+        resolve_option_list(
+            &self.options.efforts,
+            &self.options.efforts_command,
+            EFFORT_DEFAULTS,
+            &self.log_path,
+        )
     }
 
     fn clear_history(&mut self) {

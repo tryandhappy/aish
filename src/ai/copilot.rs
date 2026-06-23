@@ -1,9 +1,12 @@
 use super::common::{
     build_full_prompt, build_system_prompt, expand_tilde, extract_model_from_args,
-    parse_ai_response_lossy, parse_jsonl_with_paths, run_cli_capture_stdout,
+    parse_ai_response_lossy, parse_jsonl_with_paths, resolve_option_list, run_cli_capture_stdout,
 };
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
-use crate::config::{AiConfig, LogConfig};
+use crate::config::{AiConfig, LogConfig, OptionLists};
+
+/// `/effort` ピッカーの組み込み既定 (config 未設定時)。copilot CLI の `--effort`。
+const EFFORT_DEFAULTS: &[&str] = &["none", "low", "medium", "high", "xhigh", "max"];
 
 /// GitHub Copilot CLI (`copilot`) backend。
 ///
@@ -43,6 +46,8 @@ pub struct CopilotBackend {
     effort: Option<String>,
     /// 初回 send で捕獲した session_id。2 回目以降は `--resume <sid>` で連結する。
     session_id: Option<String>,
+    /// `/model` `/effort` ピッカーの候補リスト設定。
+    options: OptionLists,
 }
 
 impl CopilotBackend {
@@ -61,6 +66,7 @@ impl CopilotBackend {
             model: (!cfg.model.is_empty()).then(|| cfg.model.clone()),
             effort: (!cfg.effort.is_empty()).then(|| cfg.effort.clone()),
             session_id: None,
+            options: cfg.copilot.options.clone(),
         }
     }
 }
@@ -86,6 +92,24 @@ impl AiBackend for CopilotBackend {
 
     fn set_effort(&mut self, effort: Option<&str>) {
         self.effort = effort.map(str::to_string);
+    }
+
+    fn available_models(&self) -> Vec<String> {
+        resolve_option_list(
+            &self.options.models,
+            &self.options.models_command,
+            &[],
+            &self.log_path,
+        )
+    }
+
+    fn available_efforts(&self) -> Vec<String> {
+        resolve_option_list(
+            &self.options.efforts,
+            &self.options.efforts_command,
+            EFFORT_DEFAULTS,
+            &self.log_path,
+        )
     }
 
     fn clear_history(&mut self) {

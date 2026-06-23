@@ -1,9 +1,9 @@
 use super::common::{
     build_full_prompt, build_system_prompt, expand_tilde, extract_model_from_args,
-    parse_ai_response_lossy, run_cli_capture_stdout, trim_history,
+    parse_ai_response_lossy, resolve_option_list, run_cli_capture_stdout, trim_history,
 };
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
-use crate::config::{AiConfig, LogConfig};
+use crate::config::{AiConfig, LogConfig, OptionLists};
 
 const MAX_HISTORY_TURNS: usize = 8;
 
@@ -25,6 +25,8 @@ pub struct QwenBackend {
     model: Option<String>,
     /// runtime effort 指定 (`/effort`)。Qwen CLI には該当フラグが無いので保存のみで適用しない。
     effort: Option<String>,
+    /// `/model` `/effort` ピッカーの候補リスト設定 (effort は組み込み既定なし)。
+    options: OptionLists,
     history: Vec<(String, String)>,
 }
 
@@ -42,6 +44,7 @@ impl QwenBackend {
             base_extra_args: cfg.qwen.extra_args.clone(),
             model: (!cfg.model.is_empty()).then(|| cfg.model.clone()),
             effort: (!cfg.effort.is_empty()).then(|| cfg.effort.clone()),
+            options: cfg.qwen.options.clone(),
             history: Vec::new(),
         }
     }
@@ -69,6 +72,24 @@ impl AiBackend for QwenBackend {
     fn set_effort(&mut self, effort: Option<&str>) {
         // qwen CLI には reasoning effort フラグが無いので保存のみ (実リクエストには反映されない)。
         self.effort = effort.map(str::to_string);
+    }
+
+    fn available_models(&self) -> Vec<String> {
+        resolve_option_list(
+            &self.options.models,
+            &self.options.models_command,
+            &[],
+            &self.log_path,
+        )
+    }
+
+    fn available_efforts(&self) -> Vec<String> {
+        resolve_option_list(
+            &self.options.efforts,
+            &self.options.efforts_command,
+            &[],
+            &self.log_path,
+        )
     }
 
     fn clear_history(&mut self) {

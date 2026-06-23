@@ -89,6 +89,26 @@ fn default_backend() -> String {
     "claude".to_string()
 }
 
+/// `/model` `/effort` の対話ピッカーに出す候補リスト設定。各 backend 設定に
+/// `#[serde(flatten)]` で埋め込む。候補解決の優先順位は
+/// **static list (`*s`) > 取得コマンド (`*_command`) > backend 組み込み既定**
+/// (`crate::ai::common::resolve_option_list`)。ヒント用途なので検証はしない。
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct OptionLists {
+    /// model 候補 (static)。空なら `models_command` / 組み込み既定にフォールバック。
+    #[serde(default)]
+    pub models: Vec<String>,
+    /// model 候補を動的取得するコマンド (ローカルで `sh -c`、stdout を 1 行 1 候補で解釈)。
+    #[serde(default)]
+    pub models_command: String,
+    /// effort 候補 (static)。空なら `efforts_command` / 組み込み既定にフォールバック。
+    #[serde(default)]
+    pub efforts: Vec<String>,
+    /// effort 候補を動的取得するコマンド。
+    #[serde(default)]
+    pub efforts_command: String,
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct ClaudeBackendConfig {
     #[serde(default = "default_disallowed_tools")]
@@ -101,6 +121,8 @@ pub struct ClaudeBackendConfig {
     pub allow_unsafe_tools: bool,
     #[serde(default)]
     pub extra_args: Vec<String>,
+    #[serde(flatten)]
+    pub options: OptionLists,
 }
 
 impl Default for ClaudeBackendConfig {
@@ -109,6 +131,7 @@ impl Default for ClaudeBackendConfig {
             disallowed_tools: default_disallowed_tools(),
             allow_unsafe_tools: false,
             extra_args: Vec::new(),
+            options: OptionLists::default(),
         }
     }
 }
@@ -121,6 +144,8 @@ fn default_disallowed_tools() -> String {
 pub struct GenericBackendConfig {
     #[serde(default)]
     pub extra_args: Vec<String>,
+    #[serde(flatten)]
+    pub options: OptionLists,
 }
 
 /// cursor-agent 用設定。
@@ -139,6 +164,8 @@ pub struct CursorBackendConfig {
     /// `--sandbox` に渡す値。空 / 未指定なら何も渡さない。
     #[serde(default)]
     pub sandbox: String,
+    #[serde(flatten)]
+    pub options: OptionLists,
 }
 
 impl Default for CursorBackendConfig {
@@ -147,6 +174,7 @@ impl Default for CursorBackendConfig {
             extra_args: Vec::new(),
             mode: default_cursor_mode(),
             sandbox: String::new(),
+            options: OptionLists::default(),
         }
     }
 }
@@ -172,6 +200,8 @@ pub struct CopilotBackendConfig {
     /// `--mode` に渡す値。空 / 未指定なら何も渡さない (= interactive 既定)。aish では `"plan"` 推奨。
     #[serde(default = "default_copilot_mode")]
     pub mode: String,
+    #[serde(flatten)]
+    pub options: OptionLists,
 }
 
 impl Default for CopilotBackendConfig {
@@ -179,6 +209,7 @@ impl Default for CopilotBackendConfig {
         Self {
             extra_args: Vec::new(),
             mode: default_copilot_mode(),
+            options: OptionLists::default(),
         }
     }
 }
@@ -244,6 +275,9 @@ pub struct ProviderRecipe {
     /// `session_id_path` が空のとき (= native resume 無し)、内部 history で保持するターン数。
     #[serde(default = "default_history_turns")]
     pub history_turns: usize,
+    /// `/model` `/effort` ピッカーの候補リスト (model/effort それぞれ static + 取得コマンド)。
+    #[serde(flatten)]
+    pub options: OptionLists,
 }
 
 fn default_prompt_delivery() -> String {
@@ -288,6 +322,7 @@ impl ProviderRecipe {
             color: default_provider_color(),
             system_prompt_inline: true,
             history_turns: default_history_turns(),
+            options: OptionLists::default(),
         }
     }
 }
@@ -330,6 +365,14 @@ pub struct ProviderOverride {
     pub system_prompt_inline: Option<bool>,
     #[serde(default)]
     pub history_turns: Option<usize>,
+    #[serde(default)]
+    pub models: Option<Vec<String>>,
+    #[serde(default)]
+    pub models_command: Option<String>,
+    #[serde(default)]
+    pub efforts: Option<Vec<String>>,
+    #[serde(default)]
+    pub efforts_command: Option<String>,
 }
 
 impl ProviderOverride {
@@ -376,6 +419,18 @@ impl ProviderOverride {
         }
         if let Some(v) = self.history_turns {
             r.history_turns = v;
+        }
+        if let Some(v) = &self.models {
+            r.options.models = v.clone();
+        }
+        if let Some(v) = &self.models_command {
+            r.options.models_command = v.clone();
+        }
+        if let Some(v) = &self.efforts {
+            r.options.efforts = v.clone();
+        }
+        if let Some(v) = &self.efforts_command {
+            r.options.efforts_command = v.clone();
         }
     }
 }
@@ -946,5 +1001,40 @@ binary = "y"
         assert_eq!(dups.len(), 1);
         assert_eq!(dups[0].binary, "y"); // 後のエントリで上書き
         assert_eq!(dups[0].model_flag, "-m"); // 先のエントリの値は残る
+    }
+
+    #[test]
+    fn native_option_lists_parse() {
+        // `[ai.claude]` に flatten された models/efforts/取得コマンドが読めること。
+        let toml_str = r#"
+[ai.claude]
+models = ["claude-opus-4-8", "claude-sonnet-4-6"]
+efforts = ["low", "high"]
+models_command = "echo hi"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let o = &config.ai.claude.options;
+        assert_eq!(o.models, vec!["claude-opus-4-8", "claude-sonnet-4-6"]);
+        assert_eq!(o.efforts, vec!["low", "high"]);
+        assert_eq!(o.models_command, "echo hi");
+        assert!(o.efforts_command.is_empty());
+    }
+
+    #[test]
+    fn generic_override_models_only_keeps_builtin_efforts() {
+        // 組み込み "demo" の efforts はそのままに、models だけ上書きできる。
+        let mut builtin = ProviderRecipe::with_defaults("demo", "demo-cli");
+        builtin.options.efforts = vec!["low".into(), "high".into()];
+        let ai = ai_from_toml(
+            r#"
+[[ai.providers]]
+name = "demo"
+models = ["m1", "m2"]
+"#,
+        );
+        let resolved = ai.resolve_with_builtins(vec![builtin]).unwrap();
+        let p = &resolved[0];
+        assert_eq!(p.options.models, vec!["m1", "m2"]); // 上書き
+        assert_eq!(p.options.efforts, vec!["low", "high"]); // builtin のまま
     }
 }

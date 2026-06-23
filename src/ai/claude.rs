@@ -1,9 +1,12 @@
 use super::common::{
     build_system_prompt_claude, expand_tilde, extract_json, extract_model_from_args,
-    run_cli_capture_stdout,
+    resolve_option_list, run_cli_capture_stdout,
 };
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
-use crate::config::{AiConfig, LogConfig};
+use crate::config::{AiConfig, LogConfig, OptionLists};
+
+/// `/effort` ピッカーの組み込み既定 (config 未設定時)。claude CLI の `--effort`。
+const EFFORT_DEFAULTS: &[&str] = &["low", "medium", "high"];
 
 const AI_RESPONSE_SCHEMA: &str = r#"{
   "type": "object",
@@ -29,6 +32,8 @@ pub struct ClaudeBackend {
     model: Option<String>,
     /// runtime effort 指定 (`/effort` で書き換え可能)。`Some` のとき send() 時に `--effort <e>` を追加。
     effort: Option<String>,
+    /// `/model` `/effort` ピッカーの候補リスト設定。
+    options: OptionLists,
     log_path: Option<String>,
 }
 
@@ -73,6 +78,7 @@ impl ClaudeBackend {
             base_extra_args: cfg.claude.extra_args.clone(),
             model: (!cfg.model.is_empty()).then(|| cfg.model.clone()),
             effort: (!cfg.effort.is_empty()).then(|| cfg.effort.clone()),
+            options: cfg.claude.options.clone(),
             log_path,
         }
     }
@@ -99,6 +105,24 @@ impl AiBackend for ClaudeBackend {
 
     fn set_effort(&mut self, effort: Option<&str>) {
         self.effort = effort.map(str::to_string);
+    }
+
+    fn available_models(&self) -> Vec<String> {
+        resolve_option_list(
+            &self.options.models,
+            &self.options.models_command,
+            &[],
+            &self.log_path,
+        )
+    }
+
+    fn available_efforts(&self) -> Vec<String> {
+        resolve_option_list(
+            &self.options.efforts,
+            &self.options.efforts_command,
+            EFFORT_DEFAULTS,
+            &self.log_path,
+        )
     }
 
     fn clear_history(&mut self) {

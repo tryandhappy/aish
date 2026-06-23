@@ -63,7 +63,25 @@
 # system_prompt = ""                                             # default: "" — falls back to top-level system_prompt
 # language = ""                                                  # default: "" — falls back to top-level language
 
+# ---------------------------------------------------------------------------
+# /model /effort の候補リスト (対話ピッカー)
+# ---------------------------------------------------------------------------
+# 下の各 backend テーブル ([ai.claude] / [ai.codex] / [ai.gemini] / [ai.qwen] /
+# [ai.cursor] / [ai.copilot] と [[ai.providers]]) で、以下 4 キーを設定できる。
+# `/model` `/effort` を引数なしで実行すると候補から ↑↓ + Enter で選べる
+# (`-` または `clear` でクリア、任意値の直接指定も可)。
+#   models          : model 候補 (static list)。例: ["claude-opus-4-8", "claude-sonnet-4-6"]
+#   models_command  : model 候補を動的取得するコマンド (ローカルで sh -c、stdout 1 行 1 候補)
+#   efforts         : effort 候補 (static list)。例: ["low", "medium", "high"]
+#   efforts_command : effort 候補を動的取得するコマンド
+# 優先順位: static list > 取得コマンド > backend 組み込み既定。
+# effort の組み込み既定: claude=low/medium/high, codex=minimal/low/medium/high,
+#   copilot=none/low/medium/high/xhigh/max (gemini/qwen/cursor は無し)。model 既定は無し。
+
 [ai.claude]
+# models = ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]
+# efforts = ["low", "medium", "high"]                            # 省略時は組み込み既定が使われる
+# models_command = "claude --list-models"                        # 例: CLI から動的取得 (1 行 1 候補)
 # disallowed_tools = "Bash,Edit,Write,Read"                      # default: "Bash,Edit,Write,Read" — これに追加する形。
                                                                  # Bash/Edit/Write は allow_unsafe_tools=false の間は常に deny される
                                                                  # (空文字にしても剥がれない)。Read だけは外せる。

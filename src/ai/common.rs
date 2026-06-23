@@ -250,6 +250,42 @@ pub(crate) fn extract_model_from_args(args: &[String]) -> Option<String> {
     None
 }
 
+/// `/model` `/effort` ピッカーに出す候補リストを解決する。
+/// 優先順位: static list 非空 → static / 取得コマンド 非空 → 実行結果 / それ以外 → 組み込み既定。
+/// （`config::OptionLists` + backend ごとの組み込み既定をまとめる窓口）
+pub(crate) fn resolve_option_list(
+    static_list: &[String],
+    command: &str,
+    builtin: &[&str],
+    log_path: &Option<String>,
+) -> Vec<String> {
+    if !static_list.is_empty() {
+        return static_list.to_vec();
+    }
+    if !command.is_empty() {
+        return run_option_command(command, log_path);
+    }
+    builtin.iter().map(|s| s.to_string()).collect()
+}
+
+/// 候補取得コマンドをローカルシェルで実行し stdout を 1 行 1 候補で解釈する。
+/// クライアント側でのみ実行され、サーバ書き込みや承認フローには関与しない。
+/// 失敗時は空 Vec（候補なし扱い）。
+fn run_option_command(command: &str, log_path: &Option<String>) -> Vec<String> {
+    #[cfg(unix)]
+    let (program, args) = ("sh", vec!["-c".to_string(), command.to_string()]);
+    #[cfg(not(unix))]
+    let (program, args) = ("cmd", vec!["/C".to_string(), command.to_string()]);
+    match run_cli_capture_stdout(program, &args, "", log_path) {
+        Ok(out) => out
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// 子プロセスを spawn し stdin に prompt を流して stdout 全体を返す。
 /// Ctrl+C でキャンセル、stderr はログに記録。
 pub(crate) fn run_cli_capture_stdout(

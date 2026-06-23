@@ -1,9 +1,9 @@
 use super::common::{
     build_full_prompt, build_system_prompt, expand_tilde, extract_json, extract_model_from_args,
-    parse_ai_response_lossy, run_cli_capture_stdout,
+    parse_ai_response_lossy, resolve_option_list, run_cli_capture_stdout,
 };
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
-use crate::config::{AiConfig, LogConfig};
+use crate::config::{AiConfig, LogConfig, OptionLists};
 
 /// Cursor CLI (`cursor-agent`) backend。
 ///
@@ -40,6 +40,8 @@ pub struct CursorBackend {
     effort: Option<String>,
     /// 初回 send で捕獲した session_id。2 回目以降は `--resume <sid>` で連結する。
     session_id: Option<String>,
+    /// `/model` `/effort` ピッカーの候補リスト設定 (effort は組み込み既定なし)。
+    options: OptionLists,
 }
 
 impl CursorBackend {
@@ -59,6 +61,7 @@ impl CursorBackend {
             model: (!cfg.model.is_empty()).then(|| cfg.model.clone()),
             effort: (!cfg.effort.is_empty()).then(|| cfg.effort.clone()),
             session_id: None,
+            options: cfg.cursor.options.clone(),
         }
     }
 }
@@ -85,6 +88,24 @@ impl AiBackend for CursorBackend {
     fn set_effort(&mut self, effort: Option<&str>) {
         // cursor-agent には reasoning effort フラグが無いので保存のみ。
         self.effort = effort.map(str::to_string);
+    }
+
+    fn available_models(&self) -> Vec<String> {
+        resolve_option_list(
+            &self.options.models,
+            &self.options.models_command,
+            &[],
+            &self.log_path,
+        )
+    }
+
+    fn available_efforts(&self) -> Vec<String> {
+        resolve_option_list(
+            &self.options.efforts,
+            &self.options.efforts_command,
+            &[],
+            &self.log_path,
+        )
     }
 
     fn clear_history(&mut self) {

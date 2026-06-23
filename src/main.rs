@@ -234,6 +234,59 @@ fn debug_bytes(data: &[u8], max: usize) -> String {
     s
 }
 
+/// `/model` `/effort` の共通処理。
+/// - `value == Some("-")` / `Some("clear")` → クリア。
+/// - `value == Some(other)` → その値を set (検証せずヒントのみ)。
+/// - `value == None` → 候補一覧を解決し、空なら hint メッセージ、非空なら対話ピッカー。
+///   候補末尾に `(clear)` を足し、選べばクリア。取消時は変更しない。
+///
+/// `get_available` は None 経路でだけ評価される (取得コマンドはピッカーを開く時だけ実行)。
+fn run_option_picker(
+    which: &str,
+    value: Option<&str>,
+    session: &mut Box<dyn ai::AiBackend>,
+    get_current: impl Fn(&dyn ai::AiBackend) -> Option<String>,
+    get_available: impl Fn(&dyn ai::AiBackend) -> Vec<String>,
+    set: impl Fn(&mut dyn ai::AiBackend, Option<&str>),
+) -> String {
+    match value {
+        Some("-") | Some("clear") => {
+            set(&mut **session, None);
+            format!("{which}: (cleared)")
+        }
+        Some(v) => {
+            set(&mut **session, Some(v));
+            format!("{which}: {v}")
+        }
+        None => {
+            let available = get_available(&**session);
+            if available.is_empty() {
+                return format!(
+                    "{which}: 候補が未設定です ([ai.<backend>].{which}s / {which}s_command で設定するか /{which} <値> で直接指定)"
+                );
+            }
+            let cur_idx = get_current(&**session)
+                .as_deref()
+                .and_then(|c| available.iter().position(|x| x == c));
+            // 末尾に "(clear)" 疑似エントリを足す。
+            let clear_idx = available.len();
+            let mut items = available.clone();
+            items.push("(clear)".to_string());
+            match ui::show_picker(&format!("/{which}"), &items, cur_idx) {
+                Some(i) if i == clear_idx => {
+                    set(&mut **session, None);
+                    format!("{which}: (cleared)")
+                }
+                Some(i) => {
+                    set(&mut **session, Some(&available[i]));
+                    format!("{which}: {}", available[i])
+                }
+                None => format!("{which}: (unchanged)"),
+            }
+        }
+    }
+}
+
 /// aish プロンプト入力が slash command か判定し、該当すれば処理する。
 /// 戻り値:
 ///   `None` — slash command ではない (通常の AI プロンプトとして送信せよ)
@@ -256,22 +309,28 @@ fn try_handle_slash_command(
         "help" => Some(
             "available slash commands:\n\
              /help                    show this help\n\
-             /effort [low|medium|high|...]   set reasoning effort (no value = clear)\n\
-             /model  [<name>]         set model (no value = clear, fall back to config/default)\n\
+             /effort [<level>]        set reasoning effort (no value = pick from list, `-`/`clear` = clear)\n\
+             /model  [<name>]         set model (no value = pick from list, `-`/`clear` = clear)\n\
              /clear                   clear conversation history / session\n\
              /ai     <NAME>           switch AI backend (built-in: claude|codex|gemini|qwen|cursor|copilot, or any [[ai.providers]] name)"
                 .to_string(),
         ),
-        "effort" => {
-            ai_session.set_effort(value);
-            let label = value.unwrap_or("(cleared)");
-            Some(format!("effort: {label}"))
-        }
-        "model" => {
-            ai_session.set_model(value);
-            let label = value.unwrap_or("(cleared)");
-            Some(format!("model: {label}"))
-        }
+        "effort" => Some(run_option_picker(
+            "effort",
+            value,
+            ai_session,
+            |s| s.effort(),
+            |s| s.available_efforts(),
+            |s, v| s.set_effort(v),
+        )),
+        "model" => Some(run_option_picker(
+            "model",
+            value,
+            ai_session,
+            |s| s.model(),
+            |s| s.available_models(),
+            |s, v| s.set_model(v),
+        )),
         "clear" => {
             // current AI の session/history はリセット、ring_buffer の cursor は全 backend を末尾へ。
             // (他 backend の CLI セッション本体は本 phase では触らない — 完全リセットは将来課題)
@@ -729,8 +788,8 @@ KEYS (起動後):
 
 SLASH COMMANDS (aish プロンプトに入力):
     /help                  利用可能な slash command を表示
-    /effort [LEVEL]        reasoning effort を変更 (引数なしでクリア)
-    /model  [NAME]         モデルを変更 (引数なしでクリア)
+    /effort [LEVEL]        reasoning effort を変更 (引数なし=候補ピッカー、`-`/`clear`=クリア)
+    /model  [NAME]         モデルを変更 (引数なし=候補ピッカー、`-`/`clear`=クリア)
     /clear                 会話履歴 / セッションをクリア
     /ai     <KIND>         AI バックエンドを切り替え ({natives}, または config の provider 名)
 

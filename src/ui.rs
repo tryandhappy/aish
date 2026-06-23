@@ -685,6 +685,169 @@ fn read_confirm_key_cooked() -> Option<ConfirmChoice> {
     }
 }
 
+/// `/model` `/effort` の対話ピッカー。`items` から 1 つを ↑↓ で選び Enter で確定する。
+/// 返り値: `Some(index)` = 確定 / `None` = 取消 (Esc / Ctrl+C / Ctrl+D) または `items` 空。
+///
+/// confirm プロンプトと同じく **main スレッドが fd0 を直接読む同期ブロッキング関数**
+/// (入力スレッドが parked の `AiPrompt` arm 内から呼ばれる前提)。termios は触らない
+/// (セッション全体で raw 維持)。描画は stdout 専用で PTY には書かない。
+pub fn show_picker(title: &str, items: &[String], current: Option<usize>) -> Option<usize> {
+    if items.is_empty() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        show_picker_unix(title, items, current)
+    }
+    #[cfg(not(unix))]
+    {
+        show_picker_cooked(title, items, current)
+    }
+}
+
+/// ピッカーの 1 キー分の状態遷移 (純関数、golden test 対象)。
+#[cfg(unix)]
+#[derive(Debug, PartialEq, Eq)]
+enum PickerAction {
+    Move(usize),
+    Select(usize),
+    Cancel,
+    Ignore,
+}
+
+#[cfg(unix)]
+fn picker_step(sel: usize, len: usize, tok: &Tok) -> PickerAction {
+    match tok {
+        Tok::Up => PickerAction::Move(sel.saturating_sub(1)),
+        Tok::Down => PickerAction::Move((sel + 1).min(len.saturating_sub(1))),
+        Tok::Home => PickerAction::Move(0),
+        Tok::End => PickerAction::Move(len.saturating_sub(1)),
+        Tok::Enter => PickerAction::Select(sel),
+        // Esc / Ctrl+C / Ctrl+D = 取消。confirm と揃える。
+        Tok::Esc | Tok::Ctrl(0x03) | Tok::Ctrl(0x04) => PickerAction::Cancel,
+        // 矢印以外のシーケンス・文字・修飾キーは無視して待つ。
+        _ => PickerAction::Ignore,
+    }
+}
+
+/// 描画開始行 (原点) へカーソルを戻す。render は原点開始・最終行末で終わる契約なので
+/// `total_lines - 1` 行だけ上に戻して桁頭へ。`total_lines == 1` のときは `\r` だけ。
+#[cfg(unix)]
+fn picker_move_to_origin<W: Write>(out: &mut W, total_lines: usize) {
+    if total_lines > 1 {
+        let _ = write!(out, "\x1b[{}A", total_lines - 1);
+    }
+    let _ = write!(out, "\r");
+}
+
+/// ピッカー領域を描画する。カーソルは原点 (描画開始行・桁頭) にある前提で、
+/// 最終行末で終わる (末尾改行を出さない = 予約領域を超える scroll を起こさない)。
+#[cfg(unix)]
+fn render_picker<W: Write>(
+    out: &mut W,
+    title: &str,
+    items: &[String],
+    sel: usize,
+    top: usize,
+    view_h: usize,
+) {
+    // title 行 (グレー)。選択位置 / 総数も出す。
+    let _ = write!(
+        out,
+        "\x1b[2K\x1b[38;5;245m{title}  [{}/{}] (\u{2191}\u{2193} Enter=select Esc=cancel)\x1b[0m",
+        sel + 1,
+        items.len()
+    );
+    let end = (top + view_h).min(items.len());
+    for (offset, item) in items[top..end].iter().enumerate() {
+        let idx = top + offset;
+        let _ = write!(out, "\r\n\x1b[2K");
+        if idx == sel {
+            // 選択行は反転表示 + マーカー。
+            let _ = write!(out, "\x1b[7m> {item}\x1b[0m");
+        } else {
+            let _ = write!(out, "  {item}");
+        }
+    }
+    let _ = out.flush();
+}
+
+#[cfg(unix)]
+fn show_picker_unix(title: &str, items: &[String], current: Option<usize>) -> Option<usize> {
+    let (rows, _cols) = terminal_size();
+    let mut sel = current.unwrap_or(0).min(items.len() - 1);
+    // 可視 item 数: 端末高さから title 行 + 余白 1 を引いた範囲に収める。
+    let max_visible = (rows as usize).saturating_sub(2).max(1);
+    let view_h = items.len().min(max_visible);
+    let total_lines = view_h + 1; // title 行 + item 可視行
+
+    let mut stdout = io::stdout();
+    // 領域確保: total_lines 改行で (最下行なら) scroll させてから原点へ戻る。
+    // 以降ループ中は最終行末で止まる描画なので追加 scroll は起きない。
+    for _ in 0..total_lines {
+        let _ = stdout.write_all(b"\n");
+    }
+    let _ = write!(stdout, "\x1b[{total_lines}A");
+    let _ = stdout.flush();
+
+    let mut top = 0usize;
+    let mut src = Fd0Source::new();
+    let result;
+    loop {
+        // sel が可視窓に入るよう top を調整。
+        if sel < top {
+            top = sel;
+        } else if sel >= top + view_h {
+            top = sel + 1 - view_h;
+        }
+        render_picker(&mut stdout, title, items, sel, top, view_h);
+        let ev = input::next_event(&mut src);
+        match picker_step(sel, items.len(), &ev.tok) {
+            PickerAction::Move(n) => sel = n,
+            PickerAction::Select(idx) => {
+                result = Some(idx);
+                break;
+            }
+            PickerAction::Cancel => {
+                result = None;
+                break;
+            }
+            PickerAction::Ignore => {}
+        }
+    }
+    // 描画領域を消去して原点へ。後続の print_slash_result が原点から結果を出す。
+    picker_move_to_origin(&mut stdout, total_lines);
+    let _ = write!(stdout, "\x1b[0J");
+    let _ = stdout.flush();
+    result
+}
+
+#[cfg(not(unix))]
+fn show_picker_cooked(title: &str, items: &[String], current: Option<usize>) -> Option<usize> {
+    // Windows fallback: 一覧を番号付きで出し、番号を 1 行入力で選ぶ (空入力 = 取消)。
+    let cur = current.unwrap_or(usize::MAX);
+    println!("{title}:");
+    for (i, item) in items.iter().enumerate() {
+        let mark = if i == cur { "*" } else { " " };
+        println!("  {mark}{}) {item}", i + 1);
+    }
+    print!("number (empty=cancel)> ");
+    let _ = io::stdout().flush();
+    let mut line = String::new();
+    if io::stdin().read_line(&mut line).is_err() {
+        return None;
+    }
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed
+        .parse::<usize>()
+        .ok()
+        .filter(|n| *n >= 1 && *n <= items.len())
+        .map(|n| n - 1)
+}
+
 /// パススルーモードで入力を読む。Ctrl+/でaishプロンプトを開く。
 /// それ以外のキー入力はPTYに直送される。
 pub fn passthrough_read(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &str) {
@@ -1326,6 +1489,28 @@ fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn picker_step_navigation() {
+        use crate::input::Tok;
+        // ↑↓ はクランプ (wrap しない)。
+        assert_eq!(picker_step(0, 3, &Tok::Up), PickerAction::Move(0));
+        assert_eq!(picker_step(1, 3, &Tok::Up), PickerAction::Move(0));
+        assert_eq!(picker_step(2, 3, &Tok::Down), PickerAction::Move(2));
+        assert_eq!(picker_step(1, 3, &Tok::Down), PickerAction::Move(2));
+        // Home / End。
+        assert_eq!(picker_step(2, 3, &Tok::Home), PickerAction::Move(0));
+        assert_eq!(picker_step(0, 3, &Tok::End), PickerAction::Move(2));
+        // Enter = 現在選択を確定。
+        assert_eq!(picker_step(1, 3, &Tok::Enter), PickerAction::Select(1));
+        // Esc / Ctrl+C / Ctrl+D = 取消。
+        assert_eq!(picker_step(1, 3, &Tok::Esc), PickerAction::Cancel);
+        assert_eq!(picker_step(1, 3, &Tok::Ctrl(0x03)), PickerAction::Cancel);
+        assert_eq!(picker_step(1, 3, &Tok::Ctrl(0x04)), PickerAction::Cancel);
+        // その他 (文字 / 矢印以外) は無視。
+        assert_eq!(picker_step(1, 3, &Tok::Char('x')), PickerAction::Ignore);
+    }
 
     #[test]
     fn visualize_control_line_cr() {
