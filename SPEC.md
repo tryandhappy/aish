@@ -157,11 +157,13 @@ aish の slash command は AI CLI 自身の対話モード `/<cmd>` とは独立
 
 trait `AiBackend` を介して対応:
 - **native backend 6 種**: Claude Code / OpenAI Codex CLI / Google Gemini CLI / Alibaba Qwen Code / Cursor Agent CLI / GitHub Copilot CLI（`src/ai/<name>.rs` に bespoke 実装）。
-- **Generic CLI backend**: `[[ai.providers]]` に登録した任意 CLI を `--ai <NAME>` で使う。コード変更なしで追加可能（`src/ai/generic.rs` の単一 driver が recipe を解釈）。`name` は built-in 予約語と衝突不可。
+- **Generic CLI backend**: 任意 CLI を `src/ai/generic.rs` の単一 driver で解釈。recipe の出所は 2 つ — (a) **組み込みデフォルト recipe**（`config::builtin_providers()` にバイナリ同梱、zero-config で `--ai <name>` 可）、(b) ユーザの `[[ai.providers]]`。`name` は native 予約語と衝突不可。
 
 各 backend は JSON で `{message, commands[]}` 相当を返し、aish は提案ベースで動作。CLI 非依存の原則（透明性・サーバ無書き込み）は trait 実装側の責任。
 
-選択優先順位: `--ai` > `[ai].backend` > `claude`（既定）。
+選択優先順位: `--ai` > `[ai].backend` > `claude`（既定）。`aish --list-providers` で native + 組み込み + config の全 backend を出所タグ付きで一覧表示。
+
+**組み込みデフォルト recipe（§15.10）**: 人気 AI CLI を設定不要で使えるよう、`builtin_providers()` が安全フラグ込みの recipe を同梱する。aish が著者なので native と同様 read-only / plan 相当のフラグを `args` に焼き込み、**read-only を強制できない CLI は同梱しない**。ユーザの `[[ai.providers]]` は同名の組み込みに**フィールド単位マージ**（書いたフィールドだけ上書き、`args` は丸ごと置換）、同名が無ければ新規 provider として追加。マージ・検証は `AiConfig::resolve_providers`（`Config::load` 内）で確定し `resolved_providers` に格納、`init_generics` へ渡す。現同梱: `kimi`（kimi-cli、`--plan --quiet`、実機検証は要）。
 
 ### 6.0 バックエンド能力差
 
@@ -356,9 +358,23 @@ TOML 形式。未指定はデフォルト。サンプルは `config.toml.example
 - 信頼の根幹に直結するため常時自動付与（config 不可）: `--output-format json`(JSONL)、`--allow-all-tools`(非対話必須)、`--deny-tool=shell`/`--deny-tool=write`(deny 優先)、`--no-ask-user`。
 - 認証は `gh auth login` / `copilot login` / `COPILOT_GITHUB_TOKEN`/`GH_TOKEN`/`GITHUB_TOKEN` env。組織ポリシーで CLI 拒否され得る（`Access denied by policy settings`）。
 
-#### `[[ai.providers]]`（Generic CLI backend レシピ配列）
+#### 組み込みデフォルト recipe（zero-config provider）
 
-`GenericCliBackend` が読む config 駆動レシピ。`--ai <NAME>` / `/ai <NAME>` で有効化（複数登録可、上限 256）。
+`config::builtin_providers()` がバイナリ同梱の recipe 一覧を返す（追加・更新はこの 1 関数に集約）。ユーザは設定なしで `--ai <name>` / `/ai <name>` で使える。同梱は read-only / plan 相当を強制できる CLI のみ（§15.10）。
+
+| name | binary | args（安全フラグ込み） | 備考 |
+|---|---|---|---|
+| `kimi` | `kimi` | `--plan --quiet` | MoonshotAI/kimi-cli。`--plan`=read-only tools、`--quiet`=非対話 + 最終メッセージ text。prompt 渡し方・出力形式は実機検証が要 |
+
+`aish --list-providers` で出所タグ（`built-in` / `built-in, overridden` / `config`）付きで一覧表示。
+
+#### `[[ai.providers]]`（組み込み上書き / 新規 Generic CLI backend レシピ配列）
+
+ユーザが書く上書き / 追加エントリ（`ProviderOverride`、各フィールドは `Option` で presence 判定）。`AiConfig::resolve_providers` が組み込みデフォルト recipe にマージして最終 `ProviderRecipe` 一覧（`resolved_providers`）を作る:
+- `name` が組み込みと一致 → 指定（`Some`）フィールドだけ上書き（**フィールド単位マージ**。`args` 等 Vec は丸ごと置換）。
+- 一致しない → 新規 generic backend（`binary` 必須）。
+
+`GenericCliBackend` が読むレシピのキー（上書き対象でもある）:
 
 | キー | 既定値 | 説明 |
 |---|---|---|
@@ -376,9 +392,9 @@ TOML 形式。未指定はデフォルト。サンプルは `config.toml.example
 | `system_prompt_inline` | `true` | `true`: 初回プロンプト先頭に焼き込む。`false`: 毎回 history + system + context で再構築 |
 | `history_turns` | `8` | native resume 無効時の内部保持ターン数 |
 
-起動時 `AiConfig::validate_providers()` で検証（配列長 ≤ 256 / `name` 一意 / built-in 予約語と非衝突 / `parse`・`prompt_delivery` 妥当性 / `prompt_delivery="flag"` で `prompt_flag` 非空）。不正なら `Invalid [[ai.providers]] in <path>: ...` で起動拒否。予約語は `BackendKind::all_native()` から導出。
+起動時 `resolve_providers`（マージ後）に `validate_recipes` で検証（配列長 ≤ 256 / `name` 一意 / native 予約語と非衝突 / `binary` 非空 / `parse`・`prompt_delivery` 妥当性 / `prompt_delivery="flag"` で `prompt_flag` 非空）。不正なら `Invalid [[ai.providers]] in <path>: ...` で起動拒否。予約語は `BackendKind::all_native()` から導出。**同名ユーザエントリは重複エラーにせず後勝ちでフィールドマージ**（マージ後に name は一意化される）。
 
-- **安全性**: native と違い `--deny-tool` 相当の強制フラグは付けない。利用者が `args` に `--mode plan` 等を明示する想定。**信頼できる CLI のみ登録**（§15.10）。
+- **安全性**: 新規 provider は native と違い `--deny-tool` 相当の強制フラグを付けない。利用者が `args` に `--mode plan` 等を明示する想定。**信頼できる CLI のみ登録**。組み込みデフォルト recipe は aish が著者なので安全フラグ込みで同梱する（§15.10）。
 - **メモリ**: 各エントリは起動時 `Box::leak` で `&'static` 化（プロセス全期間生存、reload なし）。ordinal は `6 + index`、ring_buffer の sent_marks HashMap キーに使う。
 - トップレベル `system_prompt` / `language` は後方互換。`[ai]` 省略や空文字ならトップレベル値をコピー。
 
@@ -486,7 +502,7 @@ TOML 形式。未指定はデフォルト。サンプルは `config.toml.example
 ### 15.9 ring_buffer / backend 解決
 
 - **未送信 cursor は backend ごと独立**。`get_unsent_for(kind)` / `mark_sent_for(kind)` 経由で `/ai` 切替時に新 AI が会話の続きを catch-up。**sent_marks は `HashMap<usize, u64>`**（Generic を ordinal `6 + idx` で扱うため。旧固定長 `[u64; COUNT]` から変更）。entry が無いキーは 0（全部 catch-up）扱い。`mark_sent_all()` は `all_native()` + `all_generics()` 両方を回す。**新規 native backend は `all_native()` に追加**（実行ファイル名が enum 名と異なる場合は `binary()` に分岐追加。spawn / `check_installed` は `binary()`、設定 / 表示は `as_str()`）。
-- **`BackendKind::parse(s)` は 2 段階**: (1) `parse_native` で built-in 6 種を直接 match、(2) hit しなければ `GENERIC_REGISTRY` を線形検索。`main::run()` で `Config::load` → `init_generics(&providers)` → 以降 parse の順序を守る。`validate_providers` が native 予約語衝突を起動時 reject。テストでは Generic resolution を直接検証しない（`OnceLock` がプロセス共有で並列テスト干渉）。Generic 動作確認は `src/ai/generic.rs` 単体テストで `Box::leak(Box::new(recipe))` 直書き。
+- **`BackendKind::parse(s)` は 2 段階**: (1) `parse_native` で built-in 6 種を直接 match、(2) hit しなければ `GENERIC_REGISTRY` を線形検索。`main::run()` で `Config::load`（内部で `resolve_providers` → `resolved_providers` 確定 + 検証）→ `init_generics(&config.ai.resolved_providers)` → 以降 parse の順序を守る。registry に渡すのは生 `providers`（=`ProviderOverride`）でなく **マージ済み `resolved_providers`**。`validate_recipes` が native 予約語衝突を起動時 reject。テストでは Generic resolution を直接検証しない（`OnceLock` がプロセス共有で並列テスト干渉）。Generic 動作確認は `src/ai/generic.rs` 単体テストで `Box::leak(Box::new(recipe))` 直書き。
 - **Generic backend（`BackendKind::Generic(u8)`）は `[[ai.providers]]` registry 経由で動的解決**。registry は `init_generics` で OnceLock に 1 度 populate し `Box::leak` で `&'static`（display_name = recipe.name、binary）と `&'static ProviderRecipe` を確保。init 前 / index 範囲外は `"?"` フォールバック（panic せず spawn 失敗）。ユーザは built-in と generic を同じ flat namespace で参照（`generic:` prefix なし）。
 - **AI 応答受信後の注釈記録は `RingBuffer::record_ai_exchange`（`src/ring_buffer.rs`）経由**。注釈（`[aish→<kind>]> ...` / `[ai/<kind>]> ...` / `[ai/<kind> suggests] ...`）の append → `mark_sent_for(current_kind)` の順序不変条件（current AI は再受信せず、他 backend は次回 catch-up で受信。逆順だと current AI が自分の発話をループ受信）をこのメソッドに閉じる。ばらの `append_text` + `mark_sent_for` を再導入しない。ラベル書式は `record_ai_exchange` が唯一の定義で単体テスト（`record_ai_exchange_format_is_stable`）で固定。
 - **`/clear` は `mark_sent_all()` で全 backend の cursor を末尾に進める**が、AI CLI 内部 session/history は current backend のみリセット（他 backend instance を保持していないため）。「全 AI を仕切り直す」セマンティクスを守りつつ副作用最小化する妥協。
@@ -498,7 +514,9 @@ TOML 形式。未指定はデフォルト。サンプルは `config.toml.example
 - **Claude の `--disallowedTools` は `MANDATORY_DENY`(Bash/Edit/Write) を常に union する**（`effective_disallowed_tools`）。`[ai.claude].disallowed_tools` は単一文字列の全置換なので空にすると安全集合が消える footgun。`allow_unsafe_tools = false`（既定）の間は baseline を必ず混ぜ、`disallowed_tools = ""` でも Bash/Edit/Write は deny（Read だけ外せる）。`true` のときのみ verbatim（危険）。**`--disallowedTools` は args の末尾で push**（`--output-format`/`--json-schema`/`extra_args`/`--model`/`--effort` の後）。`extra_args = ["--disallowedTools", ""]` を後置きされても CLI 後勝ちでこちらが勝ち baseline を non-removable に保つため。**末尾 push を前方に戻したり union を外したりしない**。codex/copilot/cursor の deny 系は固定埋め込み（extra_args 後置き上書きは未対策）。
 - **cursor backend は `--trust` を常時付与**（headless `-p` は `--trust` 無しだと `Workspace Trust Required` で非ゼロ終了）。config 不可で固定。`--yolo`/`-f`（Run Everything）は絶対に付けない。**ツール抑制は `--mode plan` + system prompt の二段**（個別ツール無効化フラグが無いため。`[ai.cursor].sandbox = "enabled"` 併用可）。`mode = ""`（通常モード）は確認 UI 迂回リスクで非推奨。Free プランは Named models 不可で `auto` のみ（`--model sonnet-4` 等は `EmptyOutput` エラー）。
 - **copilot backend は `-p` フラグを付けない**（`-p` は positional/stdin と排他で stdin 渡しだと `too many arguments` で死ぬ。CLI が stdin 自動検出。他の `-p` 必須 backend と逆）。**ツール抑制は四段**: `--allow-all-tools`（非対話必須）+ `--deny-tool=shell` + `--deny-tool=write` + `--no-ask-user` + `--mode plan`（deny が allow に優先）。config 不可で固定。`--yolo`/`--allow-all` は絶対に付けない。**`--output-format json` は JSONL**（行ごとに `parse_jsonl_envelope` で走査し `assistant.message` の `data.content` と `result` の `sessionId` を取る。ephemeral 行は無視）。組織ポリシーで CLI 拒否され得る（`Access denied by policy settings`）。
-- **Generic backend は安全フラグ（`--deny-tool` 等）を自動付与しない**。recipe 著者が `args` に `--mode plan` 等を明示する想定。信頼できない CLI を登録すると確認 UI を迂回して shell 実行される可能性がある（native のような自動 deny は無い）。§6.0 / `[[ai.providers]]` 安全性節を参照。
+- **Generic backend（ユーザの `[[ai.providers]]` 新規 provider）は安全フラグ（`--deny-tool` 等）を自動付与しない**。recipe 著者が `args` に `--mode plan` 等を明示する想定。信頼できない CLI を登録すると確認 UI を迂回して shell 実行される可能性がある（native のような自動 deny は無い）。§6.0 / `[[ai.providers]]` 安全性節を参照。
+- **組み込みデフォルト recipe（`config::builtin_providers()`）は aish が著者なので安全フラグを `args` に焼き込んで同梱する**（generic の「自動付与しない」原則の例外＝著者が aish 自身だから許される）。**read-only / plan 相当を強制できない CLI は同梱しない**（強制できないと承認 UI を迂回してサーバを変更し得る＝信頼の根幹違反）。追加・更新は `builtin_providers()` 1 関数に集約。同梱前にその CLI に read-only モードがあるか実機で要検証（例: kimi の `--plan`）。
+- **組み込みデフォルトのユーザ上書きは「フィールド単位マージ」**（`ProviderOverride` の `Some` フィールドだけ `apply_to` で反映、`args` 等 Vec は丸ごと置換）。`name` 不一致は新規 provider（`binary` 必須）。同名ユーザエントリ重複は後勝ちでマージ（エラーにしない）。マージ・検証は `AiConfig::resolve_providers`（テスト用に builtins を差し込める `resolve_with_builtins` 経由）。ユーザが上書きで安全フラグを外すのは自己責任（generic と同じ扱い）。
 
 ### 15.11 セルフアップデート 2 チャネル
 

@@ -51,11 +51,18 @@ pub struct AiConfig {
     pub cursor: CursorBackendConfig,
     #[serde(default)]
     pub copilot: CopilotBackendConfig,
-    /// `[[ai.providers]]` 配列。Config 駆動の generic CLI backend。
-    /// 各エントリは固有 name で参照され `/ai generic:<name>` で切替可能。
-    /// 配列インデックスは `BackendKind::Generic(u8)` に詰める都合上 0..=255 まで。
+    /// `[[ai.providers]]` 配列。ユーザが書いた **上書き / 追加** エントリ。
+    /// 同名の組み込みデフォルト recipe があれば「書いたフィールドだけ」上書きし、
+    /// 無ければ新規 generic backend として追加する (`resolve_providers`)。
+    /// presence 判定のため各フィールドは `Option` (= `ProviderOverride`)。
     #[serde(default)]
-    pub providers: Vec<ProviderRecipe>,
+    pub providers: Vec<ProviderOverride>,
+    /// 組み込みデフォルト recipe + `providers` をマージ・検証した最終 recipe 一覧。
+    /// `Config::load` (or `resolve_providers`) で確定し、`init_generics` に渡る。
+    /// TOML には現れない (serde skip)。配列インデックスは `BackendKind::Generic(u8)`
+    /// に詰める都合上 0..=255 まで。
+    #[serde(skip)]
+    pub resolved_providers: Vec<ProviderRecipe>,
 }
 
 impl Default for AiConfig {
@@ -73,6 +80,7 @@ impl Default for AiConfig {
             cursor: CursorBackendConfig::default(),
             copilot: CopilotBackendConfig::default(),
             providers: Vec::new(),
+            resolved_providers: Vec::new(),
         }
     }
 }
@@ -179,11 +187,13 @@ fn default_copilot_mode() -> String {
     "plan".to_string()
 }
 
-/// `[[ai.providers]]` の 1 エントリ。Config 駆動 generic CLI backend のレシピ。
+/// Config 駆動 generic CLI backend の解決済みレシピ (内部表現)。
+/// 組み込みデフォルト (`builtin_providers`) と、ユーザの `[[ai.providers]]`
+/// (`ProviderOverride`) をマージした結果がこの型 (`resolve_providers`)。
 ///
 /// 必須フィールド: `name`, `binary`。それ以外は default あり。
-/// `parse` / `prompt_delivery` は文字列 enum 形式で受け取り、不正値は起動時に検出する
-/// (`AiConfig::validate_providers` で実装)。
+/// `parse` / `prompt_delivery` は文字列 enum 形式で、不正値は起動時に検出する
+/// (`validate_recipes` で実装)。
 #[derive(Debug, Deserialize, Clone)]
 pub struct ProviderRecipe {
     /// `/ai generic:<name>` で参照される識別子。providers 内で一意。
@@ -257,65 +267,242 @@ fn default_history_turns() -> usize {
     8
 }
 
-impl AiConfig {
-    /// `[[ai.providers]]` を起動時に検証。
-    /// - 個数 <= 256 (BackendKind::Generic(u8) が u8 を埋めるため)
-    /// - name の一意性
-    /// - name が native 予約語 (claude/codex/gemini/qwen/cursor/copilot) と衝突しないこと
-    /// - parse / prompt_delivery の値が許可リスト内
-    ///
-    /// 不正があれば Err(String) を返す。Config::load 後に呼ぶ。
-    pub fn validate_providers(&self) -> Result<(), String> {
-        if self.providers.len() > 256 {
-            return Err(format!(
-                "[[ai.providers]] entries exceed 256 (got {})",
-                self.providers.len()
-            ));
+impl ProviderRecipe {
+    /// `name` / `binary` 以外を既定値で埋めた recipe を作る。
+    /// 組み込みデフォルト recipe の記述と、新規 provider の生成に使う
+    /// (どちらも `ProviderOverride::apply_to` で必要フィールドを上書きする想定)。
+    fn with_defaults(name: impl Into<String>, binary: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            binary: binary.into(),
+            args: Vec::new(),
+            prompt_delivery: default_prompt_delivery(),
+            prompt_flag: String::new(),
+            parse: default_parse(),
+            jsonl_content_path: String::new(),
+            jsonl_session_path: String::new(),
+            session_id_path: String::new(),
+            resume_flag: String::new(),
+            model_flag: String::new(),
+            effort_flag: String::new(),
+            color: default_provider_color(),
+            system_prompt_inline: true,
+            history_turns: default_history_turns(),
         }
-        // native 予約語は `BackendKind::all_native()` から導出して二重定義を避ける。
-        // 新しい native backend を追加したら自動で予約語にも入る。
-        let reserved: std::collections::HashSet<&str> = crate::ai::BackendKind::all_native()
-            .iter()
-            .map(|k| k.as_str())
-            .collect();
-        let mut seen = std::collections::HashSet::new();
-        for p in &self.providers {
-            if p.name.is_empty() {
+    }
+}
+
+/// `[[ai.providers]]` の 1 エントリ。組み込みデフォルト recipe への **フィールド単位
+/// 上書き** を表現するため、`name` 以外は全て `Option`。
+///
+/// - `name` が組み込みデフォルトと一致 → 指定された (`Some`) フィールドだけ上書き。
+/// - 一致しない → 新規 generic backend (このとき `binary` 必須)。
+///
+/// `Vec` フィールド (`args`) は「丸ごと置換」で、Vec 内の部分マージはしない。
+#[derive(Debug, Deserialize, Clone)]
+pub struct ProviderOverride {
+    pub name: String,
+    #[serde(default)]
+    pub binary: Option<String>,
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
+    #[serde(default)]
+    pub prompt_delivery: Option<String>,
+    #[serde(default)]
+    pub prompt_flag: Option<String>,
+    #[serde(default)]
+    pub parse: Option<String>,
+    #[serde(default)]
+    pub jsonl_content_path: Option<String>,
+    #[serde(default)]
+    pub jsonl_session_path: Option<String>,
+    #[serde(default)]
+    pub session_id_path: Option<String>,
+    #[serde(default)]
+    pub resume_flag: Option<String>,
+    #[serde(default)]
+    pub model_flag: Option<String>,
+    #[serde(default)]
+    pub effort_flag: Option<String>,
+    #[serde(default)]
+    pub color: Option<u8>,
+    #[serde(default)]
+    pub system_prompt_inline: Option<bool>,
+    #[serde(default)]
+    pub history_turns: Option<usize>,
+}
+
+impl ProviderOverride {
+    /// `Some` のフィールドだけを recipe に反映する (フィールド単位マージ)。
+    fn apply_to(&self, r: &mut ProviderRecipe) {
+        if let Some(v) = &self.binary {
+            r.binary = v.clone();
+        }
+        if let Some(v) = &self.args {
+            r.args = v.clone();
+        }
+        if let Some(v) = &self.prompt_delivery {
+            r.prompt_delivery = v.clone();
+        }
+        if let Some(v) = &self.prompt_flag {
+            r.prompt_flag = v.clone();
+        }
+        if let Some(v) = &self.parse {
+            r.parse = v.clone();
+        }
+        if let Some(v) = &self.jsonl_content_path {
+            r.jsonl_content_path = v.clone();
+        }
+        if let Some(v) = &self.jsonl_session_path {
+            r.jsonl_session_path = v.clone();
+        }
+        if let Some(v) = &self.session_id_path {
+            r.session_id_path = v.clone();
+        }
+        if let Some(v) = &self.resume_flag {
+            r.resume_flag = v.clone();
+        }
+        if let Some(v) = &self.model_flag {
+            r.model_flag = v.clone();
+        }
+        if let Some(v) = &self.effort_flag {
+            r.effort_flag = v.clone();
+        }
+        if let Some(v) = self.color {
+            r.color = v;
+        }
+        if let Some(v) = self.system_prompt_inline {
+            r.system_prompt_inline = v;
+        }
+        if let Some(v) = self.history_turns {
+            r.history_turns = v;
+        }
+    }
+}
+
+/// バイナリに同梱する組み込みデフォルト recipe 一覧。
+///
+/// ユーザは `/ai <name>` で zero-config に呼び出せ、`[[ai.providers]]` で
+/// フィールド単位に上書きできる。**追加・更新はこの関数 1 箇所に集約する**。
+///
+/// 信頼の根幹: ここに載せる recipe は aish が著者として read-only / plan 相当の
+/// 安全フラグを `args` に焼き込む。**read-only を強制できない CLI は載せない**
+/// (AI が承認 UI を迂回してサーバを変更し得るため)。
+pub fn builtin_providers() -> Vec<ProviderRecipe> {
+    vec![
+        // Kimi CLI (MoonshotAI/kimi-cli)。
+        // `--plan` で read-only tools に制限 (cursor の `--mode plan` 相当の安全側既定)、
+        // `--quiet` で非対話 + 最終メッセージのみ text 出力 → lossy parse で
+        // `{message, commands}` を抽出する。
+        // NOTE: prompt 渡し方 (stdin/positional) と最終出力フォーマットは kimi-cli
+        // インストール環境での実機検証が必要。挙動が異なる場合は config で上書き可能。
+        ProviderRecipe {
+            args: vec!["--plan".to_string(), "--quiet".to_string()],
+            model_flag: "--model".to_string(),
+            color: 99, // purple 寄り。native とは別色。
+            ..ProviderRecipe::with_defaults("kimi", "kimi")
+        },
+    ]
+}
+
+impl AiConfig {
+    /// 組み込みデフォルト recipe (`builtin_providers`) に `providers` の上書き / 追加を
+    /// マージし、検証済みの最終 recipe 一覧を返す。`Config::load` が呼ぶ。
+    pub fn resolve_providers(&self) -> Result<Vec<ProviderRecipe>, String> {
+        self.resolve_with_builtins(builtin_providers())
+    }
+
+    /// `resolve_providers` の本体。テスト用に builtins を差し込めるよう分離。
+    ///
+    /// マージ規則:
+    /// - `providers` の各エントリ name が builtins に在れば「指定フィールドだけ」上書き。
+    /// - 無ければ新規 recipe (このとき `binary` 必須)。
+    fn resolve_with_builtins(
+        &self,
+        builtins: Vec<ProviderRecipe>,
+    ) -> Result<Vec<ProviderRecipe>, String> {
+        let mut resolved = builtins;
+        for ov in &self.providers {
+            if ov.name.is_empty() {
                 return Err("[[ai.providers]] entry has empty `name`".to_string());
             }
-            if p.binary.is_empty() {
-                return Err(format!("[[ai.providers]] `{}` has empty `binary`", p.name));
-            }
-            if reserved.contains(p.name.as_str()) {
-                return Err(format!(
-                    "[[ai.providers]] `{}`: provider name collides with built-in backend",
-                    p.name
-                ));
-            }
-            if !seen.insert(p.name.clone()) {
-                return Err(format!("[[ai.providers]] has duplicate name `{}`", p.name));
-            }
-            if !matches!(p.parse.as_str(), "lossy" | "extract_json" | "jsonl") {
-                return Err(format!(
-                    "[[ai.providers]] `{}`: parse=`{}` is not one of: lossy, extract_json, jsonl",
-                    p.name, p.parse
-                ));
-            }
-            if !matches!(p.prompt_delivery.as_str(), "stdin" | "arg" | "flag") {
-                return Err(format!(
-                    "[[ai.providers]] `{}`: prompt_delivery=`{}` is not one of: stdin, arg, flag",
-                    p.name, p.prompt_delivery
-                ));
-            }
-            if p.prompt_delivery == "flag" && p.prompt_flag.is_empty() {
-                return Err(format!(
-                    "[[ai.providers]] `{}`: prompt_delivery=\"flag\" requires non-empty `prompt_flag`",
-                    p.name
-                ));
+            if let Some(existing) = resolved.iter_mut().find(|r| r.name == ov.name) {
+                // 既存 (組み込み or 先行エントリ) へフィールド単位上書き。
+                ov.apply_to(existing);
+            } else {
+                // 新規 provider。binary は必須。
+                let binary = ov.binary.clone().filter(|b| !b.is_empty()).ok_or_else(|| {
+                    format!(
+                        "[[ai.providers]] `{}`: new provider requires non-empty `binary`",
+                        ov.name
+                    )
+                })?;
+                let mut recipe = ProviderRecipe::with_defaults(ov.name.clone(), binary);
+                ov.apply_to(&mut recipe);
+                resolved.push(recipe);
             }
         }
-        Ok(())
+        validate_recipes(&resolved)?;
+        Ok(resolved)
     }
+}
+
+/// マージ後の最終 recipe 一覧を検証する。
+/// - 個数 <= 256 (BackendKind::Generic(u8) が u8 を埋めるため)
+/// - name の一意性 / 非空
+/// - binary 非空
+/// - name が native 予約語 (claude/codex/gemini/qwen/cursor/copilot) と衝突しないこと
+/// - parse / prompt_delivery の値が許可リスト内
+fn validate_recipes(recipes: &[ProviderRecipe]) -> Result<(), String> {
+    if recipes.len() > 256 {
+        return Err(format!(
+            "[[ai.providers]] entries exceed 256 (got {})",
+            recipes.len()
+        ));
+    }
+    // native 予約語は `BackendKind::all_native()` から導出して二重定義を避ける。
+    // 新しい native backend を追加したら自動で予約語にも入る。
+    let reserved: std::collections::HashSet<&str> = crate::ai::BackendKind::all_native()
+        .iter()
+        .map(|k| k.as_str())
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    for p in recipes {
+        if p.name.is_empty() {
+            return Err("[[ai.providers]] entry has empty `name`".to_string());
+        }
+        if p.binary.is_empty() {
+            return Err(format!("[[ai.providers]] `{}` has empty `binary`", p.name));
+        }
+        if reserved.contains(p.name.as_str()) {
+            return Err(format!(
+                "[[ai.providers]] `{}`: provider name collides with built-in backend",
+                p.name
+            ));
+        }
+        if !seen.insert(p.name.clone()) {
+            return Err(format!("[[ai.providers]] has duplicate name `{}`", p.name));
+        }
+        if !matches!(p.parse.as_str(), "lossy" | "extract_json" | "jsonl") {
+            return Err(format!(
+                "[[ai.providers]] `{}`: parse=`{}` is not one of: lossy, extract_json, jsonl",
+                p.name, p.parse
+            ));
+        }
+        if !matches!(p.prompt_delivery.as_str(), "stdin" | "arg" | "flag") {
+            return Err(format!(
+                "[[ai.providers]] `{}`: prompt_delivery=`{}` is not one of: stdin, arg, flag",
+                p.name, p.prompt_delivery
+            ));
+        }
+        if p.prompt_delivery == "flag" && p.prompt_flag.is_empty() {
+            return Err(format!(
+                "[[ai.providers]] `{}`: prompt_delivery=\"flag\" requires non-empty `prompt_flag`",
+                p.name
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -445,55 +632,54 @@ impl Config {
             }
         };
 
-        if !path.exists() {
+        // ファイルが無い / 読めない / parse 失敗でも、組み込みデフォルト recipe は
+        // 必ず利用可能にするため、最後に必ず resolve_providers を通す。
+        let mut config = if !path.exists() {
             if explicit {
                 return Err(format!("Config file not found: {}", path.display()));
             }
-            return Ok(Config::default());
-        }
-
-        let content = match fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(e) => {
-                if explicit {
-                    return Err(format!(
-                        "Failed to read config file {}: {}",
-                        path.display(),
-                        e
-                    ));
+            Config::default()
+        } else {
+            match fs::read_to_string(&path) {
+                Ok(content) => match toml::from_str::<Config>(&content) {
+                    Ok(mut config) => {
+                        config.merge_ai_fallbacks();
+                        config
+                    }
+                    Err(e) => {
+                        if explicit {
+                            return Err(format!(
+                                "Failed to parse config file {}: {}",
+                                path.display(),
+                                e
+                            ));
+                        }
+                        eprintln!("Warning: Failed to parse config file: {e}");
+                        Config::default()
+                    }
+                },
+                Err(e) => {
+                    if explicit {
+                        return Err(format!(
+                            "Failed to read config file {}: {}",
+                            path.display(),
+                            e
+                        ));
+                    }
+                    eprintln!("Warning: Failed to read config file: {e}");
+                    Config::default()
                 }
-                eprintln!("Warning: Failed to read config file: {e}");
-                return Ok(Config::default());
             }
         };
 
-        match toml::from_str::<Config>(&content) {
-            Ok(mut config) => {
-                config.merge_ai_fallbacks();
-                if let Err(e) = config.ai.validate_providers() {
-                    // providers の validation 失敗は常にエラー (explicit 不問)。
-                    // recipe 不整合のまま起動すると runtime に意味不明な失敗を起こすため。
-                    return Err(format!(
-                        "Invalid [[ai.providers]] in {}: {}",
-                        path.display(),
-                        e
-                    ));
-                }
-                Ok(config)
-            }
-            Err(e) => {
-                if explicit {
-                    Err(format!(
-                        "Failed to parse config file {}: {}",
-                        path.display(),
-                        e
-                    ))
-                } else {
-                    eprintln!("Warning: Failed to parse config file: {e}");
-                    Ok(Config::default())
-                }
-            }
-        }
+        // 組み込みデフォルト + ユーザ上書きをマージ・検証。
+        // 失敗は常にエラー (explicit 不問)。recipe 不整合のまま起動すると runtime に
+        // 意味不明な失敗を起こすため。
+        config.ai.resolved_providers = config
+            .ai
+            .resolve_providers()
+            .map_err(|e| format!("Invalid [[ai.providers]] in {}: {}", path.display(), e))?;
+        Ok(config)
     }
 
     /// `[ai]` セクションが空のフィールドはトップレベル値で埋める。
@@ -568,38 +754,53 @@ language = "Japanese"
         assert!(cfg.extra_args.is_empty());
     }
 
-    #[test]
-    fn providers_default_empty() {
-        let cfg = AiConfig::default();
-        assert!(cfg.providers.is_empty());
-        assert!(cfg.validate_providers().is_ok());
+    fn ai_from_toml(toml_str: &str) -> AiConfig {
+        let config: Config = toml::from_str(toml_str).unwrap();
+        config.ai
     }
 
     #[test]
-    fn provider_recipe_parses_minimal() {
-        let toml_str = r#"
+    fn providers_default_resolves_to_builtins() {
+        let cfg = AiConfig::default();
+        assert!(cfg.providers.is_empty());
+        let resolved = cfg.resolve_providers().expect("builtins must be valid");
+        let names: Vec<String> = resolved.iter().map(|r| r.name.clone()).collect();
+        let builtin_names: Vec<String> = builtin_providers().into_iter().map(|r| r.name).collect();
+        assert_eq!(names, builtin_names);
+    }
+
+    #[test]
+    fn builtin_providers_are_valid() {
+        // 同梱 recipe 自体が検証 (重複 / 予約語 / parse 値 等) を通ること。
+        validate_recipes(&builtin_providers()).unwrap();
+    }
+
+    #[test]
+    fn new_provider_parses_minimal() {
+        let ai = ai_from_toml(
+            r#"
 [[ai.providers]]
 name = "ollama-llama"
 binary = "ollama"
 args = ["run", "llama3.2"]
-"#;
-        let config: Config = toml::from_str(toml_str).unwrap();
-        let p = &config.ai.providers[0];
-        assert_eq!(p.name, "ollama-llama");
+"#,
+        );
+        let resolved = ai.resolve_providers().unwrap();
+        let p = resolved.iter().find(|r| r.name == "ollama-llama").unwrap();
         assert_eq!(p.binary, "ollama");
         assert_eq!(p.args, vec!["run".to_string(), "llama3.2".to_string()]);
-        // defaults
+        // 未指定フィールドは既定値で埋まる。
         assert_eq!(p.prompt_delivery, "stdin");
         assert_eq!(p.parse, "lossy");
         assert!(p.system_prompt_inline);
         assert_eq!(p.history_turns, 8);
         assert_eq!(p.color, 208);
-        config.ai.validate_providers().unwrap();
     }
 
     #[test]
-    fn provider_recipe_parses_full() {
-        let toml_str = r#"
+    fn new_provider_parses_full() {
+        let ai = ai_from_toml(
+            r#"
 [[ai.providers]]
 name = "fancy"
 binary = "fancy-cli"
@@ -616,9 +817,10 @@ effort_flag = "--effort"
 color = 42
 system_prompt_inline = false
 history_turns = 4
-"#;
-        let config: Config = toml::from_str(toml_str).unwrap();
-        let p = &config.ai.providers[0];
+"#,
+        );
+        let resolved = ai.resolve_providers().unwrap();
+        let p = resolved.iter().find(|r| r.name == "fancy").unwrap();
         assert_eq!(p.prompt_delivery, "flag");
         assert_eq!(p.prompt_flag, "-p");
         assert_eq!(p.parse, "jsonl");
@@ -626,63 +828,123 @@ history_turns = 4
         assert_eq!(p.color, 42);
         assert!(!p.system_prompt_inline);
         assert_eq!(p.history_turns, 4);
-        config.ai.validate_providers().unwrap();
     }
 
     #[test]
-    fn validate_rejects_reserved_native_name() {
-        let toml_str = r#"
+    fn override_merges_single_field_onto_builtin() {
+        // 組み込み "demo" の model_flag だけ上書き。他フィールドは builtin のまま残る。
+        let builtins = vec![ProviderRecipe {
+            args: vec!["--plan".into()],
+            model_flag: "--model".into(),
+            color: 99,
+            ..ProviderRecipe::with_defaults("demo", "demo-cli")
+        }];
+        let ai = ai_from_toml(
+            r#"
+[[ai.providers]]
+name = "demo"
+model_flag = "-m"
+"#,
+        );
+        let resolved = ai.resolve_with_builtins(builtins).unwrap();
+        assert_eq!(resolved.len(), 1, "置換マージなので新規追加されない");
+        let p = &resolved[0];
+        assert_eq!(p.model_flag, "-m"); // 上書きされた
+        assert_eq!(p.binary, "demo-cli"); // builtin のまま
+        assert_eq!(p.args, vec!["--plan".to_string()]); // builtin のまま
+        assert_eq!(p.color, 99); // builtin のまま
+    }
+
+    #[test]
+    fn override_unknown_name_adds_new_provider() {
+        let builtins = vec![ProviderRecipe::with_defaults("demo", "demo-cli")];
+        let ai = ai_from_toml(
+            r#"
+[[ai.providers]]
+name = "extra"
+binary = "extra-cli"
+"#,
+        );
+        let resolved = ai.resolve_with_builtins(builtins).unwrap();
+        assert_eq!(resolved.len(), 2);
+        assert!(resolved
+            .iter()
+            .any(|r| r.name == "extra" && r.binary == "extra-cli"));
+    }
+
+    #[test]
+    fn new_provider_without_binary_errs() {
+        let ai = ai_from_toml(
+            r#"
+[[ai.providers]]
+name = "extra"
+model_flag = "-m"
+"#,
+        );
+        let err = ai.resolve_providers().unwrap_err();
+        assert!(err.contains("binary"), "got: {err}");
+    }
+
+    #[test]
+    fn resolve_rejects_reserved_native_name() {
+        let ai = ai_from_toml(
+            r#"
 [[ai.providers]]
 name = "claude"
 binary = "alt-claude"
-"#;
-        let config: Config = toml::from_str(toml_str).unwrap();
-        let err = config.ai.validate_providers().unwrap_err();
-        assert!(
-            err.contains("built-in"),
-            "expected built-in collision error, got: {err}"
+"#,
         );
+        let err = ai.resolve_providers().unwrap_err();
+        assert!(err.contains("built-in"), "got: {err}");
     }
 
     #[test]
-    fn validate_rejects_duplicate_name() {
-        let toml_str = r#"
-[[ai.providers]]
-name = "a"
-binary = "x"
-
-[[ai.providers]]
-name = "a"
-binary = "y"
-"#;
-        let config: Config = toml::from_str(toml_str).unwrap();
-        let err = config.ai.validate_providers().unwrap_err();
-        assert!(err.contains("duplicate name"));
-    }
-
-    #[test]
-    fn validate_rejects_bad_parse_value() {
-        let toml_str = r#"
+    fn resolve_rejects_bad_parse_value() {
+        let ai = ai_from_toml(
+            r#"
 [[ai.providers]]
 name = "a"
 binary = "x"
 parse = "yaml"
-"#;
-        let config: Config = toml::from_str(toml_str).unwrap();
-        let err = config.ai.validate_providers().unwrap_err();
+"#,
+        );
+        let err = ai.resolve_providers().unwrap_err();
         assert!(err.contains("parse"));
     }
 
     #[test]
-    fn validate_rejects_flag_delivery_without_flag_name() {
-        let toml_str = r#"
+    fn resolve_rejects_flag_delivery_without_flag_name() {
+        let ai = ai_from_toml(
+            r#"
 [[ai.providers]]
 name = "a"
 binary = "x"
 prompt_delivery = "flag"
-"#;
-        let config: Config = toml::from_str(toml_str).unwrap();
-        let err = config.ai.validate_providers().unwrap_err();
+"#,
+        );
+        let err = ai.resolve_providers().unwrap_err();
         assert!(err.contains("prompt_flag"));
+    }
+
+    #[test]
+    fn duplicate_user_names_merge_last_wins() {
+        // 同名ユーザエントリは後勝ちのフィールドマージ (エラーにしない)。
+        let ai = ai_from_toml(
+            r#"
+[[ai.providers]]
+name = "a"
+binary = "x"
+model_flag = "-m"
+
+[[ai.providers]]
+name = "a"
+binary = "y"
+"#,
+        );
+        let resolved = ai.resolve_providers().unwrap();
+        let dups: Vec<_> = resolved.iter().filter(|r| r.name == "a").collect();
+        assert_eq!(dups.len(), 1);
+        assert_eq!(dups[0].binary, "y"); // 後のエントリで上書き
+        assert_eq!(dups[0].model_flag, "-m"); // 先のエントリの値は残る
     }
 }

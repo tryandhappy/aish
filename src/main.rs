@@ -35,6 +35,33 @@ enum CliAction {
     Update(update::UpdateChannel),
     Version,
     Help,
+    /// `--list-providers`: 利用可能な backend (native + 組み込み + config) を一覧表示。
+    /// `--config` を尊重するため path を持ち回る。
+    ListProviders(Option<String>),
+}
+
+/// native backend 名を `a | b | c` 形式で返す。help / エラー文の重複を防ぐ。
+fn native_backend_names() -> String {
+    ai::BackendKind::all_native()
+        .iter()
+        .map(|k| k.as_str())
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+/// meta コマンド (`--list-providers` 等) 用に args から `--config <path>` を拾う。
+fn find_config_path(args: &[String]) -> Option<String> {
+    for (i, a) in args.iter().enumerate() {
+        if a == "--config" {
+            return args.get(i + 1).cloned();
+        }
+        if let Some(rest) = a.strip_prefix("--config=") {
+            if !rest.is_empty() {
+                return Some(rest.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// `--update` に続く `--stable` / `--prerelease` から更新チャネルを決める。
@@ -59,6 +86,7 @@ fn parse_args() -> CliAction {
             "--update" => return CliAction::Update(parse_update_channel(&args)),
             "--version" | "-V" => return CliAction::Version,
             "--help" => return CliAction::Help,
+            "--list-providers" => return CliAction::ListProviders(find_config_path(&args)),
             _ => {}
         }
     }
@@ -113,7 +141,10 @@ fn parse_args() -> CliAction {
                     continue;
                 }
                 None => {
-                    eprintln!("Error: --ai requires a value (claude|codex|gemini|qwen)");
+                    eprintln!(
+                        "Error: --ai requires a value ({}, or a config/[[ai.providers]] name; see `aish --list-providers`)",
+                        native_backend_names()
+                    );
                     std::process::exit(1);
                 }
             }
@@ -324,7 +355,7 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
     // `[[ai.providers]]` の registry を leak ベースで初期化。これ以降
     // `BackendKind::parse("generic:<name>")` が解決できるようになる。
     // 一度きりの呼び出し (OnceLock) なので nested aish 起動でも安全。
-    ai::BackendKind::init_generics(&config.ai.providers);
+    ai::BackendKind::init_generics(&config.ai.resolved_providers);
 
     // モデル名の決定: --model > [ai].model > 既存 extra_args の -m
     // CLI 指定があれば config.ai.model を上書きし、各 backend の new() で extra_args に注入される。
@@ -657,6 +688,7 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
 
 fn print_help() {
     let version = env!("CARGO_PKG_VERSION");
+    let natives = native_backend_names();
     println!(
         "\
 aish v{version} — CLI SSH + AI
@@ -666,11 +698,13 @@ USAGE:
     aish [AISH_OPTIONS]                 Local:  $SHELL を起動
     aish --version | --help
     aish --update [--stable | --prerelease]
+    aish --list-providers              利用可能な AI バックエンド一覧を表示
 
 AISH OPTIONS:
     --config <PATH>        設定ファイルパス (既定: ~/.aish/config.toml)
-    --ai <KIND>            AI バックエンド: claude | codex | gemini | qwen (既定: claude)
-                           [ai].backend より優先される
+    --ai <KIND>            AI バックエンド: {natives} (既定: claude)
+                           + 組み込みデフォルト recipe / [[ai.providers]] の名前も指定可
+                           ([ai].backend より優先。一覧は `aish --list-providers`)
     --model <NAME>         使用モデル名 (例: sonnet, gpt-5, gemini-2.5-pro)
                            [ai].model および extra_args の -m 指定より優先される
     --effort <LEVEL>       reasoning effort (low | medium | high など)
@@ -683,6 +717,7 @@ OTHER OPTIONS:
                            GitHub Releases から自己更新 (例: sudo aish --update)
                            既定 --stable: prerelease を除いた安定版の最新
                            --prerelease : prerelease を含む最新版 (先端)
+    --list-providers       利用可能な AI バックエンド (native + 組み込み + config) を一覧表示
     --help                 このヘルプを表示
 
 KEYS (起動後):
@@ -697,7 +732,7 @@ SLASH COMMANDS (aish プロンプトに入力):
     /effort [LEVEL]        reasoning effort を変更 (引数なしでクリア)
     /model  [NAME]         モデルを変更 (引数なしでクリア)
     /clear                 会話履歴 / セッションをクリア
-    /ai     <KIND>         AI バックエンドを切り替え (claude|codex|gemini|qwen)
+    /ai     <KIND>         AI バックエンドを切り替え ({natives}, または config の provider 名)
 
 EXAMPLES:
     aish                                # ローカルシェルを Claude で
@@ -742,10 +777,66 @@ REPOSITORY:
     }
 }
 
+/// `--list-providers`: native + 組み込みデフォルト + config の generic backend を、
+/// 出所タグ付きで一覧表示する。
+fn print_providers(config_path: Option<&str>) -> Result<(), String> {
+    let config = config::Config::load(config_path)?;
+    let builtin_names: std::collections::HashSet<String> = config::builtin_providers()
+        .into_iter()
+        .map(|r| r.name)
+        .collect();
+    let user_names: std::collections::HashSet<&str> = config
+        .ai
+        .providers
+        .iter()
+        .map(|o| o.name.as_str())
+        .collect();
+
+    println!("Available AI backends (use with `--ai <NAME>` or `/ai <NAME>`):");
+    println!("  default backend: {}", config.ai.backend);
+    println!();
+    println!("Native (always available):");
+    for kind in ai::BackendKind::all_native() {
+        println!("  {}", kind.as_str());
+    }
+    println!();
+    if config.ai.resolved_providers.is_empty() {
+        println!("Generic providers (built-in defaults + [[ai.providers]]): (none)");
+    } else {
+        println!("Generic providers (built-in defaults + [[ai.providers]] overrides):");
+        for r in &config.ai.resolved_providers {
+            let source = match (
+                builtin_names.contains(&r.name),
+                user_names.contains(r.name.as_str()),
+            ) {
+                (true, true) => "built-in, overridden",
+                (true, false) => "built-in",
+                (false, _) => "config",
+            };
+            let args = if r.args.is_empty() {
+                String::new()
+            } else {
+                format!(" args={:?}", r.args)
+            };
+            println!(
+                "  {:<16} [{}]  binary={} parse={}{}",
+                r.name, source, r.binary, r.parse, args
+            );
+        }
+    }
+    Ok(())
+}
+
 fn main() {
     match parse_args() {
         CliAction::Help => {
             print_help();
+        }
+        CliAction::ListProviders(config_path) => {
+            if let Err(e) = print_providers(config_path.as_deref()) {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
         }
         CliAction::Version => {
             println!("aish {}", env!("CARGO_PKG_VERSION"));

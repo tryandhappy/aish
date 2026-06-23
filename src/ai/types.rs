@@ -97,7 +97,7 @@ impl BackendKind {
             .iter()
             .map(|p| {
                 // display_name は recipe.name そのまま (flat namespace)。
-                // native 予約語との衝突は config::validate_providers で先に reject されている。
+                // native 予約語との衝突は config の resolve_providers (validate_recipes) で先に reject されている。
                 let display = Box::leak(p.name.clone().into_boxed_str()) as &'static str;
                 let binary = Box::leak(p.binary.clone().into_boxed_str()) as &'static str;
                 let recipe = Box::leak(Box::new(p.clone())) as &'static ProviderRecipe;
@@ -126,7 +126,7 @@ impl BackendKind {
     /// 1. native 6 種 (`"claude"` 等) の固定 match
     /// 2. `GENERIC_REGISTRY` の provider name と完全一致するか線形検索
     ///
-    /// generic provider は flat namespace で扱う (prefix 不要)。`validate_providers` で
+    /// generic provider は flat namespace で扱う (prefix 不要)。`validate_recipes` で
     /// native 予約語との衝突は起動時に reject されるので、ここで両ステップが同じ文字列に
     /// マッチすることは無い (= native 優先で曖昧性は無い)。
     pub fn parse(s: &str) -> Result<Self, String> {

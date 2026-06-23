@@ -70,7 +70,8 @@ AI backends（§ 15.10）:
 - **Claude: 毎ターン守らせるルールは system prompt でなく `--json-schema` の description に書く**（system prompt は初回のみ）。独立コマンドは `;` 連結せず `commands` 配列に分割（ただし `&&`/`||`・制御構文内の `;` は維持）。
 - **Claude `--disallowedTools` は `MANDATORY_DENY`(Bash/Edit/Write) を常に union し args 末尾で push**（extra_args で剥がせないように。**前方へ戻したり union を外したりしない**）。
 - **cursor は `--trust` 常時 + `--mode plan`、copilot は `-p` 無し + 四段 deny。`--yolo`/Run Everything 系は絶対に付けない**（固定埋め込み、config 不可）。
-- **Generic backend は安全フラグを自動付与しない**（recipe 著者が `--mode plan` 等を明示。信頼できない CLI は確認 UI を迂回し得る）。
+- **Generic backend（ユーザの新規 `[[ai.providers]]`）は安全フラグを自動付与しない**（recipe 著者が `--mode plan` 等を明示。信頼できない CLI は確認 UI を迂回し得る）。
+- **組み込みデフォルト recipe は `config::builtin_providers()` 1 関数に集約し、aish が著者として安全フラグを `args` に焼き込んで同梱する**（generic 原則の例外）。**read-only/plan 相当を強制できない CLI は同梱しない**（実機で要検証）。ユーザ上書きは `[[ai.providers]]` の同名エントリで**フィールド単位マージ**（書いたフィールドだけ。`args` は丸ごと置換）。registry へ渡すのは `resolved_providers`（生 `providers` でない）。
 
 セルフアップデート（§ 15.11）:
 - **`aish --update` は `--stable`(既定=`/releases/latest`) / `--prerelease`(`/releases[0]`) の 2 チャネル。この向きを逆にしない**。prerelease は Cargo.toml の `version` にも識別子(`0.9.0-rc.1`)を含める。

@@ -102,17 +102,40 @@
 # sandbox = ""                                                   # default: "" — "enabled" / "disabled" を cursor-agent --sandbox にそのまま渡す。defense-in-depth
 
 # ===========================================================================
-# [[ai.providers]] — config 駆動の追加 CLI backend (ollama 等を Rust コード変更なしで追加可能)
+# 組み込みデフォルト recipe (zero-config) — `aish --list-providers` で一覧表示
 # ===========================================================================
-# 配列形式で複数 provider を登録できる (上限 256 個)。各エントリの `name` をそのまま
-# `--ai <name>` / `/ai <name>` で指定する (built-in と同じ平坦な名前空間)。
+# 人気 AI CLI は **設定不要** で `--ai <name>` / `/ai <name>` 指定だけで使える。
+# 同梱 recipe は aish が著者として read-only / plan 相当の安全フラグを焼き込んでいる
+# (read-only を強制できない CLI は同梱しない)。現在の同梱一覧:
 #
-# **`name` に built-in 予約語 (claude / codex / gemini / qwen / cursor / copilot) を
-# 使うと起動時エラー**。重複登録も拒否される。
+#   kimi   : MoonshotAI/kimi-cli。args=["--plan","--quiet"] (--plan=read-only tools)、
+#            model_flag="--model"。NOTE: prompt 渡し方・最終出力フォーマットは
+#            kimi-cli インストール環境での実機検証が必要。挙動が違えば下記 [[ai.providers]]
+#            で上書きすること。
 #
-# 安全性は aish 側からは強制しない (claude/copilot のような自動 deny フラグ無し)。
-# **登録する CLI が信頼できることを利用者が確認した上で使うこと**。必要なら `args` に
-# `--mode plan` 等の安全フラグを明示的に含める。
+# 上書きは「書いたフィールドだけ」効く (フィールド単位マージ)。例: kimi のモデル指定だけ
+# 変えたいなら:
+#   [[ai.providers]]
+#   name = "kimi"
+#   model_flag = "-m"        # 他フィールド (binary/args 等) は組み込み既定のまま
+#
+# 注意: `args` は Vec なので「丸ごと置換」(部分マージはしない)。
+#
+# ===========================================================================
+# [[ai.providers]] — 組み込みデフォルトの上書き / 新規 CLI backend の追加
+# ===========================================================================
+# 配列形式で複数 provider を登録できる (解決後の合計が上限 256 個)。各エントリの `name`
+# をそのまま `--ai <name>` / `/ai <name>` で指定する (built-in と同じ平坦な名前空間)。
+#
+#   - `name` が組み込みデフォルト recipe と一致 → 指定フィールドだけ上書き
+#   - 一致しない → 新規 generic backend (このとき `binary` 必須)
+#
+# **`name` に native 予約語 (claude / codex / gemini / qwen / cursor / copilot) を
+# 使うと起動時エラー**。
+#
+# 新規 provider の安全性は aish 側からは強制しない (claude/copilot のような自動 deny
+# フラグ無し)。**登録する CLI が信頼できることを利用者が確認した上で使うこと**。必要なら
+# `args` に `--mode plan` 等の安全フラグを明示的に含める。
 #
 # フィールド:
 #   name              : 一意な識別子 (例 "ollama-llama"). built-in 予約語と衝突不可
