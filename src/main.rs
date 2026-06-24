@@ -238,7 +238,7 @@ fn debug_bytes(data: &[u8], max: usize) -> String {
 /// - `value == Some("-")` / `Some("clear")` → クリア。
 /// - `value == Some(other)` → その値を set (検証せずヒントのみ)。
 /// - `value == None` → 候補一覧を解決し、空なら hint メッセージ、非空なら対話ピッカー。
-///   候補末尾に `(clear)` を足し、選べばクリア。取消時は変更しない。
+///   候補末尾に `(default)` を足し、選べばクリア(CLI 既定に任せる)。取消時は変更しない。
 ///
 /// `get_available` は None 経路でだけ評価される (取得コマンドはピッカーを開く時だけ実行)。
 fn run_option_picker(
@@ -268,10 +268,10 @@ fn run_option_picker(
             let cur_idx = get_current(&**session)
                 .as_deref()
                 .and_then(|c| available.iter().position(|x| x == c));
-            // 末尾に "(clear)" 疑似エントリを足す。
+            // 末尾に "(default)" 疑似エントリを足す (選べばクリア = CLI 既定に任せる)。
             let clear_idx = available.len();
             let mut items = available.clone();
-            items.push("(clear)".to_string());
+            items.push("(default)".to_string());
             match ui::show_picker(&format!("/{which}"), &items, cur_idx) {
                 Some(i) if i == clear_idx => {
                     set(&mut **session, None);
