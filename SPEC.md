@@ -342,7 +342,7 @@ TOML 形式。未指定はデフォルト。サンプルは `config.toml.example
 
 候補解決の優先順位（`common::resolve_option_list`）: **static list 非空 > 取得コマンド > backend 組み込み既定**。取得コマンドはピッカーを開く時だけ実行される。
 
-**effort 組み込み既定**（config 未設定時）: claude `low/medium/high`、codex `minimal/low/medium/high`、copilot `none/low/medium/high/xhigh/max`、gemini/qwen/cursor/generic は無し（effort 非適用 or recipe 由来のみ）。**model 既定は全 backend 無し**（流動的なので config 必須）。値は best-effort（ヒント用途で検証しないので誤りは実害小）。
+**effort 組み込み既定**（config 未設定時）: claude `low/medium/high`、codex `minimal/low/medium/high`、copilot `none/low/medium/high/xhigh/max`、gemini/qwen/cursor/generic は無し（effort 非適用 or recipe 由来のみ）。**model 組み込み既定**（config 未設定時）: 全 native backend に同梱（各 `MODEL_DEFAULTS` const）。zero-config で `/model` ピッカーが開く。例: claude `claude-opus-4-8/sonnet-4-6/haiku-4-5`、codex `gpt-5.5/5.4/5.4-mini/5.2-codex`、gemini `gemini-3-pro/3-flash/2.5-pro/2.5-flash`、qwen `qwen3-coder-plus/flash`、cursor `auto/composer-1/…`、copilot `claude-sonnet-4.5/opus-4.5/gpt-5.1/…`。generic は recipe 由来のみで対象外。値は best-effort（ヒント用途で検証しないので誤りは実害小）だがモデル名は流動的で**更新にはリリースが必要**。ユーザは `[ai.<backend>].models` で上書きできる。
 
 #### `[ai.claude]`
 | キー | 既定値 | 説明 |
@@ -545,4 +545,5 @@ TOML 形式。未指定はデフォルト。サンプルは `config.toml.example
 - **描画モデル**: 先に `\n`×`total_lines` で領域を確保（最下行なら scroll を先に発生させる）→ `\x1b[<total_lines>A` で原点へ。以降の `render_picker` は原点開始・**最終行末で止まる**（末尾改行を出さない＝予約領域を超える scroll を起こさない）。再描画は `picker_move_to_origin`（`\x1b[<L-1>A\r`）で原点へ戻って再描画。終了時は原点へ戻って `\x1b[0J` で消去（後続の `print_slash_result` が原点から結果を出す）。**DECSTBM region は使わない**（minibuffer と同じ理由）。長い候補は簡易ビューポート（可視 = 端末高 − 2、選択が枠外なら top 調整）。
 - **キー**: ↑↓=移動（クランプ、wrap しない）、Home/End=端、Enter=確定、**Esc / Ctrl+C(0x03) / Ctrl+D(0x04)=取消**（confirm と揃える）。その他は無視。**ナビは純関数 `picker_step` に分離し golden test** で固定（`picker_step_navigation`）。
 - **候補解決**: backend ごとの trait メソッド `available_models` / `available_efforts` が `common::resolve_option_list(static, command, builtin, log)` を呼ぶ。優先順位 **static list > 取得コマンド > 組み込み既定**。取得コマンドは `sh -c`（unix）/ `cmd /C`（windows）で**ピッカーを開く時だけローカル実行**（起動時に走らせない。stdout を 1 行 1 候補で解釈、失敗時は空）。クライアント側実行でサーバ書き込み・承認フローには無関係。
+- **model 組み込み既定（`MODEL_DEFAULTS`）**: 全 native backend に同梱し zero-config で `/model` ピッカーを開けるようにする。当初は「動的取得（`models_command` 既定化）で常に最新に」を検討したが、実機調査の結果 codex/copilot/cursor/gemini/qwen いずれも「stdout に 1 行 1 モデルで吐く非対話の一覧コマンド」を持たない（codex 公式は pin 非推奨、copilot の非対話リストは未解決の要望 Issue #700、cursor の `/model` は対話セッション内専用）ため断念し、静的リストを焼き込む方式にした。モデル名は数か月で入れ替わるので best-effort で**更新にはリリースが必要**。ユーザは `[ai.<backend>].models` で上書きできる。generic は recipe 由来のみ（builtin 無し）。
 - **`/model` `/effort` ハンドラ（`run_option_picker`）は常に `Some(...)` を返す**（None だと通常 AI プロンプト扱いになる）。引数なし=候補解決→空なら hint / 非空ならピッカー（末尾に `(clear)` 疑似エントリ）、`-`/`clear`=クリア、その他=**検証せず set**（ヒントのみ。一覧外の値も許可）。取消時は変更しない。

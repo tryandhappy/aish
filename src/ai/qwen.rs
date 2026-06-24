@@ -7,6 +7,9 @@ use crate::config::{AiConfig, LogConfig, OptionLists};
 
 const MAX_HISTORY_TURNS: usize = 8;
 
+/// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort。更新はリリース必要。
+const MODEL_DEFAULTS: &[&str] = &["qwen3-coder-plus", "qwen3-coder-flash"];
+
 /// Qwen Code CLI backend。
 ///
 /// Qwen Code は Gemini CLI のフォークが基になっており、CLI インタフェースは概ね Gemini と同形と想定。
@@ -78,7 +81,7 @@ impl AiBackend for QwenBackend {
         resolve_option_list(
             &self.options.models,
             &self.options.models_command,
-            &[],
+            MODEL_DEFAULTS,
             &self.log_path,
         )
     }
@@ -127,5 +130,17 @@ impl AiBackend for QwenBackend {
             .push((req.user_prompt.to_string(), response.message.clone()));
         trim_history(&mut self.history, MAX_HISTORY_TURNS);
         Ok(response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_defaults_present_without_config() {
+        // config 空でも組み込み既定で `/model` ピッカーの候補が出る (既定消失の回帰防止)。
+        let backend = QwenBackend::new(&AiConfig::default(), &LogConfig::default());
+        assert!(!backend.available_models().is_empty());
     }
 }

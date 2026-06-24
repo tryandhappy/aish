@@ -9,6 +9,10 @@ use crate::config::{AiConfig, LogConfig, OptionLists};
 /// `/effort` ピッカーの組み込み既定 (config 未設定時)。codex の `model_reasoning_effort`。
 const EFFORT_DEFAULTS: &[&str] = &["minimal", "low", "medium", "high"];
 
+/// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort。更新はリリース必要。
+/// (codex 公式は ChatGPT ログイン時のモデル pin を非推奨。`/model -` で既定に戻せる。)
+const MODEL_DEFAULTS: &[&str] = &["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.2-codex"];
+
 /// codex の自律エージェント挙動を無効化するための feature 一覧。
 /// `codex features list` で stable / experimental の tool 系をすべて落とす。
 /// これを付けないと codex は内部で shell 等を実行して結果だけを返してしまい、
@@ -103,7 +107,7 @@ impl AiBackend for CodexBackend {
         resolve_option_list(
             &self.options.models,
             &self.options.models_command,
-            &[],
+            MODEL_DEFAULTS,
             &self.log_path,
         )
     }
@@ -310,5 +314,12 @@ mod tests {
                 .is_none()
         );
         assert!(parse_codex_session_uuid("rollout-2026-04-25T18-08-16.jsonl").is_none());
+    }
+
+    #[test]
+    fn model_defaults_present_without_config() {
+        // config 空でも組み込み既定で `/model` ピッカーの候補が出る (既定消失の回帰防止)。
+        let backend = CodexBackend::new(&AiConfig::default(), &LogConfig::default());
+        assert!(!backend.available_models().is_empty());
     }
 }

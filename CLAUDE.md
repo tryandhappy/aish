@@ -57,7 +57,7 @@ minibuffer / 打ちかけ（§ 15.4, 15.5）:
 `/model` `/effort` ピッカー（§ 15.12）:
 - **`ui::show_picker` は confirm と同じく main スレッドが fd0 直読みの同期ブロッキング関数**（`AiPrompt` arm 内 = 入力スレッド parked 前提。`InputEvent`/`InputRequest` 経由にしない）。**termios 再設定はしない**（raw はセッション維持）。stdout 専用で PTY に書かない。
 - **領域は先に `\n`×N で確保→原点へ戻り、以降は最終行末で止まる相対描画**（末尾改行を出さず予約超え scroll を防ぐ。DECSTBM 不使用）。終了時に `\x1b[<L-1>A\r\x1b[0J` で消去し原点へ（後続の `print_slash_result` が原点から出す）。**ナビは純関数 `picker_step` に分離し golden test**（↑↓ クランプ / Enter=Select / Esc・Ctrl+C・Ctrl+D=Cancel）。
-- **候補解決は backend ごと `available_models`/`available_efforts`（trait）= static list > 取得コマンド > 組み込み既定**（`common::resolve_option_list`）。取得コマンドは**ピッカーを開く時だけローカル実行**（起動時に走らせない。サーバ書き込み・承認フローと無関係）。effort 既定は claude/codex/copilot のみ同梱、model 既定は無し。
+- **候補解決は backend ごと `available_models`/`available_efforts`（trait）= static list > 取得コマンド > 組み込み既定**（`common::resolve_option_list`）。取得コマンドは**ピッカーを開く時だけローカル実行**（起動時に走らせない。サーバ書き込み・承認フローと無関係）。effort 既定は claude/codex/copilot のみ同梱（gemini/qwen/cursor は CLI に effort フラグが無いので入れない）。model 既定は全 native backend に同梱（流動的なので best-effort、更新はリリース必要。generic は recipe 由来のみで対象外）。
 - **`/model` `/effort` は常に `Some(...)` を返す**（None だと通常 AI プロンプト扱い）。引数なし=ピッカー、`-`/`clear`=クリア、その他=検証せず set（ヒントのみ）。
 
 drain / 入力スレッド（§ 15.6）:

@@ -7,6 +7,14 @@ use crate::config::{AiConfig, LogConfig, OptionLists};
 
 const MAX_HISTORY_TURNS: usize = 8;
 
+/// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort。更新はリリース必要。
+const MODEL_DEFAULTS: &[&str] = &[
+    "gemini-3-pro",
+    "gemini-3-flash",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+];
+
 /// Gemini CLI backend。
 ///
 /// 戦略:
@@ -77,7 +85,7 @@ impl AiBackend for GeminiBackend {
         resolve_option_list(
             &self.options.models,
             &self.options.models_command,
-            &[],
+            MODEL_DEFAULTS,
             &self.log_path,
         )
     }
@@ -127,5 +135,17 @@ impl AiBackend for GeminiBackend {
             .push((req.user_prompt.to_string(), response.message.clone()));
         trim_history(&mut self.history, MAX_HISTORY_TURNS);
         Ok(response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_defaults_present_without_config() {
+        // config 空でも組み込み既定で `/model` ピッカーの候補が出る (既定消失の回帰防止)。
+        let backend = GeminiBackend::new(&AiConfig::default(), &LogConfig::default());
+        assert!(!backend.available_models().is_empty());
     }
 }

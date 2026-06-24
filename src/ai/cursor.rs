@@ -5,6 +5,16 @@ use super::common::{
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
 use crate::config::{AiConfig, LogConfig, OptionLists};
 
+/// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort。更新はリリース必要。
+/// (Free プランでは `auto` のみ受理。`/model -` で既定に戻せる。)
+const MODEL_DEFAULTS: &[&str] = &[
+    "auto",
+    "composer-1",
+    "claude-sonnet-4.7",
+    "gpt-5.5",
+    "gemini-2.5-pro",
+];
+
 /// Cursor CLI (`cursor-agent`) backend。
 ///
 /// 実機調査 (2026 年版 `cursor-agent --help`):
@@ -94,7 +104,7 @@ impl AiBackend for CursorBackend {
         resolve_option_list(
             &self.options.models,
             &self.options.models_command,
-            &[],
+            MODEL_DEFAULTS,
             &self.log_path,
         )
     }
@@ -232,5 +242,12 @@ mod tests {
         let (result, sid) = unwrap_cursor_envelope(s);
         assert!(result.is_none());
         assert_eq!(sid.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn model_defaults_present_without_config() {
+        // config 空でも組み込み既定で `/model` ピッカーの候補が出る (既定消失の回帰防止)。
+        let backend = CursorBackend::new(&AiConfig::default(), &LogConfig::default());
+        assert!(!backend.available_models().is_empty());
     }
 }

@@ -8,6 +8,10 @@ use crate::config::{AiConfig, LogConfig, OptionLists};
 /// `/effort` ピッカーの組み込み既定 (config 未設定時)。claude CLI の `--effort`。
 const EFFORT_DEFAULTS: &[&str] = &["low", "medium", "high"];
 
+/// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort
+/// (検証せず `--model <値>` に渡すだけ。誤りの実害は CLI 起動エラー程度)。更新はリリース必要。
+const MODEL_DEFAULTS: &[&str] = &["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"];
+
 const AI_RESPONSE_SCHEMA: &str = r#"{
   "type": "object",
   "properties": {
@@ -111,7 +115,7 @@ impl AiBackend for ClaudeBackend {
         resolve_option_list(
             &self.options.models,
             &self.options.models_command,
-            &[],
+            MODEL_DEFAULTS,
             &self.log_path,
         )
     }
@@ -290,5 +294,12 @@ mod tests {
         // opt-in 時は baseline を強制せず verbatim。
         assert_eq!(effective_disallowed_tools("", true), "");
         assert_eq!(effective_disallowed_tools("Read", true), "Read");
+    }
+
+    #[test]
+    fn model_defaults_present_without_config() {
+        // config 空でも組み込み既定で `/model` ピッカーの候補が出る (既定消失の回帰防止)。
+        let backend = ClaudeBackend::new(&AiConfig::default(), &LogConfig::default());
+        assert!(!backend.available_models().is_empty());
     }
 }

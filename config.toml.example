@@ -76,7 +76,10 @@
 #   efforts_command : effort 候補を動的取得するコマンド
 # 優先順位: static list > 取得コマンド > backend 組み込み既定。
 # effort の組み込み既定: claude=low/medium/high, codex=minimal/low/medium/high,
-#   copilot=none/low/medium/high/xhigh/max (gemini/qwen/cursor は無し)。model 既定は無し。
+#   copilot=none/low/medium/high/xhigh/max (gemini/qwen/cursor は無し)。
+# model の組み込み既定: 全 native backend に同梱済み (config 無しでも /model でピッカーが開く)。
+#   モデル名は流動的なので best-effort。最新版に合わせたい / 別モデルを使いたい場合は
+#   下の models = [...] で上書きする (generic [[ai.providers]] は recipe 由来のみで既定なし)。
 
 [ai.claude]
 # models = ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]

@@ -8,6 +8,15 @@ use crate::config::{AiConfig, LogConfig, OptionLists};
 /// `/effort` ピッカーの組み込み既定 (config 未設定時)。copilot CLI の `--effort`。
 const EFFORT_DEFAULTS: &[&str] = &["none", "low", "medium", "high", "xhigh", "max"];
 
+/// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort。更新はリリース必要。
+const MODEL_DEFAULTS: &[&str] = &[
+    "claude-sonnet-4.5",
+    "claude-opus-4.5",
+    "gpt-5.1",
+    "gpt-5.1-codex",
+    "gemini-3-pro",
+];
+
 /// GitHub Copilot CLI (`copilot`) backend。
 ///
 /// 実機調査 (copilot 1.0.51, `copilot --help`):
@@ -98,7 +107,7 @@ impl AiBackend for CopilotBackend {
         resolve_option_list(
             &self.options.models,
             &self.options.models_command,
-            &[],
+            MODEL_DEFAULTS,
             &self.log_path,
         )
     }
@@ -195,3 +204,15 @@ impl AiBackend for CopilotBackend {
 
 // copilot の JSONL parser (`assistant.message:data.content` + `result:sessionId`) は
 // `common::parse_jsonl_with_paths` に一般化済み。テストは common.rs 側に集約。
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_defaults_present_without_config() {
+        // config 空でも組み込み既定で `/model` ピッカーの候補が出る (既定消失の回帰防止)。
+        let backend = CopilotBackend::new(&AiConfig::default(), &LogConfig::default());
+        assert!(!backend.available_models().is_empty());
+    }
+}
