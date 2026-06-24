@@ -793,6 +793,9 @@ fn show_picker_unix(title: &str, items: &[String], current: Option<usize>) -> Op
     let mut top = 0usize;
     let mut src = Fd0Source::new();
     let result;
+    // 初回は領域確保直後で既に原点にいる。2 回目以降は最終行末にカーソルがあるので、
+    // 描画前に原点へ戻さないと前回描画の下に重ねて描いてしまう (一覧が何度も表示される回帰)。
+    let mut first = true;
     loop {
         // sel が可視窓に入るよう top を調整。
         if sel < top {
@@ -800,6 +803,10 @@ fn show_picker_unix(title: &str, items: &[String], current: Option<usize>) -> Op
         } else if sel >= top + view_h {
             top = sel + 1 - view_h;
         }
+        if !first {
+            picker_move_to_origin(&mut stdout, total_lines);
+        }
+        first = false;
         render_picker(&mut stdout, title, items, sel, top, view_h);
         let ev = input::next_event(&mut src);
         match picker_step(sel, items.len(), &ev.tok) {
