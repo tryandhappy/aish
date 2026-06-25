@@ -81,6 +81,7 @@ AI backends（§ 15.10）:
 
 セルフアップデート（§ 15.11）:
 - **`aish --update` は `--stable`(既定=`/releases/latest`) / `--prerelease`(`/releases[0]`) の 2 チャネル。この向きを逆にしない**。prerelease は Cargo.toml の `version` にも識別子(`0.9.0-rc.1`)を含める。
+- **更新バイナリの tmp はインストール先と同一ディレクトリに置き `rename()` で原子置換。`/tmp` 経由 + copy fallback にしない**（別 FS だと `rename` が EXDEV→copy に落ち、実行中バイナリへの copy が `Text file busy`(ETXTBSY) で死ぬ）。
 
 ## 開発フロー
 

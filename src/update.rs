@@ -154,9 +154,15 @@ pub fn run_update(channel: UpdateChannel) -> Result<(), Box<dyn std::error::Erro
     );
     let checksum_url = format!("{download_url}.sha256");
 
-    // Download to temp file
-    let tmpfile = std::env::temp_dir()
-        .join(format!("aish-update-{}", std::process::id()))
+    // インストール先と同じディレクトリに tmpfile を置く。
+    // 別 FS の /tmp に置くと rename が EXDEV で失敗し copy fallback に落ち、
+    // 実行中バイナリ(=自分自身)への直接書き込みで ETXTBSY になるため。
+    let exe_path = std::env::current_exe()?;
+    let dest_dir = exe_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let tmpfile = dest_dir
+        .join(format!(".aish-update-{}", std::process::id()))
         .to_string_lossy()
         .to_string();
 
@@ -186,7 +192,6 @@ pub fn run_update(channel: UpdateChannel) -> Result<(), Box<dyn std::error::Erro
     }
 
     // Install to current executable path
-    let exe_path = std::env::current_exe()?;
     let exe_path_str = exe_path.to_string_lossy();
     println!("Installing to {exe_path_str} ...");
 
@@ -201,13 +206,9 @@ pub fn run_update(channel: UpdateChannel) -> Result<(), Box<dyn std::error::Erro
         )?;
     }
 
-    // Replace current binary
-    let result = std::fs::rename(&tmpfile, &exe_path).or_else(|_| {
-        // rename may fail across filesystems, try copy
-        let copy_result = std::fs::copy(&tmpfile, &exe_path).map(|_| ());
-        let _ = std::fs::remove_file(&tmpfile);
-        copy_result
-    });
+    // 原子置換は rename のみ。tmpfile は exe_path と同一 FS なので EXDEV にならず、
+    // 実行中でも inode 差し替えで成功する。copy fallback は ETXTBSY の元凶なので持たない。
+    let result = std::fs::rename(&tmpfile, &exe_path);
 
     if let Err(e) = result {
         let _ = std::fs::remove_file(&tmpfile);

@@ -419,9 +419,9 @@ TOML 形式。未指定はデフォルト。サンプルは `config.toml.example
 
 1. `detect_target()`（`target_for(os, arch)` 純関数）が `std::env::consts::{OS, ARCH}` からターゲット決定: linux/x86_64 → `x86_64-unknown-linux-musl`、linux/aarch64 → `aarch64-unknown-linux-musl`、macos/x86_64 → `x86_64-apple-darwin`、macos/aarch64 → `aarch64-apple-darwin`。他は `Unsupported platform` で拒否。`OS`/`ARCH` はコンパイル時固定なので自己申告は正確。
 2. `curl` でリリース API を叩き `tag_name` 取得（チャネルは §15.11）。現バージョン一致なら `"Already up to date."`。
-3. `aish-{target}` を一時ファイルへ DL。
+3. `aish-{target}` を**インストール先と同一ディレクトリ**の隠し一時ファイル（`.aish-update-{pid}`）へ DL（理由は §15.11）。
 4. **SHA256 検証**: 同リリースの `aish-{target}.sha256`（`<64-hex>  <filename>` 形式）を取得。ローカルは `sha256sum` を先に試し、spawn 失敗（macOS）なら `shasum -a 256` にフォールバック（出力形式同一、`parse_sha256_hash` 共通）。不一致／`.sha256` 未公開はいずれも fail-closed でエラー終了（インストールしない）。
-5. `chmod 0755` → `current_exe()` へ `rename`（クロス FS は `copy` + 一時削除）。`current_exe()` 書き込みなのでインストール場所非依存、macOS でも実行中バイナリ置換可（旧 inode はプロセスが保持）。成功で `"Updated to v{latest}"`。
+5. `chmod 0755` → `current_exe()` へ `rename`（原子置換のみ、copy fallback なし。理由は §15.11）。同一 FS の inode 差し替えなので、実行中バイナリでも置換可（旧 inode はプロセスが保持。macOS も同様）。成功で `"Updated to v{latest}"`。
 
 インストール先規約: **手動/self-update は `/usr/local/bin/aish`**（全 OS 共通、FHS のパッケージ管理外の正規位置、macOS SIP 回避、PATH 優先）。**deb/rpm の dest は `/usr/bin/aish`**（`[package.metadata.deb]`、パッケージ管理下なので FHS 上正しい）。両者は意図的に置き場が異なる。
 
@@ -538,6 +538,9 @@ TOML 形式。未指定はデフォルト。サンプルは `config.toml.example
 - **`aish --update` は安定版 / 最新版の 2 チャネル**（`src/update.rs` の `UpdateChannel`）。`--stable`（既定）は GitHub `/releases/latest`（prerelease 除外の最新）、`--prerelease` は `/releases` 一覧の先頭 `[0]`（prerelease 含む絶対最新）。
 - **命名の罠**: GitHub API では「安定版」が `/releases/latest`（"latest" を含む）、「先端」が `/releases` の先頭。"latest" がぶつかるのでユーザ向け flag をあえて `--prerelease` にしている（`--latest` だと逆に見える）。**この向きを逆にしない**。
 - チャネル区別は `release.yml` の `prerelease: ${{ contains(tag, '-') }}` 依存（SemVer ハイフン付きタグを prerelease=true で公開し `Latest` バッジを付けない）。**prerelease リリース時は Cargo.toml の `version` にも識別子を含める**（`0.9.0-rc.1`）。タグだけ `-rc.1` で Cargo.toml が数値のみだと `run_update` の `latest == current` 比較が一致せず常に「更新あり」と誤判定される。target 解決 / DL / SHA256 検証 / 置換はチャネル非依存で共通。
+- **更新バイナリの tmp はインストール先（`current_exe()` の親ディレクトリ）に置き、`rename()` で原子置換する。`/tmp` 経由 + copy fallback にしない**。
+  - 過去バグ: tmp を `std::env::temp_dir()`（`/tmp`）に置いていた。`/tmp` と `/usr/local/bin` は別 FS のため `rename()` が `EXDEV` で失敗 → `std::fs::copy()` fallback に落ちる → copy は**実行中バイナリ（自分自身）の inode へ直接書き込む**ため `Text file busy (ETXTBSY, os error 26)` で死んだ（`sudo aish --update` で再現）。
+  - `rename()` は同一 FS ならディレクトリエントリの差し替えだけで、実行中プロセスが保持する旧 inode に触れないので必ず成功する。tmp をインストール先と同一ディレクトリに置くことで EXDEV を消し、copy fallback 自体を撤去した。tmp 名は `.aish-update-{pid}`（隠しファイル化で残骸が目立たない。エラー時 `remove_file` クリーンアップは従来通り）。
 
 ### 15.12 `/model` `/effort` 対話ピッカー
 
