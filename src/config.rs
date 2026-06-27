@@ -53,9 +53,9 @@ pub struct AiConfig {
     pub copilot: CopilotBackendConfig,
     /// Cloudflare Workers AI backend 設定。account/token は環境変数のみ (config 不可) なので
     /// ここは `/model` 候補リスト (OptionLists) のみ。TOML セクション名はハイフン形
-    /// `[ai.cloudflare-workers]` (呼び出し名 `cloudflare` とは住み分け)。
-    #[serde(default, rename = "cloudflare-workers")]
-    pub cloudflare_workers: CloudflareWorkersBackendConfig,
+    /// `[ai.cloudflare-workers-ai]` (呼び出し名 `cloudflare` とは住み分け)。
+    #[serde(default, rename = "cloudflare-workers-ai")]
+    pub cloudflare_workers_ai: CloudflareWorkersAiBackendConfig,
     /// `[[ai.providers]]` 配列。ユーザが書いた **上書き / 追加** エントリ。
     /// 同名の組み込みデフォルト recipe があれば「書いたフィールドだけ」上書きし、
     /// 無ければ新規 generic backend として追加する (`resolve_providers`)。
@@ -84,7 +84,7 @@ impl Default for AiConfig {
             qwen: GenericBackendConfig::default(),
             cursor: CursorBackendConfig::default(),
             copilot: CopilotBackendConfig::default(),
-            cloudflare_workers: CloudflareWorkersBackendConfig::default(),
+            cloudflare_workers_ai: CloudflareWorkersAiBackendConfig::default(),
             providers: Vec::new(),
             resolved_providers: Vec::new(),
         }
@@ -159,7 +159,7 @@ pub struct GenericBackendConfig {
 /// config には置かない (config.toml は平文なのでトークン漏洩を避ける)。よって `/model`
 /// 候補リスト (OptionLists) のみを持つ。
 #[derive(Debug, Deserialize, Default, Clone)]
-pub struct CloudflareWorkersBackendConfig {
+pub struct CloudflareWorkersAiBackendConfig {
     #[serde(flatten)]
     pub options: OptionLists,
 }

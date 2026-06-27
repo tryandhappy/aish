@@ -132,8 +132,8 @@
 #
 # model は [ai].model / `/model` でも指定可 (env CLOUDFLARE_MODEL より優先)。コマンド提案の質は
 # モデル依存: {message, commands} の JSON 出力に追従できる大きめ instruct モデル
-# (例 @cf/meta/llama-3.3-70b-instruct-fp8-fast) を推奨。セクション名はハイフン形に注意。
-[ai.cloudflare-workers]
+# (例 @cf/meta/llama-3.3-70b-instruct-fp8-fast) を推奨。セクション名はハイフン形 (cloudflare-workers-ai) に注意。
+[ai.cloudflare-workers-ai]
 # models = ["@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/meta/llama-3.1-8b-instruct"]  # 省略時は組み込み既定
 # models_command = ""                                            # 例: 動的取得 (1 行 1 候補)
 

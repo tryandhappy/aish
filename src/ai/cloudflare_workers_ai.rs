@@ -39,7 +39,7 @@ const MODEL_DEFAULTS: &[&str] = &[
 ///   (gemini / qwen と同型)。
 /// - JSON Schema / dangerous tool 無効化フラグは無いので、system prompt で JSON 出力と
 ///   「ツール非使用」を強く指示する (= テキスト生成のみ。サーバ側は一切実行しない)。
-pub struct CloudflareWorkersBackend {
+pub struct CloudflareWorkersAiBackend {
     system_prompt: String,
     log_path: Option<String>,
     /// runtime モデル指定 (`/model` / `[ai].model`)。
@@ -51,7 +51,7 @@ pub struct CloudflareWorkersBackend {
     history: Vec<(String, String)>,
 }
 
-impl CloudflareWorkersBackend {
+impl CloudflareWorkersAiBackend {
     pub fn new(cfg: &AiConfig, log: &LogConfig) -> Self {
         let log_path = if log.enabled {
             Some(expand_tilde(&log.path))
@@ -64,7 +64,7 @@ impl CloudflareWorkersBackend {
             log_path,
             model: (!cfg.model.is_empty()).then(|| cfg.model.clone()),
             effort: (!cfg.effort.is_empty()).then(|| cfg.effort.clone()),
-            options: cfg.cloudflare_workers.options.clone(),
+            options: cfg.cloudflare_workers_ai.options.clone(),
             history: Vec::new(),
         }
     }
@@ -78,7 +78,7 @@ impl CloudflareWorkersBackend {
     }
 }
 
-impl AiBackend for CloudflareWorkersBackend {
+impl AiBackend for CloudflareWorkersAiBackend {
     fn name(&self) -> &'static str {
         "cloudflare"
     }
@@ -218,14 +218,14 @@ mod tests {
     #[test]
     fn model_defaults_present_without_config() {
         // config 空でも組み込み既定で `/model` ピッカーの候補が出る (既定消失の回帰防止)。
-        let backend = CloudflareWorkersBackend::new(&AiConfig::default(), &LogConfig::default());
+        let backend = CloudflareWorkersAiBackend::new(&AiConfig::default(), &LogConfig::default());
         assert!(!backend.available_models().is_empty());
     }
 
     #[test]
     fn resolve_model_falls_back_to_default() {
         // /model も [ai].model も無ければ DEFAULT_MODEL。
-        let backend = CloudflareWorkersBackend::new(&AiConfig::default(), &LogConfig::default());
+        let backend = CloudflareWorkersAiBackend::new(&AiConfig::default(), &LogConfig::default());
         // env CLOUDFLARE_MODEL の影響を受けないよう、未設定前提のテストは値の一致でなく非空を見る。
         assert!(!backend.resolve_model().is_empty());
     }
@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn set_model_overrides() {
         let mut backend =
-            CloudflareWorkersBackend::new(&AiConfig::default(), &LogConfig::default());
+            CloudflareWorkersAiBackend::new(&AiConfig::default(), &LogConfig::default());
         backend.set_model(Some("@cf/meta/llama-3.1-8b-instruct"));
         assert_eq!(backend.resolve_model(), "@cf/meta/llama-3.1-8b-instruct");
     }
