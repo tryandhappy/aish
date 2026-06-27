@@ -63,6 +63,8 @@ pub enum BackendKind {
     Qwen,
     Cursor,
     Copilot,
+    /// Cloudflare Workers AI (REST を curl 経由で叩く native backend)。
+    Cloudflare,
     /// Config 駆動 generic CLI backend。`u8` は `[[ai.providers]]` 配列のインデックス。
     /// 実 metadata (name / binary / color / recipe) は `init_generics` で leak された
     /// `GENERIC_REGISTRY` から `generic_at(idx)` 経由で取得する。
@@ -94,6 +96,7 @@ fn parse_native(s: &str) -> Result<BackendKind, ()> {
         "qwen" => Ok(BackendKind::Qwen),
         "cursor" => Ok(BackendKind::Cursor),
         "copilot" => Ok(BackendKind::Copilot),
+        "cloudflare" => Ok(BackendKind::Cloudflare),
         _ => Err(()),
     }
 }
@@ -177,6 +180,7 @@ impl BackendKind {
             BackendKind::Qwen => "qwen",
             BackendKind::Cursor => "cursor",
             BackendKind::Copilot => "copilot",
+            BackendKind::Cloudflare => "cloudflare",
             BackendKind::Generic(_) => self.generic_meta().map(|m| m.display_name).unwrap_or("?"),
         }
     }
@@ -191,6 +195,9 @@ impl BackendKind {
             BackendKind::Qwen => "qwen",
             BackendKind::Cursor => "cursor-agent",
             BackendKind::Copilot => "copilot",
+            // Cloudflare backend は curl をサブプロセスで叩くので「実行ファイル」は curl。
+            // check_installed が `curl --version` を見る (= 真の実行時依存)。
+            BackendKind::Cloudflare => "curl",
             BackendKind::Generic(_) => self.generic_meta().map(|m| m.binary).unwrap_or("?"),
         }
     }
@@ -205,14 +212,15 @@ impl BackendKind {
             BackendKind::Qwen => 3,
             BackendKind::Cursor => 4,
             BackendKind::Copilot => 5,
-            BackendKind::Generic(idx) => 6 + idx as usize,
+            BackendKind::Cloudflare => 6,
+            BackendKind::Generic(idx) => 7 + idx as usize,
         }
     }
 
     /// native backend の総数 (Generic を含まない)。
     /// 旧 `[T; BackendKind::COUNT]` 固定長配列の値は `ring_buffer` の HashMap 化により不要。
     /// 残存利用は test の網羅性チェックのみ。
-    pub const NATIVE_COUNT: usize = 6;
+    pub const NATIVE_COUNT: usize = 7;
 
     /// native backend 全種類を列挙。Generic は含まない (init 時のみ既知のため別系統)。
     pub fn all_native() -> [BackendKind; Self::NATIVE_COUNT] {
@@ -223,6 +231,7 @@ impl BackendKind {
             BackendKind::Qwen,
             BackendKind::Cursor,
             BackendKind::Copilot,
+            BackendKind::Cloudflare,
         ]
     }
 
@@ -306,6 +315,10 @@ mod tests {
         assert_eq!(BackendKind::parse("qwen").unwrap(), BackendKind::Qwen);
         assert_eq!(BackendKind::parse("cursor").unwrap(), BackendKind::Cursor);
         assert_eq!(BackendKind::parse("copilot").unwrap(), BackendKind::Copilot);
+        assert_eq!(
+            BackendKind::parse("cloudflare").unwrap(),
+            BackendKind::Cloudflare
+        );
     }
 
     #[test]
@@ -324,6 +337,7 @@ mod tests {
             BackendKind::Qwen,
             BackendKind::Cursor,
             BackendKind::Copilot,
+            BackendKind::Cloudflare,
         ] {
             assert_eq!(BackendKind::parse(kind.as_str()).unwrap(), kind);
         }
@@ -353,8 +367,8 @@ mod tests {
     #[test]
     fn generic_ordinal_starts_after_native() {
         // init 未呼び出しでも ordinal は計算可能 (registry を見ない)。
-        assert_eq!(BackendKind::Generic(0).ordinal(), 6);
-        assert_eq!(BackendKind::Generic(7).ordinal(), 13);
+        assert_eq!(BackendKind::Generic(0).ordinal(), 7);
+        assert_eq!(BackendKind::Generic(7).ordinal(), 14);
     }
 
     #[test]

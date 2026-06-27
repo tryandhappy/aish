@@ -1,4 +1,5 @@
 mod claude;
+mod cloudflare_workers;
 mod codex;
 mod common;
 mod copilot;

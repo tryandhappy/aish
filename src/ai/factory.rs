@@ -1,4 +1,5 @@
 use super::claude::ClaudeBackend;
+use super::cloudflare_workers::CloudflareWorkersBackend;
 use super::codex::CodexBackend;
 use super::copilot::CopilotBackend;
 use super::cursor::CursorBackend;
@@ -21,6 +22,7 @@ pub fn create_backend(
         BackendKind::Qwen => Ok(Box::new(QwenBackend::new(cfg, log))),
         BackendKind::Cursor => Ok(Box::new(CursorBackend::new(cfg, log))),
         BackendKind::Copilot => Ok(Box::new(CopilotBackend::new(cfg, log))),
+        BackendKind::Cloudflare => Ok(Box::new(CloudflareWorkersBackend::new(cfg, log))),
         BackendKind::Generic(_) => {
             let meta = kind.generic_meta().ok_or_else(|| {
                 AiError::Other(format!(

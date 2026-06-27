@@ -47,11 +47,11 @@
 # `backend` selects which CLI to drive. `--ai <kind>` (CLI flag) overrides this.
 # Supported: claude (Claude Code), codex (OpenAI Codex CLI), gemini (Google Gemini CLI),
 #            qwen (Alibaba Qwen Code), cursor (Cursor Agent CLI / `cursor-agent`),
-#            copilot (GitHub Copilot CLI).
+#            copilot (GitHub Copilot CLI), cloudflare (Cloudflare Workers AI; REST を curl で呼ぶ).
 # `system_prompt` / `language` here override the top-level values; if empty, the
 # top-level values above are used (backward compatibility).
 [ai]
-# backend = "claude"                                             # default: "claude" — claude|codex|gemini|qwen|cursor|copilot, or any [[ai.providers]].name
+# backend = "claude"                                             # default: "claude" — claude|codex|gemini|qwen|cursor|copilot|cloudflare, or any [[ai.providers]].name
 # model = ""                                                     # default: "" — モデル名 (例: "sonnet", "gpt-5", "gemini-2.5-pro")
                                                                # `--model <NAME>` (CLI) > [ai].model > extra_args の -m 指定 の順で優先
                                                                # 空のときはバックエンド CLI 既定のモデルが使われる
@@ -121,6 +121,21 @@
 # extra_args = []                                                # e.g. ["--model", "auto"] (paid plan なら不要)
 # mode = "plan"                                                  # default: "plan" — "plan" (read-only) / "ask" (Q&A only) / "" (通常モード = 危険)
 # sandbox = ""                                                   # default: "" — "enabled" / "disabled" を cursor-agent --sandbox にそのまま渡す。defense-in-depth
+
+# Cloudflare Workers AI (`--ai cloudflare`)。REST API を `curl` で叩く native backend
+# (aish の自己アップデートと同じ curl サブプロセス方式。追加依存なし)。実行には curl が必要。
+#
+# 認証情報は **環境変数のみ** (config.toml は平文なのでトークンを書かせない):
+#   export CLOUDFLARE_ACCOUNT_ID=...    # Cloudflare の Account ID (必須)
+#   export CLOUDFLARE_API_TOKEN=...     # Workers AI 権限のある API Token (必須)
+#   export CLOUDFLARE_MODEL=...         # 既定モデルの上書き (任意。未設定なら @cf/meta/llama-3.1-8b-instruct)
+#
+# model は [ai].model / `/model` でも指定可 (env CLOUDFLARE_MODEL より優先)。コマンド提案の質は
+# モデル依存: {message, commands} の JSON 出力に追従できる大きめ instruct モデル
+# (例 @cf/meta/llama-3.3-70b-instruct-fp8-fast) を推奨。セクション名はハイフン形に注意。
+[ai.cloudflare-workers]
+# models = ["@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/meta/llama-3.1-8b-instruct"]  # 省略時は組み込み既定
+# models_command = ""                                            # 例: 動的取得 (1 行 1 候補)
 
 # ===========================================================================
 # 組み込みデフォルト recipe (zero-config) — `aish --list-providers` で一覧表示

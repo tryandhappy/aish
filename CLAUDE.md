@@ -78,6 +78,7 @@ AI backends（§ 15.10）:
 - **cursor は `--trust` 常時 + `--mode plan`、copilot は `-p` 無し + 四段 deny。`--yolo`/Run Everything 系は絶対に付けない**（固定埋め込み、config 不可）。
 - **Generic backend（ユーザの新規 `[[ai.providers]]`）は安全フラグを自動付与しない**（recipe 著者が `--mode plan` 等を明示。信頼できない CLI は確認 UI を迂回し得る）。
 - **組み込みデフォルト recipe は `config::builtin_providers()` 1 関数に集約し、aish が著者として安全フラグを `args` に焼き込んで同梱する**（generic 原則の例外）。**read-only/plan 相当を強制できない CLI は同梱しない**（実機で要検証）。ユーザ上書きは `[[ai.providers]]` の同名エントリで**フィールド単位マージ**（書いたフィールドだけ。`args` は丸ごと置換）。registry へ渡すのは `resolved_providers`（生 `providers` でない）。
+- **Cloudflare Workers AI は native backend `cloudflare`（`src/ai/cloudflare_workers.rs`）。REST を `curl` 経由（`run_cli_capture_stdout`）で叩く＝HTTP クレートを足さない（`--update` と同方針）。`binary()`="curl"**。認証は環境変数のみ（`CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_API_TOKEN`、config 不可）。**呼び出し名は `cloudflare`、設定セクション/ファイル名は `cloudflare-workers` 系**（住み分け。TOML は serde `rename = "cloudflare-workers"`）。curl は HTTP エラーボディを読むため `-f` を付けず `success` を見る。session 無し（gemini/qwen 同型の内部 history）。
 
 セルフアップデート（§ 15.11）:
 - **`aish --update` は `--stable`(既定=`/releases/latest`) / `--prerelease`(`/releases[0]`) の 2 チャネル。この向きを逆にしない**。prerelease は Cargo.toml の `version` にも識別子(`0.9.0-rc.1`)を含める。
