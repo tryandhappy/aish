@@ -12,6 +12,16 @@ pub struct AiRequest<'a> {
 pub struct AiResponse {
     pub message: String,
     pub commands: Vec<String>,
+    /// コマンド実行後、その結果を AI へ自動問い合わせ (follow-up) するか。
+    /// AI が「コマンドを教えるだけで出力確認は不要」と判断したら false。
+    /// 欠落時は true (従来動作) — フラグを出さないモデル / lossy フォールバックでも
+    /// 後方互換で調査ループが壊れない。
+    #[serde(default = "default_command_result_followup")]
+    pub command_result_followup: bool,
+}
+
+fn default_command_result_followup() -> bool {
+    true
 }
 
 pub trait AiBackend: Send {

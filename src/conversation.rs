@@ -167,6 +167,14 @@ impl AiConversation<'_> {
                         break;
                     }
 
+                    // AI が「コマンドを教えるだけで出力確認は不要」と宣言した場合は
+                    // follow-up しない (Quit/Completed とも)。実行結果は ring_buffer の
+                    // 未送信 cursor に残るので、次のユーザ質問時に terminal コンテキスト
+                    // として送られる (情報は失われない)。
+                    if !response.command_result_followup {
+                        break;
+                    }
+
                     // 実行結果をAIに送信して分析を継続
                     let follow_up_context = self.ring_buffer.get_unsent_for(self.kind);
                     println!();

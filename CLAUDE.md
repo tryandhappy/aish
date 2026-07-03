@@ -38,6 +38,7 @@ SSH でサーバを管理する道具なので、**ユーザが画面で承認�
 
 AI コマンド実行（§ 15.3, 15.7）:
 - **実行中の Ctrl+C(0x03) は実行中コマンドへ転送して中断 + 残りコマンド中止**（`ExecOutcome::Abort`、follow-up なし、両承認モードで一様）。**Ctrl+D(0x04) は対象外**（転送のみ）。
+- **AI 応答の `command_result_followup: false` は実行後の AI 自動問い合わせを抑制**（`q` でも抑制、欠落時 true = 従来動作）。判定基準は Claude schema description と `build_system_prompt` の**両方に同一文言**で記述（片方だけ直さない）。
 - **制御文字ガードは `VettedCommand` 型**。表示・送信が `&VettedCommand` のみ受理し「**承認した物 = 実行する物**」を型で保証（撤去・迂回は型エラー）。
 - **AI 由来 `message`/`commands` は描画前に制御文字を caret 可視化**（`visualize_control_line`）。**生 `println!` に戻さない**。
 - **完了判定は `PromptSniffer` の passive 検出**（プロンプト形 + 200ms 静音）。

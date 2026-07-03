@@ -187,10 +187,12 @@ pub(crate) fn build_system_prompt(base: &str, language: &str) -> String {
          応答ルール:\n\
          - 独立した複数のコマンドを ; で1つに連結せず、commands 配列の別々の要素に分割してください。\n\
          - ただし &&・|| による条件付き実行や、for/while/until/case/if 等の制御構文に含まれる ; は1つのコマンドとして維持してください。\n\
-         - 1つのコマンドが複数行になる場合 (heredoc やスクリプト等) は、無理に1行へ詰めず改行をそのまま保持して1要素にしてください。\n\n\
+         - 1つのコマンドが複数行になる場合 (heredoc やスクリプト等) は、無理に1行へ詰めず改行をそのまま保持して1要素にしてください。\n\
+         - command_result_followup: 提案コマンドの実行後、その出力を見て分析・調査・操作を続行する必要があるなら true。\
+         ユーザにコマンドを教える・提示するだけで出力の確認が不要なら false。省略時は true として扱われます。\n\n\
          出力フォーマット: 必ず以下の JSON だけを 1 つ出力してください。\
          前後に説明文・コードフェンス・追加テキストを付けないでください。\n\
-         {{\"message\": \"ユーザへの説明\", \"commands\": [\"提案コマンド\"]}}\n\
+         {{\"message\": \"ユーザへの説明\", \"commands\": [\"提案コマンド\"], \"command_result_followup\": true}}\n\
          追加のコマンド提案が不要な場合は commands を [] にしてください。\n\
          実行したいコマンドがあれば必ず commands 配列に入れてください。\
          message 中にコマンドの説明やコードブロックが出てきても構いませんが、\
@@ -397,6 +399,7 @@ pub(crate) fn parse_ai_response_lossy(raw: &str) -> AiResponse {
     AiResponse {
         message: raw.trim().to_string(),
         commands: Vec::new(),
+        command_result_followup: true,
     }
 }
 
@@ -543,6 +546,41 @@ mod tests {
         // 複数の独立オブジェクトが並んでいた場合、最初のバランス済みを返す。
         let s = r#"{"a":1}{"b":2}"#;
         assert_eq!(extract_json(s), Some(r#"{"a":1}"#));
+    }
+
+    #[test]
+    fn parse_lossy_followup_flag_roundtrip() {
+        // command_result_followup が明示された JSON はその値を保持する。
+        let t = parse_ai_response_lossy(
+            r#"{"message":"m","commands":["ls"],"command_result_followup":true}"#,
+        );
+        assert!(t.command_result_followup);
+        let f = parse_ai_response_lossy(
+            r#"{"message":"m","commands":["ls"],"command_result_followup":false}"#,
+        );
+        assert!(!f.command_result_followup);
+    }
+
+    #[test]
+    fn parse_lossy_followup_defaults_true_when_missing() {
+        // フラグ欠落時は true (従来動作 = 実行結果を AI に自動問い合わせ)。
+        let r = parse_ai_response_lossy(r#"{"message":"m","commands":["ls"]}"#);
+        assert!(r.command_result_followup);
+    }
+
+    #[test]
+    fn parse_lossy_followup_defaults_true_on_fallback() {
+        // JSON が無い生テキストのフォールバックでも true (commands 空なので実害なし)。
+        let r = parse_ai_response_lossy("plain text without json");
+        assert!(r.command_result_followup);
+        assert!(r.commands.is_empty());
+    }
+
+    #[test]
+    fn build_system_prompt_mentions_followup_flag() {
+        // 非 schema backend への指示に command_result_followup の判定基準が含まれる。
+        let s = build_system_prompt("base.", "");
+        assert!(s.contains("command_result_followup"));
     }
 
     #[test]

@@ -20,9 +20,13 @@ const AI_RESPONSE_SCHEMA: &str = r#"{
       "type": "array",
       "items": { "type": "string" },
       "description": "ユーザに実行を提案するコマンドのリスト。message 本文で実行コマンドを提示したら同じものを必ずここにも入れる(本文だけに書かない)。独立した複数のコマンドは ; で1つに連結せず配列の別要素に分割する(ただし &&・|| や for/while/case 等の制御構文内の ; は1コマンドとして維持)。1つのコマンドが複数行になる場合(heredoc やスクリプト等)は無理に1行へ詰めず改行を保持して1要素にする。提案すべきコマンドが無ければ空配列。"
+    },
+    "command_result_followup": {
+      "type": "boolean",
+      "description": "提案コマンドの実行後、その出力を見て分析・調査・操作を続行する必要があるなら true。ユーザにコマンドを教える・提示するだけで出力の確認が不要なら false。"
     }
   },
-  "required": ["message", "commands"]
+  "required": ["message", "commands", "command_result_followup"]
 }"#;
 
 pub struct ClaudeBackend {
@@ -225,6 +229,7 @@ impl AiBackend for ClaudeBackend {
                     AiResponse {
                         message: result_value.to_string(),
                         commands: vec![],
+                        command_result_followup: true,
                     }
                 })
             }
@@ -238,6 +243,7 @@ impl AiBackend for ClaudeBackend {
                 serde_json::from_str::<AiResponse>(s).unwrap_or_else(|_| AiResponse {
                     message: s.to_string(),
                     commands: vec![],
+                    command_result_followup: true,
                 })
             }
             _ => {
@@ -294,6 +300,21 @@ mod tests {
         // opt-in 時は baseline を強制せず verbatim。
         assert_eq!(effective_disallowed_tools("", true), "");
         assert_eq!(effective_disallowed_tools("Read", true), "Read");
+    }
+
+    #[test]
+    fn response_schema_is_valid_json_and_requires_followup_flag() {
+        // schema が valid JSON で、command_result_followup を required に含む
+        // (Claude には毎ターン明示判定させる)。
+        let v: serde_json::Value = serde_json::from_str(AI_RESPONSE_SCHEMA).unwrap();
+        assert!(v["properties"]["command_result_followup"].is_object());
+        let required: Vec<&str> = v["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap())
+            .collect();
+        assert_eq!(required, ["message", "commands", "command_result_followup"]);
     }
 
     #[test]
