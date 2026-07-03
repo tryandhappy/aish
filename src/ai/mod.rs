@@ -7,6 +7,7 @@ mod cursor;
 mod factory;
 mod gemini;
 mod generic;
+mod nvidia_nim;
 mod qwen;
 mod types;
 

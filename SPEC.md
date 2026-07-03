@@ -525,6 +525,9 @@ TOML 形式。未指定はデフォルト。サンプルは `config.toml.example
   - **認証は環境変数のみ**（`CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN`、任意 `CLOUDFLARE_MODEL`）。config.toml は平文なのでトークンを置かせない（`[ai.cloudflare-workers-ai]` は `OptionLists` だけ）。**呼び出し名は `cloudflare`、設定セクション/ファイル名は `cloudflare-workers-ai` 系**（Rust モジュールはハイフン不可で `cloudflare_workers_ai.rs`、TOML は serde `rename = "cloudflare-workers-ai"`）。
   - **curl に `-f`(`--fail`) を付けない**: HTTP エラー時も JSON エラーボディ（`success:false` + `errors`）を読んでメッセージ化する。`success` 確認 → `result.response` → `parse_ai_response_lossy`（`{message,commands}` JSON なら提案化、否なら全文 message）。body は `--data-binary @-` で stdin 経由（ARG_MAX / クォート回避）。
   - 既知トレードオフ: Bearer token が argv に乗り `ps` で見え得る（ローカル・本人資格情報なので許容。気になれば `-H @-` 方式へ）。提案品質はモデル依存（大きめ instruct モデル推奨）。テキスト生成のみでサーバ側実行はなく、提案は従来どおり Y/n/a/q でゲート。
+- **NVIDIA NIM（`nvidia` / `src/ai/nvidia_nim.rs`）は cloudflare と同方式の curl REST native backend**（2026-07 追加、実機検証済み）。OpenAI 互換 `POST https://integrate.api.nvidia.com/v1/chat/completions`、`binary()`="curl"、内部 history（gemini/qwen 同型）、system prompt でツール非使用 + JSON 出力を指示。
+  - **認証は環境変数 `NVIDIA_API_KEY`（nvapi-...）のみ**、任意で `NVIDIA_MODEL`。config セクションは `[ai.nvidia-nim]`（OptionLists のみ。呼び出し名 `nvidia` と住み分け — cloudflare の命名規則に準拠）。既定モデル `meta/llama-3.3-70b-instruct`、ピッカー既定は MODEL_DEFAULTS 4 種、全カタログは `GET /v1/models`（config.toml.example に models_command 例）。
+  - **成功判定は `choices[0].message.content` の有無**。cloudflare の `success` フィールドに相当する物が無く、**エラーボディは JSON とは限らない**（認証失敗は `{"status":403,"title":"Forbidden",...}` だが、存在しない model は素のテキスト `404 page not found`）ため、JSON parse 失敗も生ボディごとエラー化する。`max_tokens: 4096` を明示（モデル依存の小さい既定で JSON 応答が切れるのを防ぐ）。
 
 ### 15.11 セルフアップデート 2 チャネル
 

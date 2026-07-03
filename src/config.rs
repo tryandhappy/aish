@@ -57,6 +57,11 @@ pub struct AiConfig {
     /// `[ai.cloudflare-workers-ai]` (呼び出し名 `cloudflare` とは住み分け)。
     #[serde(default, rename = "cloudflare-workers-ai")]
     pub cloudflare_workers_ai: CloudflareWorkersAiBackendConfig,
+    /// NVIDIA NIM backend 設定。API key は環境変数のみ (config 不可) なので
+    /// ここは `/model` 候補リスト (OptionLists) のみ。TOML セクション名はハイフン形
+    /// `[ai.nvidia-nim]` (呼び出し名 `nvidia` とは住み分け)。
+    #[serde(default, rename = "nvidia-nim")]
+    pub nvidia_nim: NvidiaNimBackendConfig,
     /// `[[ai.providers]]` 配列。ユーザが書いた **上書き / 追加** エントリ。
     /// 同名の組み込みデフォルト recipe があれば「書いたフィールドだけ」上書きし、
     /// 無ければ新規 generic backend として追加する (`resolve_providers`)。
@@ -86,6 +91,7 @@ impl Default for AiConfig {
             cursor: CursorBackendConfig::default(),
             copilot: CopilotBackendConfig::default(),
             cloudflare_workers_ai: CloudflareWorkersAiBackendConfig::default(),
+            nvidia_nim: NvidiaNimBackendConfig::default(),
             providers: Vec::new(),
             resolved_providers: Vec::new(),
         }
@@ -161,6 +167,13 @@ pub struct GenericBackendConfig {
 /// 候補リスト (OptionLists) のみを持つ。
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct CloudflareWorkersAiBackendConfig {
+    #[serde(flatten)]
+    pub options: OptionLists,
+}
+
+/// NVIDIA NIM 用設定。API key は環境変数 `NVIDIA_API_KEY` のみ (config 不可)。
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct NvidiaNimBackendConfig {
     #[serde(flatten)]
     pub options: OptionLists,
 }

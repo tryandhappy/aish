@@ -5,6 +5,7 @@ use super::copilot::CopilotBackend;
 use super::cursor::CursorBackend;
 use super::gemini::GeminiBackend;
 use super::generic::GenericCliBackend;
+use super::nvidia_nim::NvidiaNimBackend;
 use super::qwen::QwenBackend;
 use super::types::{AiBackend, AiError, BackendKind};
 use crate::config::{AiConfig, LogConfig};
@@ -23,6 +24,7 @@ pub fn create_backend(
         BackendKind::Cursor => Ok(Box::new(CursorBackend::new(cfg, log))),
         BackendKind::Copilot => Ok(Box::new(CopilotBackend::new(cfg, log))),
         BackendKind::Cloudflare => Ok(Box::new(CloudflareWorkersAiBackend::new(cfg, log))),
+        BackendKind::Nvidia => Ok(Box::new(NvidiaNimBackend::new(cfg, log))),
         BackendKind::Generic(_) => {
             let meta = kind.generic_meta().ok_or_else(|| {
                 AiError::Other(format!(

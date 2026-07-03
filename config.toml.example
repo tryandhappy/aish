@@ -137,6 +137,19 @@
 # models = ["@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/meta/llama-3.1-8b-instruct"]  # 省略時は組み込み既定
 # models_command = ""                                            # 例: 動的取得 (1 行 1 候補)
 
+# NVIDIA NIM (`--ai nvidia`)。build.nvidia.com のホスト API (integrate.api.nvidia.com、
+# OpenAI 互換 chat completions) を `curl` で叩く native backend (cloudflare と同方式)。
+#
+# 認証情報は **環境変数のみ** (config.toml は平文なのでキーを書かせない):
+#   export NVIDIA_API_KEY=nvapi-...     # build.nvidia.com の API Key (必須)
+#   export NVIDIA_MODEL=...             # 既定モデルの上書き (任意。未設定なら meta/llama-3.3-70b-instruct)
+#
+# model は [ai].model / `/model` でも指定可 (env NVIDIA_MODEL より優先)。
+# セクション名はハイフン形 (nvidia-nim) に注意。
+[ai.nvidia-nim]
+# models = ["meta/llama-3.3-70b-instruct", "nvidia/llama-3.3-nemotron-super-49b-v1.5"]  # 省略時は組み込み既定
+# models_command = "curl -sS https://integrate.api.nvidia.com/v1/models -H \"Authorization: Bearer $NVIDIA_API_KEY\" | jq -r '.data[].id'"  # 全カタログを動的取得する例
+
 # ===========================================================================
 # 組み込みデフォルト recipe (zero-config) — `aish --list-providers` で一覧表示
 # ===========================================================================

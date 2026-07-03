@@ -77,6 +77,7 @@ AI backends（§ 15.10）:
 - **組み込みデフォルト recipe は `config::builtin_providers()` 1 関数に集約し、安全フラグを `args` に焼き込んで同梱**（generic 原則の例外）。**read-only/plan 相当を強制できない CLI は同梱しない**。ユーザ上書きは同名エントリの**フィールド単位マージ**（`args`/`env` は丸ごと置換）。registry へ渡すのは `resolved_providers`。
 - **OpenCode（`opencode`）は generic recipe として同梱**。read-only は `OPENCODE_CONFIG_CONTENT` env 注入（recipe の `env` フィールド → `run_cli_capture_stdout_env`）+ deny 付き専用 agent `aish`（task/todowrite も無効化）で強制。**`--auto` は絶対に付けない / `--agent plan` に変えない**（plan agent は ask ベースで headless ハング。経緯は SPEC.md § 15.10）。
 - **Cloudflare Workers AI は native backend `cloudflare`**（`src/ai/cloudflare_workers_ai.rs`）。REST を `curl` 経由で叩き HTTP クレートを足さない。`binary()`="curl"。認証は環境変数のみ（config 不可）。**呼び出し名 `cloudflare`、設定セクション/ファイル名は `cloudflare-workers-ai` 系**。curl は `-f` を付けず `success` を見る。session 無し（内部 history）。
+- **NVIDIA NIM は native backend `nvidia`**（`src/ai/nvidia_nim.rs`、cloudflare と同方式の curl REST）。認証は環境変数 `NVIDIA_API_KEY` のみ（config 不可）。**呼び出し名 `nvidia`、設定セクションは `nvidia-nim`**。成功判定は `choices` の有無（NIM のエラーは JSON とは限らない: 存在しない model は素のテキスト "404 page not found"）。
 - **xAI Grok Build (`grok`) は read-only 強制を実機検証できなかったため同梱 recipe にしない**（`config.toml.example` にコメントアウト例のみ、経緯は SPEC.md § 15.10）。`grok` はコミュニティ製 `@vibe-kit/grok-cli`（npm）ともバイナリ名が衝突しうるので、ユーザが登録する際は `which -a grok` 確認を促すこと。
 
 セルフアップデート（§ 15.11）:

@@ -75,6 +75,8 @@ pub enum BackendKind {
     Copilot,
     /// Cloudflare Workers AI (REST を curl 経由で叩く native backend)。
     Cloudflare,
+    /// NVIDIA NIM (integrate.api.nvidia.com。REST を curl 経由で叩く native backend)。
+    Nvidia,
     /// Config 駆動 generic CLI backend。`u8` は `[[ai.providers]]` 配列のインデックス。
     /// 実 metadata (name / binary / color / recipe) は `init_generics` で leak された
     /// `GENERIC_REGISTRY` から `generic_at(idx)` 経由で取得する。
@@ -107,6 +109,7 @@ fn parse_native(s: &str) -> Result<BackendKind, ()> {
         "cursor" => Ok(BackendKind::Cursor),
         "copilot" => Ok(BackendKind::Copilot),
         "cloudflare" => Ok(BackendKind::Cloudflare),
+        "nvidia" => Ok(BackendKind::Nvidia),
         _ => Err(()),
     }
 }
@@ -191,6 +194,7 @@ impl BackendKind {
             BackendKind::Cursor => "cursor",
             BackendKind::Copilot => "copilot",
             BackendKind::Cloudflare => "cloudflare",
+            BackendKind::Nvidia => "nvidia",
             BackendKind::Generic(_) => self.generic_meta().map(|m| m.display_name).unwrap_or("?"),
         }
     }
@@ -205,9 +209,10 @@ impl BackendKind {
             BackendKind::Qwen => "qwen",
             BackendKind::Cursor => "cursor-agent",
             BackendKind::Copilot => "copilot",
-            // Cloudflare backend は curl をサブプロセスで叩くので「実行ファイル」は curl。
+            // Cloudflare / Nvidia backend は curl をサブプロセスで叩くので「実行ファイル」は curl。
             // check_installed が `curl --version` を見る (= 真の実行時依存)。
             BackendKind::Cloudflare => "curl",
+            BackendKind::Nvidia => "curl",
             BackendKind::Generic(_) => self.generic_meta().map(|m| m.binary).unwrap_or("?"),
         }
     }
@@ -223,14 +228,15 @@ impl BackendKind {
             BackendKind::Cursor => 4,
             BackendKind::Copilot => 5,
             BackendKind::Cloudflare => 6,
-            BackendKind::Generic(idx) => 7 + idx as usize,
+            BackendKind::Nvidia => 7,
+            BackendKind::Generic(idx) => 8 + idx as usize,
         }
     }
 
     /// native backend の総数 (Generic を含まない)。
     /// 旧 `[T; BackendKind::COUNT]` 固定長配列の値は `ring_buffer` の HashMap 化により不要。
     /// 残存利用は test の網羅性チェックのみ。
-    pub const NATIVE_COUNT: usize = 7;
+    pub const NATIVE_COUNT: usize = 8;
 
     /// native backend 全種類を列挙。Generic は含まない (init 時のみ既知のため別系統)。
     pub fn all_native() -> [BackendKind; Self::NATIVE_COUNT] {
@@ -242,6 +248,7 @@ impl BackendKind {
             BackendKind::Cursor,
             BackendKind::Copilot,
             BackendKind::Cloudflare,
+            BackendKind::Nvidia,
         ]
     }
 
@@ -329,6 +336,7 @@ mod tests {
             BackendKind::parse("cloudflare").unwrap(),
             BackendKind::Cloudflare
         );
+        assert_eq!(BackendKind::parse("nvidia").unwrap(), BackendKind::Nvidia);
     }
 
     #[test]
@@ -348,6 +356,7 @@ mod tests {
             BackendKind::Cursor,
             BackendKind::Copilot,
             BackendKind::Cloudflare,
+            BackendKind::Nvidia,
         ] {
             assert_eq!(BackendKind::parse(kind.as_str()).unwrap(), kind);
         }
@@ -377,8 +386,8 @@ mod tests {
     #[test]
     fn generic_ordinal_starts_after_native() {
         // init 未呼び出しでも ordinal は計算可能 (registry を見ない)。
-        assert_eq!(BackendKind::Generic(0).ordinal(), 7);
-        assert_eq!(BackendKind::Generic(7).ordinal(), 14);
+        assert_eq!(BackendKind::Generic(0).ordinal(), 8);
+        assert_eq!(BackendKind::Generic(7).ordinal(), 15);
     }
 
     #[test]

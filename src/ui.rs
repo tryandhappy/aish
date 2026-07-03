@@ -213,6 +213,7 @@ fn backend_color_code(name: &str) -> u8 {
         "qwen" => 198,   // pink-magenta
         "cursor" => 220, // amber/gold (Cursor brand 寄り)
         "copilot" => 41, // emerald green (GitHub 寄り)
+        "nvidia" => 118, // bright green (NVIDIA brand 寄り)
         _ => 208,
     }
 }
