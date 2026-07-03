@@ -73,7 +73,8 @@ AI backends（§ 15.10）:
 - **Claude `--disallowedTools` は `MANDATORY_DENY`(Bash/Edit/Write) を常に union し args 末尾で push**（**前方へ戻したり union を外したりしない**）。
 - **cursor は `--trust` 常時 + `--mode plan`、copilot は `-p` 無し + 四段 deny。`--yolo`/Run Everything 系は絶対に付けない**（固定埋め込み、config 不可）。
 - **Generic backend（ユーザの新規 `[[ai.providers]]`）は安全フラグを自動付与しない**（recipe 著者が明示する）。
-- **組み込みデフォルト recipe は `config::builtin_providers()` 1 関数に集約し、安全フラグを `args` に焼き込んで同梱**（generic 原則の例外）。**read-only/plan 相当を強制できない CLI は同梱しない**。ユーザ上書きは同名エントリの**フィールド単位マージ**（`args` は丸ごと置換）。registry へ渡すのは `resolved_providers`。
+- **組み込みデフォルト recipe は `config::builtin_providers()` 1 関数に集約し、安全フラグを `args` に焼き込んで同梱**（generic 原則の例外）。**read-only/plan 相当を強制できない CLI は同梱しない**。ユーザ上書きは同名エントリの**フィールド単位マージ**（`args`/`env` は丸ごと置換）。registry へ渡すのは `resolved_providers`。
+- **OpenCode（`opencode`）は generic recipe として同梱**。read-only は `OPENCODE_CONFIG_CONTENT` env 注入（recipe の `env` フィールド → `run_cli_capture_stdout_env`）+ deny 付き専用 agent `aish`（task/todowrite も無効化）で強制。**`--auto` は絶対に付けない / `--agent plan` に変えない**（plan agent は ask ベースで headless ハング。経緯は SPEC.md § 15.10）。
 - **Cloudflare Workers AI は native backend `cloudflare`**（`src/ai/cloudflare_workers_ai.rs`）。REST を `curl` 経由で叩き HTTP クレートを足さない。`binary()`="curl"。認証は環境変数のみ（config 不可）。**呼び出し名 `cloudflare`、設定セクション/ファイル名は `cloudflare-workers-ai` 系**。curl は `-f` を付けず `success` を見る。session 無し（内部 history）。
 - **xAI Grok Build (`grok`) は read-only 強制を実機検証できなかったため同梱 recipe にしない**（`config.toml.example` にコメントアウト例のみ、経緯は SPEC.md § 15.10）。`grok` はコミュニティ製 `@vibe-kit/grok-cli`（npm）ともバイナリ名が衝突しうるので、ユーザが登録する際は `which -a grok` 確認を促すこと。
 

@@ -149,6 +149,18 @@
 #            kimi-cli インストール環境での実機検証が必要。挙動が違えば下記 [[ai.providers]]
 #            で上書きすること。
 #
+#   opencode : OpenCode (anomalyco/opencode, 旧 sst/opencode)。`opencode run --agent aish`
+#            + 環境変数 `OPENCODE_CONFIG_CONTENT` (recipe の `env` で注入) により
+#            edit/bash/task/todowrite を deny した専用 agent で headless 実行する
+#            (deny されたツールはツールセットから除去される。v1.17.13 で実機検証済み)。
+#            read / webfetch / websearch は許可。model_flag="--model" (provider/model
+#            形式)、effort_flag="--variant"、モデル候補は `opencode models` から取得。
+#            注意: `--auto` (auto-approve) は絶対に args に足さないこと。built-in の
+#            `plan` agent は deny でなく ask ベースで headless ではハングするので
+#            `--agent plan` に変えないこと。バイナリ名 `opencode` は旧 Go 版
+#            opencode (現 charmbracelet/crush) と衝突しうるので `which -a opencode`
+#            で実体を確認すること。
+#
 # 上書きは「書いたフィールドだけ」効く (フィールド単位マージ)。例: kimi のモデル指定だけ
 # 変えたいなら:
 #   [[ai.providers]]
@@ -177,6 +189,8 @@
 #   name              : 一意な識別子 (例 "ollama-llama"). built-in 予約語と衝突不可
 #   binary            : 実行ファイル (PATH 検索 or 絶対パス)
 #   args              : 固定引数 (動的引数は後ろに追加される)
+#   env               : 子プロセスに追加する環境変数 (例 env = { KEY = "value" })。
+#                       上書き時は args と同じく丸ごと置換 (キー単位マージなし)
 #   prompt_delivery   : "stdin" (推奨) | "arg" (末尾 positional) | "flag" (prompt_flag の値として)
 #   prompt_flag       : prompt_delivery="flag" のときのフラグ名 (例 "-p")
 #   parse             : "lossy" | "extract_json" | "jsonl"

@@ -1,4 +1,5 @@
 use super::types::{AiError, AiResponse};
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -294,13 +295,34 @@ pub(crate) fn run_cli_capture_stdout(
     stdin_input: &str,
     log_path: &Option<String>,
 ) -> Result<String, AiError> {
+    run_cli_capture_stdout_env(program, args, stdin_input, &BTreeMap::new(), log_path)
+}
+
+/// `run_cli_capture_stdout` の環境変数追加版。generic recipe の `env` 用
+/// (例: opencode の `OPENCODE_CONFIG_CONTENT`)。透明性のため env もログに記録する。
+pub(crate) fn run_cli_capture_stdout_env(
+    program: &str,
+    args: &[String],
+    stdin_input: &str,
+    envs: &BTreeMap<String, String>,
+    log_path: &Option<String>,
+) -> Result<String, AiError> {
     let mut child = Command::new(program)
         .args(args)
+        .envs(envs)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
 
+    if !envs.is_empty() {
+        let joined = envs
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        write_log(log_path, &format!("[env] {joined}"));
+    }
     write_log(log_path, &format!("{program} {}", shell_join(args)));
     write_log(log_path, &format!("[prompt via stdin]\n{stdin_input}"));
 

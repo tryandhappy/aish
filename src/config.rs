@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -250,6 +251,11 @@ pub struct ProviderRecipe {
     /// 固定引数。aish が動的引数 (`--model`, `--resume <sid>` 等) を後ろに追加する。
     #[serde(default)]
     pub args: Vec<String>,
+    /// 子プロセスに追加する環境変数 (TOML では `env = { KEY = "value" }`)。
+    /// CLI フラグで表現できない設定 (例: opencode の `OPENCODE_CONFIG_CONTENT`) 用。
+    /// 上書き時は `args` と同じく丸ごと置換 (キー単位マージはしない)。
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
     /// `"stdin"` (推奨) | `"arg"` (最後に positional 追加) | `"flag"` (`prompt_flag` の値として渡す)。
     #[serde(default = "default_prompt_delivery")]
     pub prompt_delivery: String,
@@ -326,6 +332,7 @@ impl ProviderRecipe {
             name: name.into(),
             binary: binary.into(),
             args: Vec::new(),
+            env: BTreeMap::new(),
             prompt_delivery: default_prompt_delivery(),
             prompt_flag: String::new(),
             parse: default_parse(),
@@ -357,6 +364,8 @@ pub struct ProviderOverride {
     pub binary: Option<String>,
     #[serde(default)]
     pub args: Option<Vec<String>>,
+    #[serde(default)]
+    pub env: Option<BTreeMap<String, String>>,
     #[serde(default)]
     pub prompt_delivery: Option<String>,
     #[serde(default)]
@@ -399,6 +408,9 @@ impl ProviderOverride {
         }
         if let Some(v) = &self.args {
             r.args = v.clone();
+        }
+        if let Some(v) = &self.env {
+            r.env = v.clone();
         }
         if let Some(v) = &self.prompt_delivery {
             r.prompt_delivery = v.clone();
@@ -472,6 +484,36 @@ pub fn builtin_providers() -> Vec<ProviderRecipe> {
             model_flag: "--model".to_string(),
             color: 99, // purple 寄り。native とは別色。
             ..ProviderRecipe::with_defaults("kimi", "kimi")
+        },
+        // OpenCode (anomalyco/opencode, 旧 sst/opencode)。
+        // read-only 強制は CLI フラグでは不可のため、`OPENCODE_CONFIG_CONTENT`
+        // (ユーザ config より後にマージされるインライン config) で edit/bash を deny した
+        // 専用 agent `aish` を定義して `--agent aish` で使う。deny されたツールは
+        // ツールセット自体から除去される (実機検証済み、v1.17.13)。
+        // `task`/`todowrite` も無効化 (プロジェクト側 config の緩い agent への迂回防止)。
+        // read / webfetch / websearch は許可 (非 Claude 系は web 調査を許す既存方針)。
+        // built-in `plan` agent は ask ベースで headless ハングするため使わない。
+        // `--auto` (auto-approve) は絶対に付けない。
+        ProviderRecipe {
+            args: vec![
+                "run".to_string(),
+                "--agent".to_string(),
+                "aish".to_string(),
+            ],
+            env: BTreeMap::from([(
+                "OPENCODE_CONFIG_CONTENT".to_string(),
+                r#"{"permission":{"edit":"deny","bash":"deny"},"agent":{"aish":{"mode":"primary","permission":{"edit":"deny","bash":"deny"},"tools":{"task":false,"todowrite":false}}}}"#
+                    .to_string(),
+            )]),
+            prompt_delivery: "arg".to_string(), // `opencode run [message..]` の positional
+            model_flag: "--model".to_string(),  // provider/model 形式
+            effort_flag: "--variant".to_string(), // provider 依存の reasoning effort
+            color: 37, // teal 系。kimi (99) / 既定 (208) と区別。
+            options: OptionLists {
+                models_command: "opencode models".to_string(),
+                ..OptionLists::default()
+            },
+            ..ProviderRecipe::with_defaults("opencode", "opencode")
         },
     ]
 }
@@ -876,6 +918,7 @@ args = ["run", "llama3.2"]
 name = "fancy"
 binary = "fancy-cli"
 args = ["chat"]
+env = { FANCY_MODE = "safe", FANCY_TOKEN_FILE = "~/.fancy" }
 prompt_delivery = "flag"
 prompt_flag = "-p"
 parse = "jsonl"
@@ -899,6 +942,31 @@ history_turns = 4
         assert_eq!(p.color, 42);
         assert!(!p.system_prompt_inline);
         assert_eq!(p.history_turns, 4);
+        assert_eq!(p.env.get("FANCY_MODE").map(String::as_str), Some("safe"));
+        assert_eq!(p.env.len(), 2);
+    }
+
+    #[test]
+    fn override_env_replaces_wholesale() {
+        // env は args と同じく丸ごと置換 (キー単位マージはしない)。
+        let builtins = vec![ProviderRecipe {
+            env: BTreeMap::from([
+                ("KEEP".to_string(), "old".to_string()),
+                ("DROP".to_string(), "old".to_string()),
+            ]),
+            ..ProviderRecipe::with_defaults("demo", "demo-cli")
+        }];
+        let ai = ai_from_toml(
+            r#"
+[[ai.providers]]
+name = "demo"
+env = { KEEP = "new" }
+"#,
+        );
+        let resolved = ai.resolve_with_builtins(builtins).unwrap();
+        let p = &resolved[0];
+        assert_eq!(p.env.get("KEEP").map(String::as_str), Some("new"));
+        assert!(!p.env.contains_key("DROP"), "丸ごと置換なので消える");
     }
 
     #[test]

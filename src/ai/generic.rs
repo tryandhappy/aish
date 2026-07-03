@@ -1,7 +1,7 @@
 use super::common::{
     build_full_prompt, build_system_prompt, expand_tilde, extract_json, extract_model_from_args,
-    parse_ai_response_lossy, parse_jsonl_with_paths, resolve_option_list, run_cli_capture_stdout,
-    trim_history,
+    parse_ai_response_lossy, parse_jsonl_with_paths, resolve_option_list,
+    run_cli_capture_stdout_env, trim_history,
 };
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
 use crate::config::{AiConfig, LogConfig, ProviderRecipe};
@@ -205,8 +205,13 @@ impl AiBackend for GenericCliBackend {
             }
         };
 
-        let stdout =
-            run_cli_capture_stdout(&self.recipe.binary, &args, &stdin_input, &self.log_path)?;
+        let stdout = run_cli_capture_stdout_env(
+            &self.recipe.binary,
+            &args,
+            &stdin_input,
+            &self.recipe.env,
+            &self.log_path,
+        )?;
 
         // === parse ===
         let (assistant_text, session_id) = match self.recipe.parse.as_str() {
@@ -271,6 +276,7 @@ mod tests {
             name: "dummy".into(),
             binary: "/bin/cat".into(),
             args: vec![],
+            env: std::collections::BTreeMap::new(),
             prompt_delivery: "stdin".into(),
             prompt_flag: String::new(),
             parse: "lossy".into(),
@@ -340,6 +346,42 @@ mod tests {
             resp.message
         );
         assert!(resp.commands.is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn recipe_env_is_passed_to_child_process() {
+        // recipe.env の環境変数が子プロセスに渡ること (opencode の
+        // OPENCODE_CONFIG_CONTENT 注入と同じ経路) を sh 経由で検証する。
+        let mut r = dummy_recipe();
+        r.binary = "/bin/sh".into();
+        r.args = vec!["-c".into(), "echo \"env=$AISH_TEST_ENV\"".into()];
+        r.env = std::collections::BTreeMap::from([(
+            "AISH_TEST_ENV".to_string(),
+            "injected-value".to_string(),
+        )]);
+        r.system_prompt_inline = false;
+        let recipe = Box::leak(Box::new(r));
+        let log_cfg = LogConfig {
+            enabled: false,
+            path: String::new(),
+        };
+        let ai_cfg = AiConfig {
+            system_prompt: String::new(),
+            language: String::new(),
+            ..AiConfig::default()
+        };
+        let mut backend = GenericCliBackend::new(recipe, &ai_cfg, &log_cfg);
+        let req = AiRequest {
+            terminal_context: "",
+            user_prompt: "ignored",
+        };
+        let resp = backend.send(&req).expect("sh should succeed");
+        assert!(
+            resp.message.contains("env=injected-value"),
+            "env var not passed: {}",
+            resp.message
+        );
     }
 
     #[test]
