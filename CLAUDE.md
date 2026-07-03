@@ -75,6 +75,7 @@ AI backends（§ 15.10）:
 - **Generic backend（ユーザの新規 `[[ai.providers]]`）は安全フラグを自動付与しない**（recipe 著者が明示する）。
 - **組み込みデフォルト recipe は `config::builtin_providers()` 1 関数に集約し、安全フラグを `args` に焼き込んで同梱**（generic 原則の例外）。**read-only/plan 相当を強制できない CLI は同梱しない**。ユーザ上書きは同名エントリの**フィールド単位マージ**（`args` は丸ごと置換）。registry へ渡すのは `resolved_providers`。
 - **Cloudflare Workers AI は native backend `cloudflare`**（`src/ai/cloudflare_workers_ai.rs`）。REST を `curl` 経由で叩き HTTP クレートを足さない。`binary()`="curl"。認証は環境変数のみ（config 不可）。**呼び出し名 `cloudflare`、設定セクション/ファイル名は `cloudflare-workers-ai` 系**。curl は `-f` を付けず `success` を見る。session 無し（内部 history）。
+- **xAI Grok Build (`grok`) は read-only 強制を実機検証できなかったため同梱 recipe にしない**（`config.toml.example` にコメントアウト例のみ、経緯は SPEC.md § 15.10）。`grok` はコミュニティ製 `@vibe-kit/grok-cli`（npm）ともバイナリ名が衝突しうるので、ユーザが登録する際は `which -a grok` 確認を促すこと。
 
 セルフアップデート（§ 15.11）:
 - **`aish --update` は `--stable`(既定=`/releases/latest`) / `--prerelease`(`/releases[0]`) の 2 チャネル。この向きを逆にしない**。prerelease は Cargo.toml の `version` にも識別子(`0.9.0-rc.1`)を含める。

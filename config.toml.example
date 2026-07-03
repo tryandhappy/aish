@@ -210,6 +210,26 @@
 # resume_flag = "--resume"
 # model_flag = "--model"
 # color = 39
+#
+# 例 3: xAI Grok Build (`grok`, https://x.ai/cli) → `aish --ai grok`
+# 同梱していない理由: headless (`-p`) 実行時に write ツールが確認なしで拒否される
+# ことをドキュメント/実機で確認できなかった (plan mode の read-only 強制は TUI の
+# Shift+Tab のみ文書化されており、headless 既定の permission_mode="ask" が非対話
+# 実行でどう振る舞うかは未検証)。使う場合は必ず自分の環境で検証すること:
+# 空の scratch ディレクトリで `grok -p "<書き込みを促す指示>" --output-format json`
+# を `--always-approve` 無しで実行し、ファイルが変更されないことを確認してから使う。
+# `--always-approve` は絶対に args に含めないこと。
+# 注意: `grok` はコミュニティ製 `@vibe-kit/grok-cli` (npm, xAI API 直叩き、read-only
+# モード無し) ともバイナリ名が衝突する。`which -a grok` で実体を確認すること。
+# [[ai.providers]]
+# name = "grok"
+# binary = "grok"
+# args = ["--output-format", "json"]
+# prompt_delivery = "flag"
+# prompt_flag = "-p"
+# parse = "extract_json"          # 出力 JSON のトップレベルキー構成は要実機確認
+# model_flag = "-m"
+# color = 45
 
 # GitHub Copilot CLI (`copilot`). aish は以下の必須安全フラグを常に自動付与する (config 指定不可):
 #   --output-format json   (JSONL 形式の応答)
