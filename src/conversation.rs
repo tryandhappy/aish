@@ -344,7 +344,7 @@ fn format_ai_error(kind: ai::BackendKind, error: &ai::AiError) -> String {
 }
 
 /// Y/n/a 確認の入力イベントを 1 決定に解決するまで待つ。
-/// 確認待ち中に届く無関係イベント (Line / PtyData / PassthroughEnded / AiPrompt) は
+/// 確認待ち中に届く無関係イベント (PtyData / PassthroughEnded / AiPrompt) は
 /// 無視して読み直す。channel 切断 (入力スレッド消滅 = 退出間際) は Skip 扱い (旧挙動互換)。
 fn wait_confirm_decision(input_rx: &mpsc::Receiver<ui::InputEvent>) -> ConfirmDecision {
     loop {
@@ -358,8 +358,7 @@ fn wait_confirm_decision(input_rx: &mpsc::Receiver<ui::InputEvent>) -> ConfirmDe
             // Ctrl+C / Ctrl+D: 残りすべてを中止し、AI に問い合わせない
             // (ESC は ConfirmChoice::No 経由で Skip = 1 回スキップに変更済み)
             Ok(ui::InputEvent::ReadLineCancelled) => return ConfirmDecision::AbortNoAi,
-            Ok(ui::InputEvent::Line(_))
-            | Ok(ui::InputEvent::PtyData(_))
+            Ok(ui::InputEvent::PtyData(_))
             | Ok(ui::InputEvent::PassthroughEnded)
             | Ok(ui::InputEvent::MinibufferCancelled)
             | Ok(ui::InputEvent::AiPrompt(_)) => continue,
@@ -540,7 +539,6 @@ mod tests {
     #[test]
     fn unrelated_events_are_ignored_until_decision() {
         let rx = rx_with(vec![
-            ui::InputEvent::Line("ls".to_string()),
             ui::InputEvent::PtyData(vec![0x41]),
             ui::InputEvent::PassthroughEnded,
             ui::InputEvent::AiPrompt("hi".to_string()),

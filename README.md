@@ -27,6 +27,7 @@ https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
 
 - Linux (Testing on Ubuntu 24.04)
 - Windows WSL2 (Testing on Ubuntu 24.04)
+- Windows 10 1809+ ネイティブ (Windows Terminal 推奨) ※実験的・実機テスト未了、バイナリ配布なし (要 `cargo build`)
 - macOS (Intel・Apple Silicon) ※テスト不十分
 
 #### 必要なコマンド

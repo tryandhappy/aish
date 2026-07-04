@@ -315,6 +315,34 @@ impl ByteSource for Fd0Source {
     }
 }
 
+/// Windows のコンソール入力バイト源。実体は `crate::term::windows` の入力ポンプ
+/// (`ReadConsoleInputW` → UTF-8 化キュー) への薄い委譲で、Unix の `Fd0Source` と
+/// バイト互換のストリームを返す (VT 入力モードで ESC シーケンスも同形)。
+#[cfg(windows)]
+#[derive(Default)]
+pub struct ConsoleSource;
+
+#[cfg(windows)]
+impl ConsoleSource {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[cfg(windows)]
+impl ByteSource for ConsoleSource {
+    fn read_byte(&mut self, timeout_ms: i32) -> Option<u8> {
+        crate::term::read_stdin_byte(timeout_ms)
+    }
+}
+
+/// UI 層が使う「現在プラットフォームの stdin バイト源」。
+/// framing (byte→Tok) は本モジュールに集約し、OS 差はこの型だけに閉じる。
+#[cfg(unix)]
+pub type StdinSource = Fd0Source;
+#[cfg(windows)]
+pub type StdinSource = ConsoleSource;
+
 #[cfg(test)]
 mod tests {
     use super::*;

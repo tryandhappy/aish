@@ -195,7 +195,8 @@ pub fn run_update(channel: UpdateChannel) -> Result<(), Box<dyn std::error::Erro
     let exe_path_str = exe_path.to_string_lossy();
     println!("Installing to {exe_path_str} ...");
 
-    // Set executable permission
+    // Set executable permission (Windows は target_for が先に Unsupported を返すので到達しない)
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&tmpfile, std::fs::Permissions::from_mode(0o755)).map_err(

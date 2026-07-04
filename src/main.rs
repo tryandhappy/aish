@@ -8,6 +8,7 @@ mod prompt_sniffer;
 mod pty_drain;
 mod pty_handler;
 mod ring_buffer;
+mod term;
 mod ui;
 mod update;
 mod vetted_command;
@@ -188,11 +189,6 @@ fn parse_args() -> CliAction {
         ai_effort,
         ssh_args,
     })
-}
-
-#[cfg(unix)]
-extern "C" fn sigwinch_handler(_sig: libc::c_int) {
-    ui::record_sigwinch();
 }
 
 /// 環境変数 AISH_DEBUG=1 のときだけ /tmp/aish-debug.log にデバッグメモを書く。
@@ -388,26 +384,18 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
     // PID が現在も生きていれば nested と判断して refuse。stale (kill -0 失敗) なら無視して続行。
     // 別ターミナルで起動した場合は環境変数を共有しないので、複数の aish を並行起動できる。
     if let Ok(pid_str) = std::env::var("AISH_PID") {
-        if let Ok(pid) = pid_str.parse::<i32>() {
-            #[cfg(unix)]
-            let alive = unsafe { libc::kill(pid, 0) == 0 };
-            #[cfg(not(unix))]
-            let alive = false;
-            if alive {
+        if let Ok(pid) = pid_str.parse::<u32>() {
+            if term::pid_alive(pid) {
                 return Err(format!("aish is already running here (PID {pid}).").into());
             }
         }
     }
 
+    term::console_ok()?;
+
     ui::save_terminal_settings();
 
-    #[cfg(unix)]
-    unsafe {
-        libc::signal(
-            libc::SIGWINCH,
-            sigwinch_handler as *const () as libc::sighandler_t,
-        );
-    }
+    term::install_resize_watch();
 
     let mut config = config::Config::load(args.config_path.as_deref())?;
 
@@ -685,17 +673,6 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                 .run(&prompt)?;
                 if matches!(end, conversation::ConversationEnd::PtyDied) {
                     break 'main_loop;
-                }
-            }
-            Ok(ui::InputEvent::Line(line)) => {
-                let _rearm = gate.rearm_on_drop();
-                match ui::parse_input(&line) {
-                    ui::UserInput::Exit => {
-                        pty.write(b"exit\n")?;
-                    }
-                    ui::UserInput::ShellCommand(cmd) => {
-                        pty.write(format!("{cmd}\n").as_bytes())?;
-                    }
                 }
             }
             Ok(ui::InputEvent::ReadLineCancelled) => {

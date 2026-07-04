@@ -46,7 +46,10 @@ impl PromptSniffer {
         let s = String::from_utf8_lossy(&self.tail_stripped);
         let last_line = s.rsplit('\n').next().unwrap_or(&s);
         if !last_line.ends_with(' ') {
-            return false;
+            // Windows 実行時のみ: cmd.exe の既定プロンプト `C:\path>` は末尾空白が
+            // 無いため、形 (ドライブレター始まり + `>` 終端) で特例判定する。
+            // `cfg!` の実行時定数分岐なので Unix ではデッドブランチ (挙動不変)。
+            return cfg!(windows) && is_cmd_style_prompt(last_line);
         }
         let before_space = last_line.trim_end_matches(' ');
         match before_space.chars().last() {
@@ -65,6 +68,19 @@ impl PromptSniffer {
             self.terminators.insert(c);
         }
     }
+}
+
+/// cmd.exe 既定プロンプト (`C:\path>`) の形か: ドライブレター + `:` + パス区切りで
+/// 始まり `>` で終わる (末尾空白なし)。`matches_prompt` が Windows 実行時のみ併用する。
+/// 誤学習を避けるため `record_match` の学習対象にはしない (毎回この形で判定)。
+/// 純関数として切り出し、テストは両 OS で走らせる。
+fn is_cmd_style_prompt(last_line: &str) -> bool {
+    let t = last_line.trim_end_matches(' ');
+    let bytes = t.as_bytes();
+    if bytes.len() < 4 || !t.ends_with('>') {
+        return false;
+    }
+    bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/')
 }
 
 #[cfg(test)]
@@ -235,5 +251,33 @@ mod tests {
     fn output_with_newline_at_end_no_prompt() {
         // 末尾が改行のみで終わっていてプロンプトはまだ → false
         assert!(!fed(b"command output\n").matches_prompt());
+    }
+
+    #[test]
+    fn cmd_style_prompt_shape() {
+        // cmd.exe 既定形 (末尾空白なし) — 純関数は両 OS でこの判定
+        assert!(is_cmd_style_prompt("C:\\Users\\foo>"));
+        assert!(is_cmd_style_prompt("C:\\>"));
+        assert!(is_cmd_style_prompt("d:/work>"));
+        // PowerShell 形は対象外 (通常規則の `> ` + 末尾空白で検出する)
+        assert!(!is_cmd_style_prompt("PS C:\\>"));
+        // Unix プロンプトや出力途中の行を誤検出しない
+        assert!(!is_cmd_style_prompt("user@host:~$"));
+        assert!(!is_cmd_style_prompt("C:\\>echo done"));
+        assert!(!is_cmd_style_prompt(">"));
+        assert!(!is_cmd_style_prompt(""));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn matches_cmd_prompt_without_trailing_space_on_windows() {
+        assert!(fed(b"C:\\Users\\foo>").matches_prompt());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cmd_shape_is_dead_branch_on_unix() {
+        // Unix では特例が効かない (挙動バイト不変の保証)
+        assert!(!fed(b"C:\\Users\\foo>").matches_prompt());
     }
 }

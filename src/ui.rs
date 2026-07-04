@@ -1,7 +1,7 @@
 use crate::ai::BackendKind;
 use crate::config::DisplayConfig;
 use crate::vetted_command::VettedCommand;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -9,9 +9,8 @@ use std::time::Duration;
 use unicode_width::UnicodeWidthChar;
 
 // 低レベル入力の framing は crate::input に集約。confirm / passthrough / minibuffer は
-// next_event を消費する薄い層になる (fd 0 の直接読みはここから無くなる)。
-#[cfg(unix)]
-use crate::input::{self, Fd0Source, Tok};
+// next_event を消費する薄い層になる (fd 0 / コンソールの直接読みはここから無くなる)。
+use crate::input::{self, StdinSource, Tok};
 
 static PROMPT_HISTORY: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 
@@ -21,10 +20,6 @@ fn prompt_history() -> &'static Mutex<Vec<String>> {
 
 pub enum InputEvent {
     PtyData(Vec<u8>),
-    /// パススルーモードで Enter 確定された行 (Windows fallback 専用)。
-    /// Unix では `passthrough_read_raw` が PtyData / AiPrompt を直接 emit するので使われない。
-    #[allow(dead_code)]
-    Line(String),
     AiPrompt(String),
     PassthroughEnded,
     /// minibuffer をキャンセル (ESC / Ctrl+C / Ctrl+/ / "exit" / 空 Ctrl+D) した。
@@ -38,53 +33,17 @@ pub enum InputEvent {
 }
 
 static MINIBUFFER_ACTIVE: AtomicBool = AtomicBool::new(false);
-static SIGWINCH_RECEIVED: AtomicBool = AtomicBool::new(false);
 
 pub fn minibuffer_active() -> bool {
     MINIBUFFER_ACTIVE.load(Ordering::Relaxed)
 }
 
-/// stdin から利用可能なバイトをノンブロッキングで取得する。
-/// AI 提案コマンドの完了待ち中に、ユーザのキー入力 / Ctrl+C / パスワード入力等を
-/// PTY に転送するために使う。`BufReader` をバイパスして fd 0 を直接読む。
-#[cfg(unix)]
-pub fn drain_stdin_nonblocking() -> Vec<u8> {
-    use std::os::unix::io::{AsRawFd, FromRawFd};
-    let fd = io::stdin().as_raw_fd();
-    let mut stdin = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
-    let mut out = Vec::new();
-    let mut buf = [0u8; 1024];
-    loop {
-        let mut pfd = libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let ret = unsafe { libc::poll(&mut pfd, 1, 0) };
-        if ret <= 0 || (pfd.revents & libc::POLLIN) == 0 {
-            break;
-        }
-        match stdin.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => out.extend_from_slice(&buf[..n]),
-            Err(_) => break,
-        }
-    }
-    out
-}
-
-#[cfg(not(unix))]
-pub fn drain_stdin_nonblocking() -> Vec<u8> {
-    Vec::new()
-}
-
-pub fn record_sigwinch() {
-    SIGWINCH_RECEIVED.store(true, Ordering::Relaxed);
-}
-
-pub fn check_and_clear_sigwinch() -> bool {
-    SIGWINCH_RECEIVED.swap(false, Ordering::Relaxed)
-}
+// 低レベル端末操作は crate::term (platform 層) に集約。呼び出し側の従来名を維持する
+// ための再エクスポート (check_and_clear_sigwinch は歴史的名称)。
+pub use crate::term::{
+    check_and_clear_resize as check_and_clear_sigwinch, drain_stdin_nonblocking,
+    restore_terminal_settings, save_terminal_settings, terminal_size,
+};
 
 /// ターミナルの "aish 動作中" 表示を OSC で設定する。
 /// - OSC 0/1/2: アイコン名 / ウィンドウタイトル
@@ -126,19 +85,6 @@ pub fn cleanup_terminal_indicator() {
     let _ = stdout.flush();
 }
 
-pub fn terminal_size() -> (u16, u16) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::io::AsRawFd;
-        let fd = io::stdout().as_raw_fd();
-        let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-        if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0 && ws.ws_row > 0 {
-            return (ws.ws_row, ws.ws_col);
-        }
-    }
-    (24, 80)
-}
-
 pub enum InputRequest {
     Passthrough(String),
     /// Y/n/a 確認プロンプト用。1 キー (Enter 不要) で確定する。
@@ -146,54 +92,6 @@ pub enum InputRequest {
     ReadConfirmKey,
 }
 
-#[cfg(unix)]
-static ORIG_TERMIOS: OnceLock<libc::termios> = OnceLock::new();
-
-/// 起動時にtermiosを保存し、rawモードに設定する。main開始直後に呼ぶこと。
-#[cfg(unix)]
-pub fn save_terminal_settings() {
-    use std::os::unix::io::AsRawFd;
-    let fd = io::stdin().as_raw_fd();
-    if let Some(t) = termios_get(fd) {
-        let _ = ORIG_TERMIOS.set(t);
-        // セッション全体でrawモードを維持する。
-        // cfmakeraw 相当: 端末→aish への入力を完全に raw 化する。
-        // 特に ICRNL を落とさないと CR が NL に変換されて PTY に届き、
-        // prompt_toolkit 系の選択ピッカー (`<c-m>` のみを Enter にバインド) で
-        // Enter が効かなくなる (aws configure sso のアカウント選択画面で再現)。
-        // OPOST (c_oflag) は触らない: aish 自身が writeln!(stdout) で `\n` だけ
-        // 書く箇所があり、端末側の NL→CRLF 変換に依存しているため。
-        let mut raw = t;
-        raw.c_iflag &= !(libc::IGNBRK
-            | libc::BRKINT
-            | libc::PARMRK
-            | libc::ISTRIP
-            | libc::INLCR
-            | libc::IGNCR
-            | libc::ICRNL
-            | libc::IXON);
-        raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG | libc::IEXTEN);
-        raw.c_cc[libc::VMIN] = 1;
-        raw.c_cc[libc::VTIME] = 0;
-        unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) };
-    }
-}
-
-#[cfg(not(unix))]
-pub fn save_terminal_settings() {}
-
-/// termiosを起動時の状態に復元する。終了時に呼ぶこと。
-#[cfg(unix)]
-pub fn restore_terminal_settings() {
-    use std::os::unix::io::AsRawFd;
-    if let Some(orig) = ORIG_TERMIOS.get() {
-        let fd = io::stdin().as_raw_fd();
-        unsafe { libc::tcsetattr(fd, libc::TCSANOW, orig) };
-    }
-}
-
-#[cfg(not(unix))]
-pub fn restore_terminal_settings() {}
 pub fn build_color_start(color: &str) -> String {
     if color.is_empty() {
         return String::new();
@@ -515,51 +413,9 @@ pub enum ConfirmChoice {
     Quit,
 }
 
-pub enum UserInput {
-    ShellCommand(String),
-    Exit,
-}
-
-pub fn parse_input(input: &str) -> UserInput {
-    let trimmed = input.trim();
-
-    if trimmed.eq_ignore_ascii_case("exit") {
-        return UserInput::Exit;
-    }
-
-    UserInput::ShellCommand(input.to_string())
-}
-
 /// 文字の表示幅を返す（全角=2, 半角=1, 制御文字=0）
 fn char_width(c: char) -> usize {
     UnicodeWidthChar::width(c).unwrap_or(0)
-}
-
-/// Windows fallback: cooked モードで 1 行読む。passthrough_read の non-unix 経路で使う。
-#[cfg(not(unix))]
-fn read_line_cooked() -> Option<String> {
-    let mut line = String::new();
-    match io::stdin().read_line(&mut line) {
-        Ok(0) => None,
-        Ok(_) => Some(
-            line.trim_end_matches('\n')
-                .trim_end_matches('\r')
-                .to_string(),
-        ),
-        Err(_) => None,
-    }
-}
-
-#[cfg(unix)]
-fn termios_get(fd: i32) -> Option<libc::termios> {
-    unsafe {
-        let mut t: libc::termios = std::mem::zeroed();
-        if libc::tcgetattr(fd, &mut t) == 0 {
-            Some(t)
-        } else {
-            None
-        }
-    }
 }
 
 /// Y/n/a 確認プロンプトで「1 キー押下で即確定」する入力読み取り。
@@ -576,14 +432,7 @@ fn termios_get(fd: i32) -> Option<libc::termios> {
 /// なるのを避けるため)。raw mode は ECHO off なので、マッチした文字のみ
 /// stdout に echo する。
 pub fn read_confirm_key() -> Option<ConfirmChoice> {
-    #[cfg(unix)]
-    {
-        read_confirm_key_unix()
-    }
-    #[cfg(not(unix))]
-    {
-        read_confirm_key_cooked()
-    }
+    read_confirm_key_impl()
 }
 
 /// 押されたキーをそのまま `\n` 付きでターミナルに描画する。
@@ -614,11 +463,10 @@ fn match_confirm_char(c: char) -> Option<ConfirmChoice> {
     }
 }
 
-#[cfg(unix)]
-fn read_confirm_key_unix() -> Option<ConfirmChoice> {
+fn read_confirm_key_impl() -> Option<ConfirmChoice> {
     // 入力の framing は crate::input に集約済み。ここは Tok を解釈するだけの薄い層。
     // Enter が制御文字フィルタに飲まれる順序トラップは next_event 側で型として解消済み。
-    let mut src = Fd0Source::new();
+    let mut src = StdinSource::new();
     loop {
         let ev = input::next_event(&mut src);
         match ev.tok {
@@ -662,30 +510,6 @@ fn read_confirm_key_unix() -> Option<ConfirmChoice> {
     }
 }
 
-#[cfg(not(unix))]
-fn read_confirm_key_cooked() -> Option<ConfirmChoice> {
-    // Windows fallback: cooked mode で 1 行読み、先頭の有効文字でマッチ。
-    // raw 1 キー読みは Windows では仕組みが違うのでここでは Enter 確定を許容する。
-    loop {
-        let mut line = String::new();
-        match io::stdin().read_line(&mut line) {
-            Ok(0) => return None,
-            Ok(_) => {}
-            Err(_) => return None,
-        }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            return Some(ConfirmChoice::Yes);
-        }
-        if let Some(c) = trimmed.chars().next() {
-            if let Some(choice) = match_confirm_char(c) {
-                return Some(choice);
-            }
-        }
-        // 未知入力は再読み取り
-    }
-}
-
 /// `/model` `/effort` の対話ピッカー。`items` から 1 つを ↑↓ で選び Enter で確定する。
 /// 返り値: `Some(index)` = 確定 / `None` = 取消 (Esc / Ctrl+C / Ctrl+D) または `items` 空。
 ///
@@ -696,18 +520,10 @@ pub fn show_picker(title: &str, items: &[String], current: Option<usize>) -> Opt
     if items.is_empty() {
         return None;
     }
-    #[cfg(unix)]
-    {
-        show_picker_unix(title, items, current)
-    }
-    #[cfg(not(unix))]
-    {
-        show_picker_cooked(title, items, current)
-    }
+    show_picker_impl(title, items, current)
 }
 
 /// ピッカーの 1 キー分の状態遷移 (純関数、golden test 対象)。
-#[cfg(unix)]
 #[derive(Debug, PartialEq, Eq)]
 enum PickerAction {
     Move(usize),
@@ -716,7 +532,6 @@ enum PickerAction {
     Ignore,
 }
 
-#[cfg(unix)]
 fn picker_step(sel: usize, len: usize, tok: &Tok) -> PickerAction {
     match tok {
         Tok::Up => PickerAction::Move(sel.saturating_sub(1)),
@@ -733,7 +548,6 @@ fn picker_step(sel: usize, len: usize, tok: &Tok) -> PickerAction {
 
 /// 描画開始行 (原点) へカーソルを戻す。render は原点開始・最終行末で終わる契約なので
 /// `total_lines - 1` 行だけ上に戻して桁頭へ。`total_lines == 1` のときは `\r` だけ。
-#[cfg(unix)]
 fn picker_move_to_origin<W: Write>(out: &mut W, total_lines: usize) {
     if total_lines > 1 {
         let _ = write!(out, "\x1b[{}A", total_lines - 1);
@@ -743,7 +557,6 @@ fn picker_move_to_origin<W: Write>(out: &mut W, total_lines: usize) {
 
 /// ピッカー領域を描画する。カーソルは原点 (描画開始行・桁頭) にある前提で、
 /// 最終行末で終わる (末尾改行を出さない = 予約領域を超える scroll を起こさない)。
-#[cfg(unix)]
 fn render_picker<W: Write>(
     out: &mut W,
     title: &str,
@@ -773,8 +586,7 @@ fn render_picker<W: Write>(
     let _ = out.flush();
 }
 
-#[cfg(unix)]
-fn show_picker_unix(title: &str, items: &[String], current: Option<usize>) -> Option<usize> {
+fn show_picker_impl(title: &str, items: &[String], current: Option<usize>) -> Option<usize> {
     let (rows, _cols) = terminal_size();
     let mut sel = current.unwrap_or(0).min(items.len() - 1);
     // 可視 item 数: 端末高さから title 行 + 余白 1 を引いた範囲に収める。
@@ -792,7 +604,7 @@ fn show_picker_unix(title: &str, items: &[String], current: Option<usize>) -> Op
     let _ = stdout.flush();
 
     let mut top = 0usize;
-    let mut src = Fd0Source::new();
+    let mut src = StdinSource::new();
     let result;
     // 初回は領域確保直後で既に原点にいる。2 回目以降は最終行末にカーソルがあるので、
     // 描画前に原点へ戻さないと前回描画の下に重ねて描いてしまう (一覧が何度も表示される回帰)。
@@ -830,53 +642,9 @@ fn show_picker_unix(title: &str, items: &[String], current: Option<usize>) -> Op
     result
 }
 
-#[cfg(not(unix))]
-fn show_picker_cooked(title: &str, items: &[String], current: Option<usize>) -> Option<usize> {
-    // Windows fallback: 一覧を番号付きで出し、番号を 1 行入力で選ぶ (空入力 = 取消)。
-    let cur = current.unwrap_or(usize::MAX);
-    println!("{title}:");
-    for (i, item) in items.iter().enumerate() {
-        let mark = if i == cur { "*" } else { " " };
-        println!("  {mark}{}) {item}", i + 1);
-    }
-    print!("number (empty=cancel)> ");
-    let _ = io::stdout().flush();
-    let mut line = String::new();
-    if io::stdin().read_line(&mut line).is_err() {
-        return None;
-    }
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    trimmed
-        .parse::<usize>()
-        .ok()
-        .filter(|n| *n >= 1 && *n <= items.len())
-        .map(|n| n - 1)
-}
-
 /// パススルーモードで入力を読む。Ctrl+/でaishプロンプトを開く。
 /// それ以外のキー入力はPTYに直送される。
 pub fn passthrough_read(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &str) {
-    #[cfg(unix)]
-    {
-        passthrough_read_unix(tx, input_bg, aish_label);
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (input_bg, aish_label);
-        match read_line_cooked() {
-            Some(line) => {
-                let _ = tx.send(InputEvent::Line(line));
-            }
-            None => {}
-        }
-    }
-}
-
-#[cfg(unix)]
-fn passthrough_read_unix(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &str) {
     // rawモードはセッション全体で維持されているため、ここでは設定・復元しない
     passthrough_read_raw(tx, input_bg, aish_label);
     let _ = tx.send(InputEvent::PassthroughEnded);
@@ -950,69 +718,10 @@ fn compute_visual_layout(
     (vlines, cursor_vline, cursor_vcol)
 }
 
-/// DSR (Device Status Report) `\x1b[6n` の応答 `\x1b[{row};{col}R` をパースする。
-/// 受信バッファの末尾が `R` で、`[` 以降に `{row};{col}` の形が含まれること。
-fn parse_dsr_response(buf: &[u8]) -> Option<(u16, u16)> {
-    if !buf.ends_with(b"R") {
-        return None;
-    }
-    let lb = buf.iter().position(|&b| b == b'[')?;
-    let body = &buf[lb + 1..buf.len() - 1];
-    let s = std::str::from_utf8(body).ok()?;
-    let (r, c) = s.split_once(';')?;
-    Some((r.trim().parse().ok()?, c.trim().parse().ok()?))
-}
-
-/// `\x1b[6n` (DSR) を端末に送り、応答 `\x1b[{row};{col}R` を 80ms 以内に受信して
-/// cursor 位置を返す。応答が来ない / パースできない端末では `None`。
-/// `passthrough_read_raw` から呼ばれた `show_minibuffer` 専用 (stdin が raw モードで
-/// `passthrough_read_raw` 側で握られているが、ここでは別途 fd 0 を `ManuallyDrop` で
-/// 借りて非ブロッキングで読み取る)。応答前にユーザがキーを打った場合、その文字は
-/// 応答パース用バッファに混入して捨てられる (実用上 80ms 以内にユーザが打つことは稀)。
-#[cfg(unix)]
-fn query_cursor_position_dsr(stdout: &mut io::Stdout) -> Option<(u16, u16)> {
-    use std::os::unix::io::{AsRawFd, FromRawFd};
-    let _ = write!(stdout, "\x1b[6n");
-    let _ = stdout.flush();
-
-    let mut stdin = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
-    let fd = stdin.as_raw_fd();
-    let mut buf: Vec<u8> = Vec::with_capacity(16);
-    let start = std::time::Instant::now();
-    let timeout = Duration::from_millis(80);
-
-    while start.elapsed() < timeout {
-        let mut pollfd = libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let ready = unsafe { libc::poll(&mut pollfd, 1, 10) };
-        if ready <= 0 {
-            continue;
-        }
-        let mut byte = [0u8; 1];
-        match stdin.read(&mut byte) {
-            Ok(1) => {
-                buf.push(byte[0]);
-                if byte[0] == b'R' {
-                    return parse_dsr_response(&buf);
-                }
-                if buf.len() > 32 {
-                    return None;
-                }
-            }
-            _ => return None,
-        }
-    }
-    None
-}
-
 /// aishプロンプト（ミニバッファ）を現在の状態で再描画する。
 /// 入力長に応じて縦方向に拡張する。伸長分の行は cursor を実画面最下行に置いた
 /// LF の全画面 scroll で確保する (DECSTBM の scroll region は使わない)。
 /// `out` はテストで `Vec<u8>` に差し替えるためジェネリック (実運用は stdout)。
-#[cfg(unix)]
 #[allow(clippy::too_many_arguments)]
 fn redraw_minibuffer<W: Write>(
     out: &mut W,
@@ -1123,7 +832,6 @@ fn redraw_minibuffer<W: Write>(
 /// Alt+Enter / Shift+Enter (CSI u) による改行挿入をサポートする。
 /// 入力長に応じて縦方向に拡張し、最大 max_rows 行まで表示する。
 /// 戻り値は (入力テキスト, 最終的に占有した行数)。
-#[cfg(unix)]
 #[allow(clippy::too_many_arguments)]
 fn read_minibuffer_line(
     stdout: &mut io::Stdout,
@@ -1136,7 +844,7 @@ fn read_minibuffer_line(
     total_scrolled: &mut u16,
 ) -> (Option<String>, u16) {
     // 入力の framing は crate::input に集約済み。ここは Tok を編集操作に対応づける薄い層。
-    let mut src = Fd0Source::new();
+    let mut src = StdinSource::new();
 
     let mut chars: Vec<char> = Vec::new();
     let mut cursor_pos: usize = 0;
@@ -1354,7 +1062,6 @@ fn read_minibuffer_line(
 /// 入力確定後に表示を消して cursor を復元し、InputEventを送信する。
 /// 入力が長いとき縦方向に拡張する (伸長は全画面 scroll で確保。表示中に
 /// DECSTBM は設定せず、終了時の `\x1b[r` は防御的リセットのみ)。
-#[cfg(unix)]
 fn show_minibuffer(
     stdout: &mut io::Stdout,
     tx: &Sender<InputEvent>,
@@ -1370,7 +1077,8 @@ fn show_minibuffer(
     // DSR (\x1b[6n) で現在の cursor 位置を取得して、画面下端かどうかを動的判定する。
     // 応答が来ない端末では was_at_bottom = false の安全側 fallback (= 入口 \n を
     // 出さない / 終了時 cursor を rows 行目に置く)。
-    let (saved_row, saved_col) = query_cursor_position_dsr(stdout).unwrap_or((rows, 1));
+    let (saved_row, saved_col) =
+        crate::term::query_cursor_position_dsr(stdout).unwrap_or((rows, 1));
     let was_at_bottom = saved_row >= rows;
 
     // 画面下端のときだけ scroll 退避で空き行を確保。stdout 専用 LF: PTY には送らない。
@@ -1470,9 +1178,8 @@ fn show_minibuffer(
 /// 入力の framing (ESC/CSI/SS3/UTF-8) は crate::input に集約済み。透明性の根幹として
 /// `InEvent.raw` を無加工で転送し、`Char` の再エンコードはしない (invalid UTF-8 /
 /// Alt+非ASCII / paste / マウスシーケンスで壊れるため)。フォーカスイベントのみ破棄する。
-#[cfg(unix)]
 fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &str) {
-    let mut src = Fd0Source::new();
+    let mut src = StdinSource::new();
     let mut stdout = io::stdout();
 
     loop {
@@ -1498,7 +1205,6 @@ fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &st
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn picker_step_navigation() {
         use crate::input::Tok;
@@ -1557,48 +1263,6 @@ mod tests {
         assert_eq!(visualize_command_segment("\0\x7f"), "^@^?");
         // `\n` は呼び出し側が分割済みの前提だが、来たら `^J` に潰す (隠れ行を作らせない)。
         assert_eq!(visualize_command_segment("a\nb"), "a^Jb");
-    }
-
-    #[test]
-    fn parse_dsr_response_typical() {
-        assert_eq!(parse_dsr_response(b"\x1b[24;10R"), Some((24, 10)));
-    }
-
-    #[test]
-    fn parse_dsr_response_single_digit() {
-        assert_eq!(parse_dsr_response(b"\x1b[1;1R"), Some((1, 1)));
-    }
-
-    #[test]
-    fn parse_dsr_response_large_terminal() {
-        assert_eq!(parse_dsr_response(b"\x1b[200;500R"), Some((200, 500)));
-    }
-
-    #[test]
-    fn parse_dsr_response_with_leading_garbage() {
-        // ユーザがキーを打って混入したバイトが前に付くケース。`[` までは捨てて
-        // パースしたいが、現実装は最初の `[` を起点にするのでこのケースは通る。
-        assert_eq!(parse_dsr_response(b"x\x1b[24;10R"), Some((24, 10)));
-    }
-
-    #[test]
-    fn parse_dsr_response_missing_terminator() {
-        assert_eq!(parse_dsr_response(b"\x1b[24;10"), None);
-    }
-
-    #[test]
-    fn parse_dsr_response_missing_bracket() {
-        assert_eq!(parse_dsr_response(b"24;10R"), None);
-    }
-
-    #[test]
-    fn parse_dsr_response_non_numeric() {
-        assert_eq!(parse_dsr_response(b"\x1b[abc;def R"), None);
-    }
-
-    #[test]
-    fn parse_dsr_response_empty() {
-        assert_eq!(parse_dsr_response(b""), None);
     }
 
     #[test]
@@ -1663,14 +1327,12 @@ mod tests {
     //   (2) DECSTBM (CSI ... r) を一切出力しない
     //   (3) reserved_rows の高水位を超えない再 grow では scroll しない
 
-    #[cfg(unix)]
     struct MbState {
         rows_used: u16,
         reserved_rows: u16,
         total_scrolled: u16,
     }
 
-    #[cfg(unix)]
     fn redraw_for_test(input: &str, st: &mut MbState) -> Vec<u8> {
         let chars: Vec<char> = input.chars().collect();
         let mut out: Vec<u8> = Vec::new();
@@ -1691,7 +1353,6 @@ mod tests {
         out
     }
 
-    #[cfg(unix)]
     fn fresh_state() -> MbState {
         MbState {
             rows_used: 1,
@@ -1700,13 +1361,11 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
         haystack.windows(needle.len()).any(|w| w == needle)
     }
 
     /// 出力中の CSI シーケンスに final byte `r` (DECSTBM) があるか走査する。
-    #[cfg(unix)]
     fn contains_decstbm(out: &[u8]) -> bool {
         let mut i = 0;
         while i + 1 < out.len() {
@@ -1726,7 +1385,6 @@ mod tests {
         false
     }
 
-    #[cfg(unix)]
     #[test]
     fn minibuffer_grow_scrolls_at_screen_bottom() {
         let mut st = fresh_state();
@@ -1737,7 +1395,6 @@ mod tests {
         assert!(contains_bytes(&out, b"\x1b[24;1H\n"));
     }
 
-    #[cfg(unix)]
     #[test]
     fn minibuffer_grow_emits_no_decstbm() {
         let mut st = fresh_state();
@@ -1749,7 +1406,6 @@ mod tests {
         assert!(!contains_decstbm(&out2));
     }
 
-    #[cfg(unix)]
     #[test]
     fn minibuffer_grow_delta_2() {
         let mut st = fresh_state();
@@ -1760,7 +1416,6 @@ mod tests {
         assert!(contains_bytes(&out, b"\x1b[24;1H\n\n"));
     }
 
-    #[cfg(unix)]
     #[test]
     fn minibuffer_shrink_clears_rows() {
         let mut st = fresh_state();
@@ -1774,7 +1429,6 @@ mod tests {
         assert_eq!(st.total_scrolled, 2);
     }
 
-    #[cfg(unix)]
     #[test]
     fn minibuffer_grow_after_shrink_does_not_rescroll() {
         let mut st = fresh_state();

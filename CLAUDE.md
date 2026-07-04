@@ -4,7 +4,7 @@ CLI SSH + AI (Claude Code)。ローカルシェル / SSH 接続先サーバを�
 
 ## 開発環境
 - Rust。ビルド: `export PATH="$HOME/.cargo/bin:$PATH" && cargo build`
-- 対応 OS: Linux (Ubuntu) / macOS / Windows（UI 部は Unix 限定、Windows は `read_line_cooked` フォールバック）
+- 対応 OS: Linux (Ubuntu) / macOS / Windows 10 1809+ native（Windows Terminal 推奨。**Windows は実機検証未了** — チェックリストは SPEC.md § 15.13）
 - CI (`ci.yml`): 全 push で `cargo fmt --all -- --check` / `cargo clippy --all-targets -- -D warnings` (ubuntu) / `cargo test` (ubuntu + macOS)。**push 前に 3 つともローカルで通す**（`release.yml`=タグ push リリースとは独立）。
   - **テストは `cargo test`、`--lib` を付けない**（bin-only crate なので 0 件になる）。
   - **clippy の構造的 lint は一部 `#[allow(clippy::...)]` で意図的に抑制**（`utf8_char_len` の `if_same_then_else`、minibuffer/echo の `write_with_newline`、`compute_visual_layout` の `needless_range_loop`、minibuffer 関数群の `too_many_arguments`、入力スレッドの `while_let_loop`）。trust-critical / 意図的コード温存のため、**安易に外して writeln! 化やリファクタしない**。
@@ -56,6 +56,12 @@ minibuffer / 打ちかけ（§ 15.4, 15.5）:
 - **領域は先に `\n`×N で確保→原点へ戻る相対描画（末尾改行を出さない）。DECSTBM 不使用**。終了時 `\x1b[<L-1>A\r\x1b[0J` で消去。**ナビは純関数 `picker_step` に分離し golden test**。
 - **候補解決は backend ごと `available_models`/`available_efforts` = static list > 取得コマンド > 組み込み既定**（`common::resolve_option_list`）。取得コマンドは**ピッカーを開く時だけローカル実行**。effort 既定は claude/codex/copilot のみ、model 既定は全 native backend（generic は recipe 由来のみ）。
 - **`/model` `/effort` は常に `Some(...)` を返す**。引数なし=ピッカー、`-`/`clear`=クリア、その他=検証せず set。
+
+platform 層 / Windows（§ 15.13）:
+- **低レベル端末操作（raw mode・poll 付き 1byte 読み・端末サイズ・DSR・リサイズ・Ctrl+C 検出・PID 生存確認）は `src/term/` に集約**。ui.rs 等で libc / Console API を直接叩かない。**term/unix.rs は ui.rs からの純移動でロジック変更禁止**（§ 15.1 の termios ルール準拠）。
+- **Windows 入力は `ReadConsoleInputW` ポンプ 1 本**（term/windows.rs。ReadFile/ReadConsoleW 併用禁止）。**Ctrl+/ は VK_OEM_2+CTRL で 0x1f を明示注入**（uChar=0 対策 = エントリキーの生命線）。**stdout の `DISABLE_NEWLINE_AUTO_RETURN` は設定しない**（Unix の OPOST 不可触と同義）。
+- **Windows の kill_line/refresh_prompt は ESC(0x1b)**（PSReadLine に 0x01,0x0b は効かず未承認 submit リスク）。既定シェルは powershell.exe。cmd の末尾空白なしプロンプトは sniffer の `is_cmd_style_prompt` 特例（**学習させない**）。
+- **Windows の自己更新（`--update`）は Unsupported を維持**。release への Windows バイナリ追加は実機検証完了後。
 
 drain / 入力スレッド（§ 15.6）:
 - **PTY 吸い出しは全て `pty_drain::drain_pty` 経由**（手書き try_recv ループを再導入しない）。**通常動作中は PTY 出力に独自文字列を挿入しない**。

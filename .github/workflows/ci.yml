@@ -21,13 +21,19 @@ jobs:
       # ここを通すには新規コードでも warning ゼロを保つこと。
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
+      # Windows 固有コード (src/term/windows.rs 等) のコンパイル退行を Linux ランナーで検出
+      # (check はリンク不要なのでクロスで完結する)。
+      - name: Add windows target
+        run: rustup target add x86_64-pc-windows-msvc
+      - name: clippy (windows cross-check)
+        run: cargo clippy --target x86_64-pc-windows-msvc --all-targets -- -D warnings
 
   test:
     name: Test (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5

@@ -28,7 +28,10 @@ impl PtyHandler {
     pub fn spawn_local_shell(rows: u16, cols: u16) -> Result<Self, Box<dyn std::error::Error>> {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| {
             if cfg!(windows) {
-                "cmd.exe".to_string()
+                // cmd.exe でなく PowerShell を既定にする: 既定プロンプト `PS C:\> ` は
+                // 末尾空白があり PromptSniffer で無修正検出できる (cmd の `C:\>` は
+                // 末尾空白が無く、cfg!(windows) 特例が要る。§ prompt_sniffer)。
+                "powershell.exe".to_string()
             } else {
                 "/bin/bash".to_string()
             }
@@ -76,13 +79,26 @@ impl PtyHandler {
         Ok(())
     }
 
-    /// bash readline の打ちかけ行を消去する (Ctrl+A + Ctrl+K = 0x01,0x0b)。
-    /// SIGINT を発火させないため Ctrl+C (0x03) は使わない (vim/top 等の子プロセスを
-    /// 意図せず kill しないため)。打ちかけが無ければ no-op。打ちかけは bash の
-    /// kill-ring に退避するので Ctrl+Y で復元可能。emacs 行編集以外 (vim 等の TUI、
-    /// zsh vi モード) に届くと ^A^K がリテラルで残る既知の穏当な劣化モード。
+    /// シェルの打ちかけ行を消去するバイト列。
+    /// - Unix: bash readline の Ctrl+A + Ctrl+K (0x01,0x0b)。SIGINT を発火させないため
+    ///   Ctrl+C (0x03) は使わない (vim/top 等の子プロセスを意図せず kill しないため)。
+    ///   打ちかけは bash の kill-ring に退避するので Ctrl+Y で復元可能。
+    /// - Windows: ESC (0x1b)。PSReadLine (Windows edit mode) では Ctrl+A=SelectAll 等で
+    ///   kill-line にならず、**打ちかけ未消去のまま改行 = 未承認 submit の trust リスク**
+    ///   になるため。ESC は cmd.exe / PSReadLine 共通の「入力行クリア」。
+    ///   (Windows 実機での実効性検証はチェックリスト項目 — SPEC.md § 15.13)
+    ///
+    /// どちらも emacs 行編集以外 (vim 等の TUI、zsh vi モード) に届くとリテラルが残る /
+    /// モード遷移する既知の穏当な劣化モード。
+    const KILL_LINE_BYTES: &'static [u8] = if cfg!(windows) {
+        &[0x1b]
+    } else {
+        &[0x01, 0x0b]
+    };
+
+    /// シェルの打ちかけ行を消去する。打ちかけが無ければ no-op。
     pub fn kill_line(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        self.write(&[0x01, 0x0b])
+        self.write(Self::KILL_LINE_BYTES)
     }
 
     /// 打ちかけ消去 + 改行でシェルプロンプトを再表示させる。
@@ -92,7 +108,7 @@ impl PtyHandler {
     /// エラー処理は旧コード互換: 消去側の write エラーは無視し、改行側の Result を
     /// 返す (呼び出し側の `let _` / `?` 使い分けを保つため。消去側を `?` にしないこと)。
     pub fn refresh_prompt(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let _ = self.write(&[0x01, 0x0b]);
+        let _ = self.write(Self::KILL_LINE_BYTES);
         self.write(b"\n")
     }
 

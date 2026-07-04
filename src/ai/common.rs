@@ -5,39 +5,8 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-/// stdinからCtrl+C (0x03) が入力されているかノンブロッキングでチェック。
-/// `std::io::stdin().read()` は lock + 内部バッファ経由なので、入力スレッド側との
-/// 競合や 1 byte 取り損ねで Ctrl+C を見逃すことがあった。`libc::read` で生 fd から
-/// 直接 1 byte ずつ読むことで、単発の Ctrl+C でも確実に検出する。
-#[cfg(unix)]
-pub(crate) fn check_stdin_cancel() -> bool {
-    let fd = libc::STDIN_FILENO;
-    let mut found = false;
-    loop {
-        let mut pfd = libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let ret = unsafe { libc::poll(&mut pfd, 1, 0) };
-        if ret <= 0 || (pfd.revents & libc::POLLIN) == 0 {
-            break;
-        }
-        let mut buf = [0u8; 1];
-        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, 1) };
-        match n {
-            1 if buf[0] == 0x03 => found = true,
-            1 => {} // Ctrl+C 以外の入力は破棄 (キャンセル中のキー入力をシェルへ渡さない)
-            _ => break,
-        }
-    }
-    found
-}
-
-#[cfg(not(unix))]
-pub(crate) fn check_stdin_cancel() -> bool {
-    false
-}
+// Ctrl+C 検出 (旧 check_stdin_cancel) は crate::term (platform 層) に移動。
+use crate::term::check_stdin_cancel;
 
 /// stdout から最外のJSONオブジェクトを抽出する。
 /// claude CLIがJSON前後にテキストを出力する場合に対応。
@@ -107,13 +76,8 @@ pub(crate) fn timestamp_local() -> String {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    // ローカルTZオフセットを取得
-    let offset = unsafe {
-        let mut tm: libc::tm = std::mem::zeroed();
-        let t = now as libc::time_t;
-        libc::localtime_r(&t, &mut tm);
-        tm.tm_gmtoff
-    };
+    // ローカルTZオフセットを取得 (platform 層)
+    let offset = crate::term::local_utc_offset_secs(now as i64);
     let local = now as i64 + offset;
     let secs = local % 60;
     let mins = (local / 60) % 60;
