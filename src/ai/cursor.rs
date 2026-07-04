@@ -74,6 +74,36 @@ impl CursorBackend {
             options: cfg.cursor.options.clone(),
         }
     }
+
+    /// cursor-agent の引数を組み立てる (send から機械抽出した純関数。golden test 対象)。
+    /// `--trust` は headless 必須のため無条件、ツール抑制は `--mode plan` (既定 config)。
+    fn build_args(&self) -> Vec<String> {
+        let mut args: Vec<String> = vec![
+            "-p".to_string(),
+            "--output-format".to_string(),
+            "json".to_string(),
+            // headless では --trust が無いと workspace trust 確認で実行拒否される。
+            "--trust".to_string(),
+        ];
+        if !self.mode.is_empty() {
+            args.push("--mode".to_string());
+            args.push(self.mode.clone());
+        }
+        if !self.sandbox.is_empty() {
+            args.push("--sandbox".to_string());
+            args.push(self.sandbox.clone());
+        }
+        if let Some(sid) = &self.session_id {
+            args.push("--resume".to_string());
+            args.push(sid.clone());
+        }
+        args.extend(self.base_extra_args.iter().cloned());
+        if let Some(m) = &self.model {
+            args.push("--model".to_string());
+            args.push(m.clone());
+        }
+        args
+    }
 }
 
 impl AiBackend for CursorBackend {
@@ -152,30 +182,7 @@ impl AiBackend for CursorBackend {
             )
         };
 
-        let mut args: Vec<String> = vec![
-            "-p".to_string(),
-            "--output-format".to_string(),
-            "json".to_string(),
-            // headless では --trust が無いと workspace trust 確認で実行拒否される。
-            "--trust".to_string(),
-        ];
-        if !self.mode.is_empty() {
-            args.push("--mode".to_string());
-            args.push(self.mode.clone());
-        }
-        if !self.sandbox.is_empty() {
-            args.push("--sandbox".to_string());
-            args.push(self.sandbox.clone());
-        }
-        if let Some(sid) = &self.session_id {
-            args.push("--resume".to_string());
-            args.push(sid.clone());
-        }
-        args.extend(self.base_extra_args.iter().cloned());
-        if let Some(m) = &self.model {
-            args.push("--model".to_string());
-            args.push(m.clone());
-        }
+        let args = self.build_args();
 
         let stdout = run_cli_capture_stdout("cursor-agent", &args, &prompt, &self.log_path)?;
 
@@ -220,6 +227,37 @@ fn unwrap_cursor_envelope(raw: &str) -> (Option<String>, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn args_always_contain_trust_and_plan_mode() {
+        // --trust は headless 必須、既定 config では --mode plan (read-only) が付く。
+        let backend = CursorBackend::new(&AiConfig::default(), &LogConfig::default());
+        let args = backend.build_args();
+        assert!(args.iter().any(|a| a == "--trust"));
+        let m = args.iter().position(|a| a == "--mode").expect("--mode");
+        assert_eq!(args[m + 1], "plan");
+    }
+
+    #[test]
+    fn args_never_contain_run_everything_flags() {
+        // --yolo / -f (Run Everything) は承認 UI 迂回 = 信頼の根幹違反。
+        let backend = CursorBackend::new(&AiConfig::default(), &LogConfig::default());
+        let args = backend.build_args();
+        for forbidden in ["--yolo", "-f", "--force"] {
+            assert!(!args.iter().any(|a| a == forbidden), "found {forbidden}");
+        }
+    }
+
+    #[test]
+    fn args_empty_mode_omits_mode_flag() {
+        // mode="" (非推奨だが許容) では --mode を出さない挙動を固定。
+        let mut cfg = AiConfig::default();
+        cfg.cursor.mode = String::new();
+        let backend = CursorBackend::new(&cfg, &LogConfig::default());
+        let args = backend.build_args();
+        assert!(!args.iter().any(|a| a == "--mode"));
+        assert!(args.iter().any(|a| a == "--trust"), "--trust は mode 非依存");
+    }
 
     #[test]
     fn unwraps_result_field() {

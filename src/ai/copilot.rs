@@ -78,6 +78,40 @@ impl CopilotBackend {
             options: cfg.copilot.options.clone(),
         }
     }
+
+    /// copilot CLI の引数を組み立てる (send から機械抽出した純関数。golden test 対象)。
+    /// 信頼の根幹: 四段 deny (`--allow-all-tools` + `--deny-tool=shell` + `--deny-tool=write`
+    /// + `--no-ask-user`) は無条件に含める。`-p` は付けない (stdin 渡しと排他)。
+    fn build_args(&self) -> Vec<String> {
+        let mut args: Vec<String> = vec![
+            "--output-format".to_string(),
+            "json".to_string(),
+            // 信頼の根幹: shell 実行・書き込みを完全拒否。deny は --allow-all-tools より優先される。
+            "--allow-all-tools".to_string(),
+            "--deny-tool=shell".to_string(),
+            "--deny-tool=write".to_string(),
+            // 会話は aish が仕切るので copilot 側から user に質問させない。
+            "--no-ask-user".to_string(),
+        ];
+        if !self.mode.is_empty() {
+            args.push("--mode".to_string());
+            args.push(self.mode.clone());
+        }
+        if let Some(sid) = &self.session_id {
+            args.push("--resume".to_string());
+            args.push(sid.clone());
+        }
+        args.extend(self.base_extra_args.iter().cloned());
+        if let Some(m) = &self.model {
+            args.push("--model".to_string());
+            args.push(m.clone());
+        }
+        if let Some(e) = &self.effort {
+            args.push("--effort".to_string());
+            args.push(e.clone());
+        }
+        args
+    }
 }
 
 impl AiBackend for CopilotBackend {
@@ -153,33 +187,7 @@ impl AiBackend for CopilotBackend {
             )
         };
 
-        let mut args: Vec<String> = vec![
-            "--output-format".to_string(),
-            "json".to_string(),
-            // 信頼の根幹: shell 実行・書き込みを完全拒否。deny は --allow-all-tools より優先される。
-            "--allow-all-tools".to_string(),
-            "--deny-tool=shell".to_string(),
-            "--deny-tool=write".to_string(),
-            // 会話は aish が仕切るので copilot 側から user に質問させない。
-            "--no-ask-user".to_string(),
-        ];
-        if !self.mode.is_empty() {
-            args.push("--mode".to_string());
-            args.push(self.mode.clone());
-        }
-        if let Some(sid) = &self.session_id {
-            args.push("--resume".to_string());
-            args.push(sid.clone());
-        }
-        args.extend(self.base_extra_args.iter().cloned());
-        if let Some(m) = &self.model {
-            args.push("--model".to_string());
-            args.push(m.clone());
-        }
-        if let Some(e) = &self.effort {
-            args.push("--effort".to_string());
-            args.push(e.clone());
-        }
+        let args = self.build_args();
 
         let stdout = run_cli_capture_stdout("copilot", &args, &prompt, &self.log_path)?;
 
@@ -214,5 +222,48 @@ mod tests {
         // config 空でも組み込み既定で `/model` ピッカーの候補が出る (既定消失の回帰防止)。
         let backend = CopilotBackend::new(&AiConfig::default(), &LogConfig::default());
         assert!(!backend.available_models().is_empty());
+    }
+
+    #[test]
+    fn args_always_contain_four_stage_deny() {
+        // 信頼の根幹: 四段 deny が既定 config で必ず含まれる (退行 = AI が shell/write を実行し得る)。
+        let backend = CopilotBackend::new(&AiConfig::default(), &LogConfig::default());
+        let args = backend.build_args();
+        for required in [
+            "--allow-all-tools",
+            "--deny-tool=shell",
+            "--deny-tool=write",
+            "--no-ask-user",
+        ] {
+            assert!(args.iter().any(|a| a == required), "missing {required}");
+        }
+        // 既定 mode=plan も付く。
+        let mode_pos = args.iter().position(|a| a == "--mode").expect("--mode");
+        assert_eq!(args[mode_pos + 1], "plan");
+    }
+
+    #[test]
+    fn args_never_contain_dangerous_flags() {
+        // `-p` は stdin 渡しと排他 (too many arguments)。--yolo/--allow-all は承認迂回。
+        let backend = CopilotBackend::new(&AiConfig::default(), &LogConfig::default());
+        let args = backend.build_args();
+        for forbidden in ["-p", "--yolo", "--allow-all"] {
+            assert!(!args.iter().any(|a| a == forbidden), "found {forbidden}");
+        }
+    }
+
+    #[test]
+    fn args_include_model_effort_and_resume_when_set() {
+        let mut backend = CopilotBackend::new(&AiConfig::default(), &LogConfig::default());
+        backend.set_model(Some("gpt-5"));
+        backend.set_effort(Some("high"));
+        backend.session_id = Some("sid-123".to_string());
+        let args = backend.build_args();
+        let m = args.iter().position(|a| a == "--model").unwrap();
+        assert_eq!(args[m + 1], "gpt-5");
+        let e = args.iter().position(|a| a == "--effort").unwrap();
+        assert_eq!(args[e + 1], "high");
+        let r = args.iter().position(|a| a == "--resume").unwrap();
+        assert_eq!(args[r + 1], "sid-123");
     }
 }

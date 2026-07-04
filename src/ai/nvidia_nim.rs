@@ -78,6 +78,36 @@ impl NvidiaNimBackend {
     }
 }
 
+/// request body (OpenAI 互換) を組み立てる (send から機械抽出した純関数。golden test 対象)。
+/// max_tokens 既定はモデル依存で小さいことがあるため、JSON 応答が切れないよう明示する。
+fn build_body(model: &str, prompt: &str) -> String {
+    serde_json::json!({
+        "model": model,
+        "messages": [{ "role": "user", "content": prompt }],
+        "max_tokens": 4096
+    })
+    .to_string()
+}
+
+/// curl 引数を組み立てる (send から機械抽出した純関数。golden test 対象)。
+/// `-f` は付けない: HTTP エラーでも NIM が返すエラーボディを読みたいため
+/// (JSON `{"status":403,...}` の他、素のテキスト "404 page not found" も返る)。
+/// body は stdin (`--data-binary @-`) で渡す (ARG_MAX / クォート回避)。
+fn build_curl_args(key: &str) -> Vec<String> {
+    vec![
+        "-sS".to_string(),
+        "-X".to_string(),
+        "POST".to_string(),
+        API_URL.to_string(),
+        "-H".to_string(),
+        format!("Authorization: Bearer {key}"),
+        "-H".to_string(),
+        "Content-Type: application/json".to_string(),
+        "--data-binary".to_string(),
+        "@-".to_string(),
+    ]
+}
+
 impl AiBackend for NvidiaNimBackend {
     fn name(&self) -> &'static str {
         "nvidia"
@@ -142,31 +172,8 @@ impl AiBackend for NvidiaNimBackend {
             req.user_prompt,
         );
 
-        // === request body (OpenAI 互換) ===
-        // max_tokens 既定はモデル依存で小さいことがあるため、JSON 応答が切れないよう明示する。
-        let body = serde_json::json!({
-            "model": model,
-            "messages": [{ "role": "user", "content": prompt }],
-            "max_tokens": 4096
-        })
-        .to_string();
-
-        // === curl 引数 ===
-        // `-f` は付けない: HTTP エラーでも NIM が返すエラーボディを読みたいため
-        // (JSON `{"status":403,...}` の他、素のテキスト "404 page not found" も返る)。
-        // body は stdin (`--data-binary @-`) で渡す (ARG_MAX / クォート回避)。
-        let args: Vec<String> = vec![
-            "-sS".to_string(),
-            "-X".to_string(),
-            "POST".to_string(),
-            API_URL.to_string(),
-            "-H".to_string(),
-            format!("Authorization: Bearer {key}"),
-            "-H".to_string(),
-            "Content-Type: application/json".to_string(),
-            "--data-binary".to_string(),
-            "@-".to_string(),
-        ];
+        let body = build_body(&model, &prompt);
+        let args = build_curl_args(&key);
 
         let stdout = run_cli_capture_stdout("curl", &args, &body, &self.log_path)?;
 
@@ -225,5 +232,29 @@ mod tests {
             backend.resolve_model(),
             "nvidia/llama-3.3-nemotron-super-49b-v1.5"
         );
+    }
+
+    #[test]
+    fn body_is_openai_compatible_with_max_tokens() {
+        let body: serde_json::Value =
+            serde_json::from_str(&build_body("meta/llama-3.3-70b-instruct", "hello")).unwrap();
+        assert_eq!(body["model"], "meta/llama-3.3-70b-instruct");
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(body["messages"][0]["content"], "hello");
+        assert_eq!(body["max_tokens"], 4096, "JSON 応答の途切れ防止に必須");
+    }
+
+    #[test]
+    fn curl_args_use_stdin_body_and_no_fail_flag() {
+        let args = build_curl_args("nvapi-test");
+        assert!(args.iter().any(|a| a == API_URL));
+        assert!(args.iter().any(|a| a == "@-"), "body は stdin 渡し");
+        assert!(
+            !args.iter().any(|a| a == "-f" || a == "--fail"),
+            "-f はエラーボディを読めなくするので付けない"
+        );
+        assert!(args
+            .iter()
+            .any(|a| a == "Authorization: Bearer nvapi-test"));
     }
 }

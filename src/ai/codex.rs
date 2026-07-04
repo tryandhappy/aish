@@ -78,6 +78,43 @@ impl CodexBackend {
             options: cfg.codex.options.clone(),
         }
     }
+
+    /// codex CLI の引数を組み立てる (send から機械抽出した純関数。golden test 対象)。
+    /// 信頼の根幹: `--disable` 群 (全ツール feature 無効化) は初回・resume 後とも常に含め、
+    /// sandbox `-s read-only` は初回のみ (resume は元セッションの設定を継承)。
+    fn build_args(&self, last_msg_path: &str) -> Vec<String> {
+        let mut args: Vec<String> = vec!["exec".to_string()];
+        if let Some(sid) = &self.session_id {
+            args.push("resume".to_string());
+            args.push(sid.clone());
+        }
+        // 全ツール feature を無効化して codex を「LLM のみ」にする (初回も resume 後も同じ)。
+        for feat in DISABLE_TOOL_FEATURES {
+            args.push("--disable".to_string());
+            args.push(feat.to_string());
+        }
+        // sandbox は初回のみ指定 (resume では元セッションの設定を継承する)。
+        if self.session_id.is_none() {
+            args.push("-s".to_string());
+            args.push("read-only".to_string());
+        }
+        args.extend([
+            "--skip-git-repo-check".to_string(),
+            "-o".to_string(),
+            last_msg_path.to_string(),
+            "-".to_string(),
+        ]);
+        args.extend(self.base_extra_args.iter().cloned());
+        if let Some(m) = &self.model {
+            args.push("--model".to_string());
+            args.push(m.clone());
+        }
+        if let Some(e) = &self.effort {
+            args.push("-c".to_string());
+            args.push(format!("model_reasoning_effort={e}"));
+        }
+        args
+    }
 }
 
 impl AiBackend for CodexBackend {
@@ -154,37 +191,7 @@ impl AiBackend for CodexBackend {
         };
 
         let last_msg_path = unique_tmp_path(".txt");
-
-        let mut args: Vec<String> = vec!["exec".to_string()];
-        if let Some(sid) = &self.session_id {
-            args.push("resume".to_string());
-            args.push(sid.clone());
-        }
-        // 全ツール feature を無効化して codex を「LLM のみ」にする (初回も resume 後も同じ)。
-        for feat in DISABLE_TOOL_FEATURES {
-            args.push("--disable".to_string());
-            args.push(feat.to_string());
-        }
-        // sandbox は初回のみ指定 (resume では元セッションの設定を継承する)。
-        if self.session_id.is_none() {
-            args.push("-s".to_string());
-            args.push("read-only".to_string());
-        }
-        args.extend([
-            "--skip-git-repo-check".to_string(),
-            "-o".to_string(),
-            last_msg_path.clone(),
-            "-".to_string(),
-        ]);
-        args.extend(self.base_extra_args.iter().cloned());
-        if let Some(m) = &self.model {
-            args.push("--model".to_string());
-            args.push(m.clone());
-        }
-        if let Some(e) = &self.effort {
-            args.push("-c".to_string());
-            args.push(format!("model_reasoning_effort={e}"));
-        }
+        let args = self.build_args(&last_msg_path);
 
         let stdout_result = run_cli_capture_stdout("codex", &args, &prompt, &self.log_path);
 
@@ -296,6 +303,48 @@ fn parse_codex_session_uuid(filename: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn args_disable_all_tool_features_and_use_readonly_sandbox() {
+        // 信頼の根幹: --disable 群が全 feature 分あり、初回は -s read-only が付く。
+        let backend = CodexBackend::new(&AiConfig::default(), &LogConfig::default());
+        let args = backend.build_args("/tmp/last.txt");
+        let disables: Vec<&String> = args
+            .iter()
+            .zip(args.iter().skip(1))
+            .filter(|(a, _)| *a == "--disable")
+            .map(|(_, v)| v)
+            .collect();
+        for feat in DISABLE_TOOL_FEATURES {
+            assert!(
+                disables.iter().any(|v| v.as_str() == *feat),
+                "missing --disable {feat}"
+            );
+        }
+        let s = args.iter().position(|a| a == "-s").expect("-s sandbox");
+        assert_eq!(args[s + 1], "read-only");
+        assert!(args.iter().any(|a| a == "--skip-git-repo-check"));
+    }
+
+    #[test]
+    fn args_resume_keeps_disables_but_omits_sandbox() {
+        // resume 時も --disable 群は維持 (退行 = resume 後にツールが復活する)。
+        let mut backend = CodexBackend::new(&AiConfig::default(), &LogConfig::default());
+        backend.session_id = Some("0195aaaa-954b-7bb1-be7f-6549613b7488".to_string());
+        let args = backend.build_args("/tmp/last.txt");
+        assert!(args.iter().any(|a| a == "--disable"));
+        assert!(!args.iter().any(|a| a == "-s"), "-s は resume では付けない");
+        assert!(args.iter().any(|a| a == "resume"));
+    }
+
+    #[test]
+    fn args_never_contain_danger_flags() {
+        let backend = CodexBackend::new(&AiConfig::default(), &LogConfig::default());
+        let args = backend.build_args("/tmp/last.txt");
+        for forbidden in ["--full-auto", "--dangerously-bypass-approvals-and-sandbox", "--yolo"] {
+            assert!(!args.iter().any(|a| a == forbidden), "found {forbidden}");
+        }
+    }
 
     #[test]
     fn parse_uuid_from_full_filename() {

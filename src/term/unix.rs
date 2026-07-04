@@ -210,3 +210,46 @@ pub fn local_utc_offset_secs(epoch: i64) -> i64 {
         tm.tm_gmtoff as i64
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pid_alive_for_self_and_dead_for_bogus() {
+        // 自プロセスは生存、u32::MAX (存在し得ない / i32 変換不可) は false。
+        assert!(pid_alive(std::process::id()));
+        assert!(!pid_alive(u32::MAX), "i32 範囲外は kill(-1) 事故防止で false");
+    }
+
+    #[test]
+    fn local_utc_offset_is_sane_and_deterministic() {
+        let epoch = 1_783_000_000i64; // 2026-07 ごろ
+        let off = local_utc_offset_secs(epoch);
+        assert!((-14 * 3600..=14 * 3600).contains(&off), "off={off}");
+        assert_eq!(off % 60, 0, "分単位のはず: {off}");
+        assert_eq!(off, local_utc_offset_secs(epoch), "同一 epoch で決定的");
+    }
+
+    #[test]
+    fn resize_flag_swap_semantics() {
+        // record → true が 1 度だけ返り、以降 false (global atomic のためこの 1 テストに集約)。
+        while check_and_clear_resize() {} // 他要因の残フラグを掃除
+        super::super::record_resize();
+        assert!(check_and_clear_resize());
+        assert!(!check_and_clear_resize());
+    }
+
+    #[test]
+    fn terminal_size_is_always_positive() {
+        // tty あり: ioctl の実値 / tty なし (CI): (24, 80) フォールバック。どちらも正。
+        let (rows, cols) = terminal_size();
+        assert!(rows > 0);
+        assert!(cols > 0);
+    }
+
+    #[test]
+    fn console_ok_is_always_ok_on_unix() {
+        assert!(console_ok().is_ok());
+    }
+}

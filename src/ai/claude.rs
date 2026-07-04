@@ -90,6 +90,46 @@ impl ClaudeBackend {
             log_path,
         }
     }
+
+    /// claude CLI の引数を組み立てる (send から機械抽出した純関数。golden test 対象)。
+    /// 共通フラグ + 初回 vs resume の差分。安全制約 (--disallowedTools) と出力形式は毎回明示。
+    /// --append-system-prompt は append 動作のため初回のみ（resume でも付けると二重に追加される）。
+    fn build_args(&self) -> Vec<String> {
+        let mut args: Vec<String> = vec!["-p".to_string()];
+
+        if let Some(ref sid) = self.session_id {
+            args.push("--resume".to_string());
+            args.push(sid.clone());
+        } else {
+            // `self.system_prompt` (= build_system_prompt_claude → build_system_prompt) に
+            // 安全制約・JSON フォーマット指示が全て含まれている。inline で追記する必要なし。
+            // `--append-system-prompt` は append 動作なので初回のみ (resume では二重追加になる)。
+            args.push("--append-system-prompt".to_string());
+            args.push(self.system_prompt.clone());
+        }
+
+        args.push("--output-format".to_string());
+        args.push("json".to_string());
+        args.push("--json-schema".to_string());
+        args.push(AI_RESPONSE_SCHEMA.to_string());
+        args.extend(self.base_extra_args.iter().cloned());
+        // runtime model / effort は base_extra_args の後に追加 (CLI は通常後勝ち)。
+        if let Some(m) = &self.model {
+            args.push("--model".to_string());
+            args.push(m.clone());
+        }
+        if let Some(e) = &self.effort {
+            args.push("--effort".to_string());
+            args.push(e.clone());
+        }
+        // 安全制約 (--disallowedTools) は args の末尾で付与する。extra_args に
+        // `--disallowedTools ""` 等を後置きされても CLI 後勝ちでこちらが勝ち、
+        // baseline (Bash/Edit/Write) を non-removable に保つため。値は new() で
+        // effective_disallowed_tools により MANDATORY_DENY を union 済み。
+        args.push("--disallowedTools".to_string());
+        args.push(self.disallowed_tools.clone());
+        args
+    }
 }
 
 impl AiBackend for ClaudeBackend {
@@ -154,42 +194,7 @@ impl AiBackend for ClaudeBackend {
             )
         };
 
-        // 共通フラグ + 初回 vs resume の差分を組み立てる。
-        // 安全制約 (--disallowedTools) と出力形式は毎回明示する。
-        // --append-system-prompt は append 動作のため初回のみ（resume でも付けると二重に追加される）。
-        let mut args: Vec<String> = vec!["-p".to_string()];
-
-        if let Some(ref sid) = self.session_id {
-            args.push("--resume".to_string());
-            args.push(sid.clone());
-        } else {
-            // `self.system_prompt` (= build_system_prompt_claude → build_system_prompt) に
-            // 安全制約・JSON フォーマット指示が全て含まれている。inline で追記する必要なし。
-            // `--append-system-prompt` は append 動作なので初回のみ (resume では二重追加になる)。
-            args.push("--append-system-prompt".to_string());
-            args.push(self.system_prompt.clone());
-        }
-
-        args.push("--output-format".to_string());
-        args.push("json".to_string());
-        args.push("--json-schema".to_string());
-        args.push(AI_RESPONSE_SCHEMA.to_string());
-        args.extend(self.base_extra_args.iter().cloned());
-        // runtime model / effort は base_extra_args の後に追加 (CLI は通常後勝ち)。
-        if let Some(m) = &self.model {
-            args.push("--model".to_string());
-            args.push(m.clone());
-        }
-        if let Some(e) = &self.effort {
-            args.push("--effort".to_string());
-            args.push(e.clone());
-        }
-        // 安全制約 (--disallowedTools) は args の末尾で付与する。extra_args に
-        // `--disallowedTools ""` 等を後置きされても CLI 後勝ちでこちらが勝ち、
-        // baseline (Bash/Edit/Write) を non-removable に保つため。値は new() で
-        // effective_disallowed_tools により MANDATORY_DENY を union 済み。
-        args.push("--disallowedTools".to_string());
-        args.push(self.disallowed_tools.clone());
+        let args = self.build_args();
         // prompt は引数ではなく stdin で渡す。
         // ターミナルコンテキストを含む prompt が ARG_MAX (~2MB) を超えると
         // execve() が E2BIG (`Argument list too long`, os error 7) で失敗するため。
@@ -300,6 +305,54 @@ mod tests {
         // opt-in 時は baseline を強制せず verbatim。
         assert_eq!(effective_disallowed_tools("", true), "");
         assert_eq!(effective_disallowed_tools("Read", true), "Read");
+    }
+
+    #[test]
+    fn disallowed_tools_is_last_arg_even_with_extra_args() {
+        // 信頼の根幹: extra_args に `--disallowedTools ""` を後置きされても、
+        // aish の baseline union 済み値が args 末尾に来て CLI 後勝ちで有効になる。
+        let mut cfg = AiConfig::default();
+        cfg.claude.extra_args = vec!["--disallowedTools".to_string(), "".to_string()];
+        let backend = ClaudeBackend::new(&cfg, &LogConfig::default());
+        let args = backend.build_args();
+        let last_flag_pos = args
+            .iter()
+            .rposition(|a| a == "--disallowedTools")
+            .expect("--disallowedTools");
+        assert_eq!(last_flag_pos, args.len() - 2, "末尾 (値の直前) にあること");
+        let value = &args[last_flag_pos + 1];
+        for t in ["Bash", "Edit", "Write"] {
+            assert!(
+                value.split(',').any(|x| x.trim() == t),
+                "baseline {t} missing in {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn first_turn_appends_system_prompt_but_resume_does_not() {
+        // --append-system-prompt は初回のみ (resume で付けると二重追加)。
+        let mut backend = ClaudeBackend::new(&AiConfig::default(), &LogConfig::default());
+        assert!(backend
+            .build_args()
+            .iter()
+            .any(|a| a == "--append-system-prompt"));
+        backend.session_id = Some("sid".to_string());
+        let args = backend.build_args();
+        assert!(!args.iter().any(|a| a == "--append-system-prompt"));
+        assert!(args.iter().any(|a| a == "--resume"));
+        // schema と deny は resume でも毎回付く。
+        assert!(args.iter().any(|a| a == "--json-schema"));
+        assert!(args.iter().any(|a| a == "--disallowedTools"));
+    }
+
+    #[test]
+    fn args_never_contain_permission_bypass() {
+        let backend = ClaudeBackend::new(&AiConfig::default(), &LogConfig::default());
+        let args = backend.build_args();
+        assert!(!args
+            .iter()
+            .any(|a| a == "--dangerously-skip-permissions" || a == "--yolo"));
     }
 
     #[test]

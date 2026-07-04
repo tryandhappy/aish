@@ -156,39 +156,14 @@ impl AiConversation<'_> {
                         ExecReport::Done { executed, outcome } => (executed, outcome),
                     };
 
-                    // Ctrl+C / Ctrl+D: 残りを中止し、実行有無に関わらず AI に
-                    // 問い合わせない (executed が非空でも follow-up しない)。
-                    if matches!(outcome, ExecOutcome::Abort) {
-                        break;
-                    }
-
-                    // q で 1 つも実行していない / 全スキップ等 → follow-up せず通常プロンプトへ。
-                    if executed.is_empty() {
-                        break;
-                    }
-
-                    // AI が「コマンドを教えるだけで出力確認は不要」と宣言した場合は
-                    // follow-up しない (Quit/Completed とも)。実行結果は ring_buffer の
-                    // 未送信 cursor に残るので、次のユーザ質問時に terminal コンテキスト
-                    // として送られる (情報は失われない)。
-                    if !response.command_result_followup {
+                    if !should_follow_up(&outcome, &executed, response.command_result_followup) {
                         break;
                     }
 
                     // 実行結果をAIに送信して分析を継続
                     let follow_up_context = self.ring_buffer.get_unsent_for(self.kind);
                     println!();
-                    let follow_up_text = if matches!(outcome, ExecOutcome::Quit) {
-                        format!(
-                            "ユーザが残りのコマンドの実行を中止しました。実行されたコマンド: {}。出力は terminal フェンスに含まれます。実行された分だけで分析してください。",
-                            executed.join(", ")
-                        )
-                    } else {
-                        format!(
-                            "実行したコマンド: {}。出力は terminal フェンスに含まれます。分析してください。追加の操作が必要であれば提案してください。",
-                            executed.join(", ")
-                        )
-                    };
+                    let follow_up_text = build_follow_up_text(&outcome, &executed);
                     last_prompt_for_annotation = follow_up_text.clone();
                     ai_result = self.send_with_spinner(&follow_up_context, &follow_up_text);
                 }
@@ -341,6 +316,37 @@ fn format_ai_error(kind: ai::BackendKind, error: &ai::AiError) -> String {
         kind.as_str(),
         error
     )
+}
+
+/// コマンド実行後に結果を AI へ自動問い合わせ (follow-up) するかの判定 (純関数、テスト対象)。
+/// - `Abort` (Ctrl+C/Ctrl+D): 実行有無に関わらず常に no (AI に問わない)。
+/// - `executed` が空 (全スキップ / q 即中止): no。
+/// - AI が `command_result_followup: false` を宣言: no (`Quit` でも no で一貫)。
+///   実行結果は ring_buffer の未送信 cursor に残り、次のユーザ質問時に送られる。
+fn should_follow_up(outcome: &ExecOutcome, executed: &[String], followup: bool) -> bool {
+    if matches!(outcome, ExecOutcome::Abort) {
+        return false;
+    }
+    if executed.is_empty() {
+        return false;
+    }
+    followup
+}
+
+/// follow-up の user_prompt 文言を組み立てる (純関数、テスト対象)。
+/// `Quit` は「実行された分だけで分析」、`Completed` は「分析 + 追加提案」を指示する。
+fn build_follow_up_text(outcome: &ExecOutcome, executed: &[String]) -> String {
+    if matches!(outcome, ExecOutcome::Quit) {
+        format!(
+            "ユーザが残りのコマンドの実行を中止しました。実行されたコマンド: {}。出力は terminal フェンスに含まれます。実行された分だけで分析してください。",
+            executed.join(", ")
+        )
+    } else {
+        format!(
+            "実行したコマンド: {}。出力は terminal フェンスに含まれます。分析してください。追加の操作が必要であれば提案してください。",
+            executed.join(", ")
+        )
+    }
 }
 
 /// Y/n/a 確認の入力イベントを 1 決定に解決するまで待つ。
@@ -552,6 +558,38 @@ mod tests {
         // 入力スレッド消滅 (退出間際) は Skip 扱い (旧実装の Err(_) => break false 互換)。
         let rx = rx_with(vec![]);
         assert_eq!(wait_confirm_decision(&rx), ConfirmDecision::Skip);
+    }
+
+    #[test]
+    fn follow_up_matrix() {
+        // {Completed, Quit, Abort} × {followup} × {executed 空/非空} の確定仕様を固定。
+        let some = vec!["ls".to_string()];
+        let none: Vec<String> = vec![];
+        // Abort は常に no (実行済みがあっても AI に問わない)。
+        assert!(!should_follow_up(&ExecOutcome::Abort, &some, true));
+        assert!(!should_follow_up(&ExecOutcome::Abort, &none, true));
+        assert!(!should_follow_up(&ExecOutcome::Abort, &some, false));
+        // executed 空は常に no。
+        assert!(!should_follow_up(&ExecOutcome::Completed, &none, true));
+        assert!(!should_follow_up(&ExecOutcome::Quit, &none, true));
+        // followup=false は Quit でも no (一切 follow-up なしで一貫)。
+        assert!(!should_follow_up(&ExecOutcome::Completed, &some, false));
+        assert!(!should_follow_up(&ExecOutcome::Quit, &some, false));
+        // 従来動作: 実行済みあり + followup=true のみ yes。
+        assert!(should_follow_up(&ExecOutcome::Completed, &some, true));
+        assert!(should_follow_up(&ExecOutcome::Quit, &some, true));
+    }
+
+    #[test]
+    fn follow_up_text_distinguishes_quit_from_completed() {
+        let executed = vec!["ls".to_string(), "df -h".to_string()];
+        let quit = build_follow_up_text(&ExecOutcome::Quit, &executed);
+        assert!(quit.contains("中止しました"));
+        assert!(quit.contains("ls, df -h"));
+        assert!(quit.contains("実行された分だけで分析"));
+        let done = build_follow_up_text(&ExecOutcome::Completed, &executed);
+        assert!(done.contains("実行したコマンド: ls, df -h"));
+        assert!(done.contains("追加の操作が必要であれば提案"));
     }
 
     #[test]

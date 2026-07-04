@@ -53,6 +53,57 @@ impl GenericCliBackend {
         }
     }
 
+    /// CLI の (args, stdin 入力) を組み立てる (send から機械抽出した純関数。golden test 対象)。
+    /// args 順序: recipe.args → resume → model → effort → prompt (delivery が flag/arg のとき)。
+    fn build_invocation(&self, prompt: &str) -> Result<(Vec<String>, String), AiError> {
+        let mut args: Vec<String> = self.recipe.args.clone();
+
+        // resume を最優先で付ける (順序自体は CLI 依存だが、recipe の args の後に置く)。
+        if let Some(sid) = &self.session_id {
+            if !self.recipe.resume_flag.is_empty() {
+                args.push(self.recipe.resume_flag.clone());
+                args.push(sid.clone());
+            }
+        }
+
+        // model / effort は recipe にフラグ名が指定されている場合のみ付与。
+        if let Some(m) = &self.model {
+            if !self.recipe.model_flag.is_empty() {
+                args.push(self.recipe.model_flag.clone());
+                args.push(m.clone());
+            }
+        }
+        if let Some(e) = &self.effort {
+            if !self.recipe.effort_flag.is_empty() {
+                args.push(self.recipe.effort_flag.clone());
+                args.push(e.clone());
+            }
+        }
+
+        // prompt を args 側に積むかどうかは prompt_delivery で決定。
+        let stdin_input = match self.recipe.prompt_delivery.as_str() {
+            "stdin" => prompt.to_string(),
+            "flag" => {
+                // 例: ["-p", "<prompt text>"]
+                args.push(self.recipe.prompt_flag.clone());
+                args.push(prompt.to_string());
+                String::new()
+            }
+            "arg" => {
+                // 例: positional 末尾に追加
+                args.push(prompt.to_string());
+                String::new()
+            }
+            other => {
+                return Err(AiError::Other(format!(
+                    "generic provider `{}`: unknown prompt_delivery `{}`",
+                    self.recipe.name, other
+                )));
+            }
+        };
+        Ok((args, stdin_input))
+    }
+
     /// このレシピが native session resume を要求しているか。
     /// `parse=jsonl` のときは `jsonl_session_path` を、それ以外は `session_id_path` を見る。
     /// resume_flag も非空である必要がある (resume 引数を組み立てられないため)。
@@ -158,52 +209,8 @@ impl AiBackend for GenericCliBackend {
             build_full_prompt("", &self.history, req.terminal_context, req.user_prompt)
         };
 
-        // === args 組み立て ===
-        let mut args: Vec<String> = self.recipe.args.clone();
-
-        // resume を最優先で付ける (順序自体は CLI 依存だが、recipe の args の後に置く)。
-        if let Some(sid) = &self.session_id {
-            if !self.recipe.resume_flag.is_empty() {
-                args.push(self.recipe.resume_flag.clone());
-                args.push(sid.clone());
-            }
-        }
-
-        // model / effort は recipe にフラグ名が指定されている場合のみ付与。
-        if let Some(m) = &self.model {
-            if !self.recipe.model_flag.is_empty() {
-                args.push(self.recipe.model_flag.clone());
-                args.push(m.clone());
-            }
-        }
-        if let Some(e) = &self.effort {
-            if !self.recipe.effort_flag.is_empty() {
-                args.push(self.recipe.effort_flag.clone());
-                args.push(e.clone());
-            }
-        }
-
-        // prompt を args 側に積むかどうかは prompt_delivery で決定。
-        let stdin_input = match self.recipe.prompt_delivery.as_str() {
-            "stdin" => prompt.clone(),
-            "flag" => {
-                // 例: ["-p", "<prompt text>"]
-                args.push(self.recipe.prompt_flag.clone());
-                args.push(prompt.clone());
-                String::new()
-            }
-            "arg" => {
-                // 例: positional 末尾に追加
-                args.push(prompt.clone());
-                String::new()
-            }
-            other => {
-                return Err(AiError::Other(format!(
-                    "generic provider `{}`: unknown prompt_delivery `{}`",
-                    self.recipe.name, other
-                )));
-            }
-        };
+        // === args 組み立て (純関数に抽出済み) ===
+        let (args, stdin_input) = self.build_invocation(&prompt)?;
 
         let stdout = run_cli_capture_stdout_env(
             &self.recipe.binary,
@@ -385,6 +392,77 @@ mod tests {
             "env var not passed: {}",
             resp.message
         );
+    }
+
+    fn backend_with(recipe: ProviderRecipe) -> GenericCliBackend {
+        let leaked = Box::leak(Box::new(recipe)) as &'static ProviderRecipe;
+        let cfg = AiConfig::default();
+        let log = LogConfig {
+            enabled: false,
+            path: String::new(),
+        };
+        GenericCliBackend::new(leaked, &cfg, &log)
+    }
+
+    #[test]
+    fn invocation_order_is_args_resume_model_effort_prompt() {
+        // args 順序の固定: recipe.args → resume → model → effort → prompt(arg)。
+        let mut r = dummy_recipe();
+        r.args = vec!["run".into(), "--safe".into()];
+        r.resume_flag = "--resume".into();
+        r.session_id_path = "sid".into();
+        r.model_flag = "--model".into();
+        r.effort_flag = "--variant".into();
+        r.prompt_delivery = "arg".into();
+        let mut b = backend_with(r);
+        b.session_id = Some("s1".into());
+        b.set_model(Some("m1"));
+        b.set_effort(Some("high"));
+        let (args, stdin) = b.build_invocation("PROMPT").unwrap();
+        assert_eq!(
+            args,
+            vec!["run", "--safe", "--resume", "s1", "--model", "m1", "--variant", "high", "PROMPT"]
+        );
+        assert!(stdin.is_empty());
+    }
+
+    #[test]
+    fn invocation_stdin_delivery_keeps_args_clean() {
+        let r = dummy_recipe(); // prompt_delivery=stdin
+        let b = backend_with(r);
+        let (args, stdin) = b.build_invocation("PROMPT").unwrap();
+        assert!(args.is_empty());
+        assert_eq!(stdin, "PROMPT");
+    }
+
+    #[test]
+    fn invocation_flag_delivery_appends_flag_and_prompt() {
+        let mut r = dummy_recipe();
+        r.prompt_delivery = "flag".into();
+        r.prompt_flag = "-p".into();
+        let b = backend_with(r);
+        let (args, stdin) = b.build_invocation("PROMPT").unwrap();
+        assert_eq!(args, vec!["-p", "PROMPT"]);
+        assert!(stdin.is_empty());
+    }
+
+    #[test]
+    fn invocation_unknown_delivery_errors() {
+        let mut r = dummy_recipe();
+        r.prompt_delivery = "telepathy".into();
+        let b = backend_with(r);
+        assert!(b.build_invocation("PROMPT").is_err());
+    }
+
+    #[test]
+    fn invocation_omits_flags_when_unset() {
+        // model/effort/resume は未設定 or フラグ名なしなら一切付かない。
+        let mut r = dummy_recipe();
+        r.prompt_delivery = "arg".into();
+        let mut b = backend_with(r);
+        b.set_model(Some("m1")); // model_flag が空なので反映されない
+        let (args, _) = b.build_invocation("P").unwrap();
+        assert_eq!(args, vec!["P"]);
     }
 
     #[test]

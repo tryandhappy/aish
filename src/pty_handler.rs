@@ -140,3 +140,102 @@ impl PtyHandler {
             .unwrap_or(false)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn kill_line_bytes_per_platform() {
+        // 打ちかけ消去バイト列の固定: unix=Ctrl+A+Ctrl+K / windows=ESC。
+        // (windows-latest ランナーでは windows 値が検証される)
+        if cfg!(windows) {
+            assert_eq!(PtyHandler::KILL_LINE_BYTES, &[0x1b]);
+        } else {
+            assert_eq!(PtyHandler::KILL_LINE_BYTES, &[0x01, 0x0b]);
+        }
+    }
+
+    /// 実 PTY で /bin/sh を起動するスモーク (cfg(unix)。CI ランナーで動作)。
+    /// reader は別スレッド + タイムアウトで、期待文字列が現れるまで読む。
+    #[cfg(unix)]
+    fn read_until(
+        rx: &mpsc::Receiver<Vec<u8>>,
+        needle: &str,
+        timeout: Duration,
+    ) -> Result<String, String> {
+        let mut acc = String::new();
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let remain = deadline.saturating_duration_since(std::time::Instant::now());
+            if remain.is_zero() {
+                return Err(format!("timeout waiting for {needle:?}. got: {acc}"));
+            }
+            match rx.recv_timeout(remain) {
+                Ok(chunk) => {
+                    acc.push_str(&String::from_utf8_lossy(&chunk));
+                    if acc.contains(needle) {
+                        return Ok(acc);
+                    }
+                }
+                Err(_) => return Err(format!("EOF/timeout waiting for {needle:?}. got: {acc}")),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn spawn_sh() -> (PtyHandler, mpsc::Receiver<Vec<u8>>) {
+        // SHELL 環境変数に依存しないよう明示 (テストの決定性)。
+        std::env::set_var("SHELL", "/bin/sh");
+        let mut pty = PtyHandler::spawn_local_shell(24, 80).expect("spawn sh");
+        let mut reader = pty.take_reader();
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match std::io::Read::read(&mut reader, &mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if tx.send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        (pty, rx)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn approved_command_roundtrip_and_aish_pid_env() {
+        let (mut pty, rx) = spawn_sh();
+        assert!(pty.is_alive());
+
+        // 承認済みコマンド送信 → 出力が返る。
+        let cmd = crate::vetted_command::VettedCommand::vet("echo aish-pty-$((20+22))")
+            .expect("clean command");
+        pty.send_approved_command(&cmd).unwrap();
+        read_until(&rx, "aish-pty-42", Duration::from_secs(10)).unwrap();
+
+        // 子シェル環境に nested 検出用 AISH_PID が注入されている。
+        // needle は展開後の実値にする (入力エコー行の `$AISH_PID` に誤マッチしないため)。
+        let cmd2 = crate::vetted_command::VettedCommand::vet("echo pid=$AISH_PID").unwrap();
+        pty.send_approved_command(&cmd2).unwrap();
+        let expect = format!("pid={}", std::process::id());
+        read_until(&rx, &expect, Duration::from_secs(10)).unwrap();
+
+        // resize はエラーにならない。
+        pty.resize(30, 100).unwrap();
+
+        // exit で終了し is_alive が false になる。
+        pty.write(b"exit\n").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while pty.is_alive() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!pty.is_alive(), "shell did not exit");
+    }
+}

@@ -81,8 +81,12 @@ fn parse_update_channel(args: &[String]) -> update::UpdateChannel {
 
 fn parse_args() -> CliAction {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    parse_args_from(&args)
+}
 
-    for arg in &args {
+/// `parse_args` の本体 (テスト用に引数を注入できるよう分離)。
+fn parse_args_from(args: &[String]) -> CliAction {
+    for arg in args {
         match arg.as_str() {
             "--update" => return CliAction::Update(parse_update_channel(&args)),
             "--version" | "-V" => return CliAction::Version,
@@ -910,6 +914,66 @@ mod tests {
 
     fn to_args(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn parse_args_run_splits_flags_and_ssh_args() {
+        // --ai/--model/--effort/--config を吸収し、残りが ssh 引数になる。
+        let args = to_args(&[
+            "--ai", "codex", "--model=gpt-5", "--effort", "high", "-p", "2222", "user@host",
+        ]);
+        let CliAction::Run(a) = parse_args_from(&args) else {
+            panic!("expected Run");
+        };
+        assert_eq!(a.ai_backend.as_deref(), Some("codex"));
+        assert_eq!(a.ai_model.as_deref(), Some("gpt-5"));
+        assert_eq!(a.ai_effort.as_deref(), Some("high"));
+        assert_eq!(a.ssh_args, vec!["-p", "2222", "user@host"]);
+    }
+
+    #[test]
+    fn parse_args_equals_and_space_forms() {
+        let args = to_args(&["--config=/tmp/c.toml"]);
+        let CliAction::Run(a) = parse_args_from(&args) else {
+            panic!("expected Run");
+        };
+        assert_eq!(a.config_path.as_deref(), Some("/tmp/c.toml"));
+
+        let args = to_args(&["--config", "/tmp/c2.toml"]);
+        let CliAction::Run(a) = parse_args_from(&args) else {
+            panic!("expected Run");
+        };
+        assert_eq!(a.config_path.as_deref(), Some("/tmp/c2.toml"));
+    }
+
+    #[test]
+    fn parse_args_top_level_actions_win() {
+        assert!(matches!(
+            parse_args_from(&to_args(&["--version"])),
+            CliAction::Version
+        ));
+        assert!(matches!(
+            parse_args_from(&to_args(&["--help"])),
+            CliAction::Help
+        ));
+        assert!(matches!(
+            parse_args_from(&to_args(&["--list-providers"])),
+            CliAction::ListProviders(None)
+        ));
+        // どこにあっても優先される (ssh 引数と混在時)。
+        assert!(matches!(
+            parse_args_from(&to_args(&["user@host", "--version"])),
+            CliAction::Version
+        ));
+    }
+
+    #[test]
+    fn parse_args_empty_is_local_shell_run() {
+        let CliAction::Run(a) = parse_args_from(&[]) else {
+            panic!("expected Run");
+        };
+        assert!(a.ssh_args.is_empty());
+        assert!(a.ai_backend.is_none());
     }
 
     #[test]

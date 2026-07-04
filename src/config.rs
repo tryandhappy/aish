@@ -902,6 +902,34 @@ language = "Japanese"
     }
 
     #[test]
+    fn builtin_kimi_keeps_plan_flag() {
+        // 信頼の根幹: kimi 同梱 recipe の read-only 安全フラグ --plan が残っていること。
+        let builtins = builtin_providers();
+        let kimi = builtins.iter().find(|r| r.name == "kimi").unwrap();
+        assert!(kimi.args.iter().any(|a| a == "--plan"));
+    }
+
+    #[test]
+    fn builtin_opencode_enforces_readonly_config() {
+        // 信頼の根幹: opencode 同梱 recipe の read-only 強制 (env 注入 + 専用 agent)。
+        let builtins = builtin_providers();
+        let oc = builtins.iter().find(|r| r.name == "opencode").unwrap();
+        // --auto (auto-approve) と --agent plan (headless ハング) は絶対に使わない。
+        assert!(!oc.args.iter().any(|a| a == "--auto"));
+        let agent_pos = oc.args.iter().position(|a| a == "--agent").unwrap();
+        assert_eq!(oc.args[agent_pos + 1], "aish", "--agent plan に変えない");
+        // OPENCODE_CONFIG_CONTENT が valid JSON で deny 構成を含む。
+        let content = oc.env.get("OPENCODE_CONFIG_CONTENT").expect("env 注入");
+        let v: serde_json::Value = serde_json::from_str(content).expect("valid JSON");
+        assert_eq!(v["permission"]["edit"], "deny");
+        assert_eq!(v["permission"]["bash"], "deny");
+        assert_eq!(v["agent"]["aish"]["permission"]["edit"], "deny");
+        assert_eq!(v["agent"]["aish"]["permission"]["bash"], "deny");
+        assert_eq!(v["agent"]["aish"]["tools"]["task"], false);
+        assert_eq!(v["agent"]["aish"]["tools"]["todowrite"], false);
+    }
+
+    #[test]
     fn new_provider_parses_minimal() {
         let ai = ai_from_toml(
             r#"

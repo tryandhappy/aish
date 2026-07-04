@@ -78,6 +78,33 @@ impl CloudflareWorkersAiBackend {
     }
 }
 
+/// request body を組み立てる (send から機械抽出した純関数。golden test 対象)。
+fn build_body(prompt: &str) -> String {
+    serde_json::json!({
+        "messages": [{ "role": "user", "content": prompt }]
+    })
+    .to_string()
+}
+
+/// curl 引数を組み立てる (send から機械抽出した純関数。golden test 対象)。
+/// `-f` は付けない: HTTP エラーでも Cloudflare が返す JSON エラーボディを読みたいため。
+/// body は stdin (`--data-binary @-`) で渡す (ARG_MAX / クォート回避)。
+fn build_curl_args(account: &str, token: &str, model: &str) -> Vec<String> {
+    let url = format!("https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/{model}");
+    vec![
+        "-sS".to_string(),
+        "-X".to_string(),
+        "POST".to_string(),
+        url,
+        "-H".to_string(),
+        format!("Authorization: Bearer {token}"),
+        "-H".to_string(),
+        "Content-Type: application/json".to_string(),
+        "--data-binary".to_string(),
+        "@-".to_string(),
+    ]
+}
+
 impl AiBackend for CloudflareWorkersAiBackend {
     fn name(&self) -> &'static str {
         "cloudflare"
@@ -150,28 +177,8 @@ impl AiBackend for CloudflareWorkersAiBackend {
             req.user_prompt,
         );
 
-        // === request body ===
-        let body = serde_json::json!({
-            "messages": [{ "role": "user", "content": prompt }]
-        })
-        .to_string();
-
-        // === curl 引数 ===
-        // `-f` は付けない: HTTP エラーでも Cloudflare が返す JSON エラーボディを読みたいため。
-        // body は stdin (`--data-binary @-`) で渡す (ARG_MAX / クォート回避)。
-        let url = format!("https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/{model}");
-        let args: Vec<String> = vec![
-            "-sS".to_string(),
-            "-X".to_string(),
-            "POST".to_string(),
-            url,
-            "-H".to_string(),
-            format!("Authorization: Bearer {token}"),
-            "-H".to_string(),
-            "Content-Type: application/json".to_string(),
-            "--data-binary".to_string(),
-            "@-".to_string(),
-        ];
+        let body = build_body(&prompt);
+        let args = build_curl_args(&account, &token, &model);
 
         let stdout = run_cli_capture_stdout("curl", &args, &body, &self.log_path)?;
 
@@ -236,5 +243,24 @@ mod tests {
             CloudflareWorkersAiBackend::new(&AiConfig::default(), &LogConfig::default());
         backend.set_model(Some("@cf/meta/llama-3.1-8b-instruct"));
         assert_eq!(backend.resolve_model(), "@cf/meta/llama-3.1-8b-instruct");
+    }
+
+    #[test]
+    fn body_wraps_prompt_in_messages() {
+        let body: serde_json::Value = serde_json::from_str(&build_body("hello")).unwrap();
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(body["messages"][0]["content"], "hello");
+    }
+
+    #[test]
+    fn curl_args_embed_account_and_model_in_url_without_fail_flag() {
+        let args = build_curl_args("acc1", "tok1", "@cf/meta/llama-3.1-8b-instruct");
+        assert!(args.iter().any(|a| a
+            == "https://api.cloudflare.com/client/v4/accounts/acc1/ai/run/@cf/meta/llama-3.1-8b-instruct"));
+        assert!(args.iter().any(|a| a == "@-"), "body は stdin 渡し");
+        assert!(
+            !args.iter().any(|a| a == "-f" || a == "--fail"),
+            "-f はエラーボディを読めなくするので付けない"
+        );
     }
 }
