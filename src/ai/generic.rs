@@ -293,7 +293,9 @@ mod tests {
         }
     }
 
+    // /bin/cat / /bin/sh を spawn する統合テストは unix 限定 (Windows CI ランナーに無い)。
     #[test]
+    #[cfg(unix)]
     fn cat_echo_with_system_prompt_extracts_example_json() {
         // /bin/cat に prompt をそのまま出力させると、`build_system_prompt` がプロンプト先頭に
         // 焼き込んでいる出力フォーマットの例 (`{"message":"ユーザへの説明","commands":["提案コマンド"]}`)
@@ -317,6 +319,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn cat_echo_without_inline_system_falls_back_to_raw() {
         // system_prompt_inline=false + 空 system_prompt なら build_full_prompt は
         // history + context + user_prompt のみを連結。JSON が無いので lossy パースは
@@ -432,6 +435,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn history_accumulated_when_no_native_resume() {
         // /bin/cat + lossy + no resume → 内部 history が増えることを検証。
         let recipe = Box::leak(Box::new(dummy_recipe()));
