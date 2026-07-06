@@ -59,7 +59,7 @@ minibuffer / 打ちかけ（§ 15.4, 15.5）:
 
 platform 層 / Windows（§ 15.13）:
 - **低レベル端末操作（raw mode・poll 付き 1byte 読み・端末サイズ・DSR・リサイズ・Ctrl+C 検出・PID 生存確認）は `src/term/` に集約**。ui.rs 等で libc / Console API を直接叩かない。**term/unix.rs は ui.rs からの純移動でロジック変更禁止**（§ 15.1 の termios ルール準拠）。
-- **Windows 入力は `ReadConsoleInputW` ポンプ 1 本**（term/windows.rs。ReadFile/ReadConsoleW 併用禁止）。**Ctrl+/ は VK_OEM_2+CTRL で 0x1f を明示注入**（uChar=0 対策 = エントリキーの生命線）。**stdout の `DISABLE_NEWLINE_AUTO_RETURN` は設定しない**（Unix の OPOST 不可触と同義）。
+- **Windows 入力は `ReadConsoleInputW` ポンプ 1 本**（term/windows.rs。ReadFile/ReadConsoleW 併用禁止）。**Ctrl+/ は uChar 値に依らず（0x1f/0/0x2f）Ctrl+VK_OEM_2 を 0x1f に正規化**（native/一部 VT 端末/RDP・Remmina のレイアウト変換すべてに対応 = エントリキーの生命線。`if unit==0` ガードより前で判定し、Shift は見ない）。**stdout の `DISABLE_NEWLINE_AUTO_RETURN` は設定しない**（Unix の OPOST 不可触と同義）。
 - **Windows の kill_line/refresh_prompt は ESC(0x1b)**（PSReadLine に 0x01,0x0b は効かず未承認 submit リスク）。既定シェルは powershell.exe。cmd の末尾空白なしプロンプトは sniffer の `is_cmd_style_prompt` 特例（**学習させない**）。
 - **Windows の自己更新（`--update`）は Unsupported を維持**。release への Windows バイナリ追加は実機検証完了後。
 

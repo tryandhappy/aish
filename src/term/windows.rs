@@ -40,7 +40,8 @@ use windows_sys::Win32::System::Time::GetTimeZoneInformation;
 const CP_UTF8: u32 = 65001;
 /// GetExitCodeProcess の「実行中」値 (STATUS_PENDING)。
 const STILL_ACTIVE: u32 = 259;
-/// `/` キーの仮想キーコード (US/JIS 配列)。Ctrl+/ が uChar=0 で届く端末での明示マッピング用。
+/// `/` キーの仮想キーコード (US/JIS 配列)。Ctrl+/ の uChar は端末/経路により
+/// 0x1f・0・0x2f と揺れるため、uChar 値に依らず Ctrl+VK_OEM_2 を 0x1f に正規化する用。
 const VK_OEM_2: u16 = 0xBF;
 
 fn stdin_handle() -> HANDLE {
@@ -184,18 +185,21 @@ fn pump_available_events() {
                     }
                     let unit = unsafe { key.uChar.UnicodeChar };
                     let repeat = key.wRepeatCount.max(1) as usize;
-                    if unit == 0 {
-                        // 文字を持たないキー (Shift 等) は破棄。ただし Ctrl+/ は
-                        // 端末によって uChar=0 で届くため 0x1f (aish のエントリキー) を
-                        // 明示注入する (VK_OEM_2 = `/`)。
-                        let ctrl =
-                            key.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED) != 0;
-                        if ctrl && key.wVirtualKeyCode == VK_OEM_2 {
-                            for _ in 0..repeat {
-                                p.queue.push_back(0x1f);
-                            }
+                    // Ctrl+/ = aish のエントリキー。経路によって uChar が
+                    //   0x1f (native conhost) / 0 (一部 VT 端末) /
+                    //   0x2f (RDP/Remmina 等のレイアウト変換) と揺れるため、uChar 値に
+                    //   依らず Ctrl+VK_OEM_2 を 0x1f へ正規化する (エントリキーの生命線)。
+                    // Shift は見ない → Ctrl+Shift+/ (= Ctrl+?) も同じく拾う。
+                    let ctrl =
+                        key.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED) != 0;
+                    if ctrl && key.wVirtualKeyCode == VK_OEM_2 {
+                        for _ in 0..repeat {
+                            p.queue.push_back(0x1f);
                         }
                         continue;
+                    }
+                    if unit == 0 {
+                        continue; // 文字を持たないキー (Shift 等) は破棄
                     }
                     // UTF-16 → UTF-8 (サロゲートペア対応)
                     let push_char = |c: char, p: &mut Pump| {
