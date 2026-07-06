@@ -35,7 +35,15 @@ fn list_providers_includes_native_and_builtin_recipes() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     // native 全種と同梱 recipe が列挙される (新 backend の載せ忘れ検知)。
     for name in [
-        "claude", "codex", "gemini", "qwen", "cursor", "copilot", "cloudflare", "nvidia", "kimi",
+        "claude",
+        "codex",
+        "gemini",
+        "qwen",
+        "cursor",
+        "copilot",
+        "cloudflare",
+        "nvidia",
+        "kimi",
         "opencode",
     ] {
         assert!(stdout.contains(name), "missing {name} in: {stdout}");

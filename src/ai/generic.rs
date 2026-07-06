@@ -421,7 +421,17 @@ mod tests {
         let (args, stdin) = b.build_invocation("PROMPT").unwrap();
         assert_eq!(
             args,
-            vec!["run", "--safe", "--resume", "s1", "--model", "m1", "--variant", "high", "PROMPT"]
+            vec![
+                "run",
+                "--safe",
+                "--resume",
+                "s1",
+                "--model",
+                "m1",
+                "--variant",
+                "high",
+                "PROMPT"
+            ]
         );
         assert!(stdin.is_empty());
     }

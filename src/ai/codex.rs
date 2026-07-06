@@ -341,7 +341,11 @@ mod tests {
     fn args_never_contain_danger_flags() {
         let backend = CodexBackend::new(&AiConfig::default(), &LogConfig::default());
         let args = backend.build_args("/tmp/last.txt");
-        for forbidden in ["--full-auto", "--dangerously-bypass-approvals-and-sandbox", "--yolo"] {
+        for forbidden in [
+            "--full-auto",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--yolo",
+        ] {
             assert!(!args.iter().any(|a| a == forbidden), "found {forbidden}");
         }
     }

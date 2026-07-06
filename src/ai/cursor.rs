@@ -256,7 +256,10 @@ mod tests {
         let backend = CursorBackend::new(&cfg, &LogConfig::default());
         let args = backend.build_args();
         assert!(!args.iter().any(|a| a == "--mode"));
-        assert!(args.iter().any(|a| a == "--trust"), "--trust は mode 非依存");
+        assert!(
+            args.iter().any(|a| a == "--trust"),
+            "--trust は mode 非依存"
+        );
     }
 
     #[test]

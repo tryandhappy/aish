@@ -88,10 +88,10 @@ fn parse_args() -> CliAction {
 fn parse_args_from(args: &[String]) -> CliAction {
     for arg in args {
         match arg.as_str() {
-            "--update" => return CliAction::Update(parse_update_channel(&args)),
+            "--update" => return CliAction::Update(parse_update_channel(args)),
             "--version" | "-V" => return CliAction::Version,
             "--help" => return CliAction::Help,
-            "--list-providers" => return CliAction::ListProviders(find_config_path(&args)),
+            "--list-providers" => return CliAction::ListProviders(find_config_path(args)),
             _ => {}
         }
     }
@@ -125,7 +125,7 @@ fn parse_args_from(args: &[String]) -> CliAction {
         let arg = args[i].as_str();
         // --config <path> / --config=<path>
         if arg == "--config" || arg.starts_with("--config=") {
-            match take_value(&args, i, "--config") {
+            match take_value(args, i, "--config") {
                 Some((v, adv)) => {
                     config_path = Some(v.to_string());
                     i += adv;
@@ -139,7 +139,7 @@ fn parse_args_from(args: &[String]) -> CliAction {
         }
         // --ai <kind> / --ai=<kind>
         if arg == "--ai" || arg.starts_with("--ai=") {
-            match take_value(&args, i, "--ai") {
+            match take_value(args, i, "--ai") {
                 Some((v, adv)) => {
                     ai_backend = Some(v.to_string());
                     i += adv;
@@ -156,7 +156,7 @@ fn parse_args_from(args: &[String]) -> CliAction {
         }
         // --model <name> / --model=<name>
         if arg == "--model" || arg.starts_with("--model=") {
-            match take_value(&args, i, "--model") {
+            match take_value(args, i, "--model") {
                 Some((v, adv)) => {
                     ai_model = Some(v.to_string());
                     i += adv;
@@ -170,7 +170,7 @@ fn parse_args_from(args: &[String]) -> CliAction {
         }
         // --effort <level> / --effort=<level>
         if arg == "--effort" || arg.starts_with("--effort=") {
-            match take_value(&args, i, "--effort") {
+            match take_value(args, i, "--effort") {
                 Some((v, adv)) => {
                     ai_effort = Some(v.to_string());
                     i += adv;
@@ -920,7 +920,14 @@ mod tests {
     fn parse_args_run_splits_flags_and_ssh_args() {
         // --ai/--model/--effort/--config を吸収し、残りが ssh 引数になる。
         let args = to_args(&[
-            "--ai", "codex", "--model=gpt-5", "--effort", "high", "-p", "2222", "user@host",
+            "--ai",
+            "codex",
+            "--model=gpt-5",
+            "--effort",
+            "high",
+            "-p",
+            "2222",
+            "user@host",
         ]);
         let CliAction::Run(a) = parse_args_from(&args) else {
             panic!("expected Run");

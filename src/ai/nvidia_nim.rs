@@ -253,8 +253,6 @@ mod tests {
             !args.iter().any(|a| a == "-f" || a == "--fail"),
             "-f はエラーボディを読めなくするので付けない"
         );
-        assert!(args
-            .iter()
-            .any(|a| a == "Authorization: Bearer nvapi-test"));
+        assert!(args.iter().any(|a| a == "Authorization: Bearer nvapi-test"));
     }
 }

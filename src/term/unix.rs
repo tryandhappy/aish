@@ -219,7 +219,10 @@ mod tests {
     fn pid_alive_for_self_and_dead_for_bogus() {
         // 自プロセスは生存、u32::MAX (存在し得ない / i32 変換不可) は false。
         assert!(pid_alive(std::process::id()));
-        assert!(!pid_alive(u32::MAX), "i32 範囲外は kill(-1) 事故防止で false");
+        assert!(
+            !pid_alive(u32::MAX),
+            "i32 範囲外は kill(-1) 事故防止で false"
+        );
     }
 
     #[test]
