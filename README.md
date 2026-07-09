@@ -56,8 +56,7 @@ https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
 ### Linux
 
 ```bash
-sudo curl -fsSL -o /usr/local/bin/aish \
-  "https://github.com/tryandhappy/aish/releases/latest/download/aish-$(uname -m)-unknown-linux-musl"
+sudo curl -fsSL -o /usr/local/bin/aish "https://github.com/tryandhappy/aish/releases/latest/download/aish-$(uname -m)-unknown-linux-musl"
 
 sudo chmod 755 /usr/local/bin/aish
 ```
@@ -69,8 +68,7 @@ sudo mkdir -p /usr/local/bin
 
 ARCH=$(uname -m); case "$ARCH" in arm64|aarch64) ARCH=aarch64;; x86_64|amd64) ARCH=x86_64;; esac
 
-sudo curl -fsSL -o /usr/local/bin/aish \
-  "https://github.com/tryandhappy/aish/releases/latest/download/aish-$ARCH-apple-darwin"
+sudo curl -fsSL -o /usr/local/bin/aish "https://github.com/tryandhappy/aish/releases/latest/download/aish-$ARCH-apple-darwin"
 
 sudo chmod 755 /usr/local/bin/aish
 ```
@@ -97,43 +95,22 @@ AIへの問い合わせは Crtl + /
 
 ### Claude Code (Default)
 ```bash
-# Login
 claude login
 
-# Sample
 aish
-aish --ai claude
-aish --ai claude --model opus
-aish --ai claude --model opus --effort xhigh
-
-# Usage
-aish --ai claude \
-  --model sonnet|opus|haiku|best|claude-opus-4-8|sonnet[1m]|opus[1m] \
-  --effort low|medium|high|xhigh|max|ultracode
 ```
 
 ### Codex
 ```bash
-# Login
 codex login
 
-# Sample
 aish --ai codex
-aish --ai codex --model gpt-5.5
-aish --ai codex --model gpt-5.5 --effort xhigh
-
-# Usage
-aish --ai \
-  codex --model gpt-5.5|gpt-5.4|gpt-g.4-mini \
-  --effort low|medium|high|xhigh
 ```
 
 ### Gemini
 ``` bash
-# Login
 gemini login
 
-# Sample
 aish --ai gemini
 ```
 
@@ -142,6 +119,29 @@ aish --ai gemini
 qwen
 
 aish --ai qwen
+```
+
+
+### Sample Option
+```
+# Claude Code
+aish --ai claude
+aish --ai claude --model opus
+aish --ai claude --model opus --effort xhigh
+
+# Claude Code Usage
+aish --ai claude \
+  --model sonnet|opus|haiku|best|claude-opus-4-8|sonnet[1m]|opus[1m] \
+  --effort low|medium|high|xhigh|max|ultracode
+
+# Codex
+aish --ai codex --model gpt-5.5
+aish --ai codex --model gpt-5.5 --effort xhigh
+
+## Codex Usage
+aish --ai \
+  codex --model gpt-5.5|gpt-5.4|gpt-g.4-mini \
+  --effort low|medium|high|xhigh
 ```
 
 
