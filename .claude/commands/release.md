@@ -22,6 +22,8 @@ aish プロジェクトをリリースする。次の手順をこの順で進め
 
 採用バージョンを `NEW=<x.y.z>` として以降使う。
 
+**既定チャネルは prerelease**。ユーザが「stable / 安定版」と明確に指示しない限り、新バージョンは prerelease として扱う (`NEW` にハイフン付き識別子を含める。例: patch bump したいなら `0.4.6-rc.1`)。引数でバージョンだけ渡された場合も、識別子が無くユーザが stable と明言していなければ prerelease 化して確認する。安定版リリースはユーザの明示要求時のみ。
+
 ### リリースチャネル (安定版 / 最新版)
 
 タグに **SemVer のハイフン付き prerelease 識別子** (`-rc.N` / `-beta.N` / `-alpha.N` 等) が含まれるかで、`release.yml` が GitHub Release の `prerelease` フラグを自動判定する:
