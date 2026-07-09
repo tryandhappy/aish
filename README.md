@@ -1,57 +1,59 @@
 # aish (AI + SSH)
 
+**English** | [日本語](README.ja.md)
+
 **AI-assisted SSH shell** — Ask Claude Code for help right inside your SSH session.
 
-- `aish` は AI + SSH/Terminal です。
-- ターミナルから `Ctrl+/` で AIに問い合わせできます。
-- AIと相談しながら作業することができます。
-- AIに画面の内容送るので、エラーやログを貼り付ける必要はありません。
-- コマンド実行時は必ず確認が入るので安心です。
-- クライアントのAI Agentを使用するので、サーバにインストールする必要がありません。
+- `aish` is AI + SSH/Terminal.
+- Query the AI from your terminal with `Ctrl+/`.
+- Work through tasks while consulting the AI.
+- The AI sees your screen, so there's no need to paste errors or logs.
+- Every command is confirmed before it runs, so you can relax.
+- It uses the AI agent on the client side — nothing to install on the server.
 
 ![aish screenshot](docs/images/sample1.png)
 
-## デモ動画
+## Demo Videos
 
-**SSHモード**
+**SSH mode**
 https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-ssh1.mp4
 
-**ローカルモード**
+**Local mode**
 https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
 
 
 
-## 前提条件
+## Requirements
 
-#### 対応OS
+#### Supported OS
 
-- Linux (Testing on Ubuntu 24.04)
-- Windows WSL2 (Testing on Ubuntu 24.04)
-- Windows 10 1809+ ネイティブ (Windows Terminal 推奨) ※実験的・実機テスト未了、バイナリ配布なし (要 `cargo build`)
-- macOS (Intel・Apple Silicon) ※テスト不十分
+- Linux (tested on Ubuntu 24.04)
+- Windows WSL2 (tested on Ubuntu 24.04)
+- Windows 10 1809+ native (Windows Terminal recommended) — experimental, not yet tested on real hardware, no prebuilt binary (requires `cargo build`)
+- macOS (Intel / Apple Silicon) — not thoroughly tested
 
-#### 必要なコマンド
+#### Required Commands
 
-- AI CLI (いずれか)
-  - [Claude Code](https://code.claude.com/docs/ja/overview)
-  - [ChatGPT Codex](https://openai.com/ja-JP/codex/)
-  - [Gemini CLI](https://cloud.google.com/blog/ja/topics/developers-practitioners/introducing-gemini-cli/)
+- AI CLI (one of)
+  - [Claude Code](https://code.claude.com/docs/en/overview)
+  - [ChatGPT Codex](https://openai.com/codex/)
+  - [Gemini CLI](https://cloud.google.com/blog/topics/developers-practitioners/introducing-gemini-cli/)
   - [Qwen Code](https://qwen.ai/qwencode)
-- OpenSSH (リモートSSH)
-- bash または zsh (ローカルシェル)
-- curl (aish --update)
+- OpenSSH (for remote SSH)
+- bash or zsh (for the local shell)
+- curl (for aish --update)
 
 
 
-## 対応AI CLI
+## Supported AI CLIs
 
-- Claude Code (API, Pro, Max, Team, Enterprise) ※FreeはClaude Codeが使えないので未対応 (デフォルト)
-- OpenAI ChatGPT Codex ※テスト不十分
-- Google Gemini ※テスト不十分
-- Qwen Code ※テスト不十分
+- Claude Code (API, Pro, Max, Team, Enterprise) — Free is not supported since it can't use Claude Code (default)
+- OpenAI ChatGPT Codex — not thoroughly tested
+- Google Gemini — not thoroughly tested
+- Qwen Code — not thoroughly tested
 
 
-## インストール
+## Installation
 
 ### Linux
 
@@ -61,7 +63,7 @@ sudo curl -fsSL -o /usr/local/bin/aish "https://github.com/tryandhappy/aish/rele
 sudo chmod 755 /usr/local/bin/aish
 ```
 
-### macOS (Intel・Apple Silicon)
+### macOS (Intel / Apple Silicon)
 
 ```bash
 sudo mkdir -p /usr/local/bin
@@ -74,24 +76,24 @@ sudo chmod 755 /usr/local/bin/aish
 ```
 
 
-## アップデート
+## Update
 
 ```bash
 sudo aish --update
 ```
 
 
-### 開発用 ビルド＆インストール (開発版を /usr/local/bin/aish に上書き)
+### Build & Install for Development (overwrite /usr/local/bin/aish with a dev build)
 
 ```bash
 cargo build --release && sudo install -m 755 target/release/aish /usr/local/bin/aish
 ```
 
 
-## 使い方
+## Usage
 
-AI Agentにログインして、aishコマンドを実行。あとはいつもどおりSSH/Terminal。
-AIへの問い合わせは Crtl + /
+Log in to your AI agent, then run the `aish` command. After that, it's SSH/Terminal as usual.
+Query the AI with Ctrl + /
 
 ### Claude Code (Default)
 ```bash
@@ -145,14 +147,14 @@ aish --ai \
 ```
 
 
-## 対話シェルを常に aish にする
+## Make aish Your Default Interactive Shell
 
-極めて便利です。
-aishいらないときはexitしてください。
+Extremely convenient.
+Just `exit` when you don't need aish.
 
-### bash (Linux / WSL2 Ubuntu等)
+### bash (Linux / WSL2 Ubuntu, etc.)
 
-`~/.bashrc` の **末尾** に以下を追加。
+Add the following to the **end** of `~/.bashrc`.
 
 ```bash
 if [[ $- == *i* && -z "$AISH_PID" ]]; then
@@ -163,9 +165,9 @@ if [[ $- == *i* && -z "$AISH_PID" ]]; then
 fi
 ```
 
-### zsh (macOS のデフォルト)
+### zsh (default on macOS)
 
-`~/.zprofile` の **末尾** に以下を追加。`.zprofile` はログインシェルでだけ読まれ、aish が起動する子 zsh はログインシェルではないので再帰しません (`AISH_PID` ガードは保険)。
+Add the following to the **end** of `~/.zprofile`. `.zprofile` is read only by login shells, and the child zsh that aish launches is not a login shell, so it won't recurse (the `AISH_PID` guard is a safety net).
 
 ```zsh
 if [[ -o interactive && -z "$AISH_PID" ]]; then
@@ -176,11 +178,11 @@ if [[ -o interactive && -z "$AISH_PID" ]]; then
 fi
 ```
 
-## コミュニティ
+## Community
 
-バグ報告・ご意見・ご相談はDiscordまたはXで受け付けています。
-お気軽にご相談ください。皆様の話がアイディアの元になり大変貴重です。
-(返事が遅くなったらごめんなさい。)
+We welcome bug reports, feedback, and questions on Discord or X.
+Feel free to reach out — your stories are a valuable source of ideas.
+(Sorry if replies are slow.)
 
 ###### Discord
 
@@ -189,4 +191,3 @@ https://discord.gg/nj3xz6RBQC
 ###### X
 
 https://x.com/tryandhappy
-
