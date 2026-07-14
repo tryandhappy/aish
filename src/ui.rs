@@ -891,12 +891,12 @@ fn read_minibuffer_line(
                 }
                 Tok::Enter => {
                     // CRLF (\r\n) は 1 つの \n に正規化。\r 直後の \n はスキップする。
-                    if ev.raw == [b'\n'] && prev_was_cr {
+                    if ev.raw == *b"\n" && prev_was_cr {
                         prev_was_cr = false;
                     } else {
                         chars.insert(cursor_pos, '\n');
                         cursor_pos += 1;
-                        prev_was_cr = ev.raw == [b'\r'];
+                        prev_was_cr = ev.raw == *b"\r";
                     }
                 }
                 Tok::Char(c) => {
