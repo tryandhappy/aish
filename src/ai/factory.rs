@@ -60,6 +60,33 @@ pub fn auto_detect_order() -> [BackendKind; 6] {
     ]
 }
 
+/// AI CLI が 1 つも見つからないときに表示する導入案内。`auto_detect_order` と同じ
+/// backend を同順（人気順）に、各公式インストール/クイックスタート URL 付きで列挙する。
+/// 先頭 1 行 + 空行区切りの `名前\nURL` ブロック（末尾改行なし）。REST(Cloudflare/Nvidia)
+/// と generic は対象外（インストール概念が無い / URL が定まらない）。
+pub fn install_guide() -> String {
+    // 順序は auto_detect_order と一致させる（テスト install_guide_lists_all_backends）。
+    let entries: [(&str, &str); 6] = [
+        ("Claude Code", "https://code.claude.com/docs/ja/quickstart"),
+        (
+            "Codex",
+            "https://learn.chatgpt.com/docs/codex/cli#getting-started",
+        ),
+        ("Gemini", "https://github.com/google-gemini/gemini-cli"),
+        (
+            "GitHub Copilot",
+            "https://docs.github.com/copilot/how-tos/set-up/install-copilot-cli",
+        ),
+        ("Cursor", "https://cursor.com/docs/cli/installation"),
+        ("Qwen", "https://github.com/QwenLM/qwen-code"),
+    ];
+    let mut blocks = vec!["Please install AI Agent.".to_string()];
+    for (name, url) in entries {
+        blocks.push(format!("{name}\n{url}"));
+    }
+    blocks.join("\n\n")
+}
+
 /// 選択した backend が未インストールのときに、実際に使える AI CLI を探す。
 /// `auto_detect_order()` (native) → registered generic backend の順に `--version` で
 /// 実在確認し、最初に見つかったものを返す。1 つも無ければ None。
@@ -88,5 +115,30 @@ mod tests {
             order.map(|k| k.as_str()),
             ["claude", "codex", "gemini", "copilot", "cursor", "qwen"]
         );
+    }
+
+    #[test]
+    fn install_guide_lists_all_backends() {
+        let g = install_guide();
+        assert!(g.starts_with("Please install AI Agent."));
+        // auto_detect_order の 6 backend を人気順で列挙し、各 URL を含む。
+        for needle in [
+            "Claude Code",
+            "https://code.claude.com/docs/ja/quickstart",
+            "Codex",
+            "https://learn.chatgpt.com/docs/codex/cli#getting-started",
+            "Gemini",
+            "https://github.com/google-gemini/gemini-cli",
+            "GitHub Copilot",
+            "https://docs.github.com/copilot/how-tos/set-up/install-copilot-cli",
+            "Cursor",
+            "https://cursor.com/docs/cli/installation",
+            "Qwen",
+            "https://github.com/QwenLM/qwen-code",
+        ] {
+            assert!(g.contains(needle), "install_guide should contain {needle}");
+        }
+        // Claude が Codex より前 (人気順)。
+        assert!(g.find("Claude Code").unwrap() < g.find("Codex").unwrap());
     }
 }

@@ -373,6 +373,20 @@ fn try_handle_slash_command(
     }
 }
 
+/// 対応 AI CLI が 1 つも見つからないことを示すエラー。Display はそのまま
+/// ユーザ向け導入案内 (`ai::install_guide()`) で、main は downcast して
+/// `Error:` プレフィックスを付けずに出力し非ゼロ終了する。
+#[derive(Debug)]
+struct MissingAiBackend(String);
+
+impl std::fmt::Display for MissingAiBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for MissingAiBackend {}
+
 /// 終了時にユーザに表示する情報をまとめた構造体。
 /// 端末を cooked モードに戻した後で表示するために `run()` の戻り値とする。
 struct ExitInfo {
@@ -447,14 +461,12 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                 let _ = std::io::Write::flush(&mut std::io::stdout());
                 kind = found;
             }
-            // 1 つも見つからなければ従来どおり Claude 導入を案内する。
+            // 1 つも見つからなければ、対応 AI CLI ごとの導入案内 (名前 + 公式 URL) を表示する。
             // 直接 exit すると main の restore_terminal_settings / cleanup_terminal_indicator が
             // 走らず端末が raw モードで残るので、必ず Err で抜けて main 側のクリーンアップを通す。
+            // MissingAiBackend を main が downcast し、cleanup 後に `Error:` を付けず整形出力する。
             None => {
-                return Err(
-                    "Please install Claude Code.\ncurl -fsSL https://claude.ai/install.sh | bash"
-                        .into(),
-                );
+                return Err(Box::new(MissingAiBackend(ai::install_guide())));
             }
         }
     }
@@ -914,7 +926,12 @@ fn main() {
                     }
                 }
                 Err(e) => {
-                    eprintln!("Error: {e}");
+                    // 対応 AI CLI 不在の導入案内は整形済みなので `Error:` を付けずそのまま出す。
+                    if e.is::<MissingAiBackend>() {
+                        eprintln!("{e}");
+                    } else {
+                        eprintln!("Error: {e}");
+                    }
                     std::process::exit(1);
                 }
             }
