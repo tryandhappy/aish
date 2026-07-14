@@ -60,7 +60,10 @@ try {
 
 # 4. Verify SHA-256. The .sha256 file is `<64-hex>  <filename>`; take the first token.
 try {
-    $shaText = (Invoke-WebRequest -Uri "$base/$asset.sha256" -Headers $ua -UseBasicParsing).Content
+    # GitHub serves .sha256 as octet-stream, so .Content may be a Byte[] rather than a
+    # string (then .Trim() fails). Decode bytes to text when needed.
+    $shaRaw = (Invoke-WebRequest -Uri "$base/$asset.sha256" -Headers $ua -UseBasicParsing).Content
+    $shaText = if ($shaRaw -is [byte[]]) { [System.Text.Encoding]::UTF8.GetString($shaRaw) } else { [string]$shaRaw }
     $expected = (($shaText.Trim() -split '\s+')[0]).ToLower()
     $actual = (Get-FileHash -Algorithm SHA256 -Path $tmp).Hash.ToLower()
     if ($expected -ne $actual) {
