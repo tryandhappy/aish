@@ -80,7 +80,7 @@ pub fn install_guide() -> String {
         ("Cursor", "https://cursor.com/docs/cli/installation"),
         ("Qwen", "https://github.com/QwenLM/qwen-code"),
     ];
-    let mut blocks = vec!["Please install AI Agent.".to_string()];
+    let mut blocks = vec!["No AI agent found. Please install one:".to_string()];
     for (name, url) in entries {
         blocks.push(format!("{name}\n{url}"));
     }
@@ -120,7 +120,7 @@ mod tests {
     #[test]
     fn install_guide_lists_all_backends() {
         let g = install_guide();
-        assert!(g.starts_with("Please install AI Agent."));
+        assert!(g.starts_with("No AI agent found. Please install one:"));
         // auto_detect_order の 6 backend を人気順で列挙し、各 URL を含む。
         for needle in [
             "Claude Code",
