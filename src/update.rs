@@ -130,30 +130,24 @@ fn compute_sha256(path: &str) -> Result<String, Box<dyn std::error::Error>> {
 }
 
 /// Windows は自己更新 (実行中 exe の rename が不可) をサポートしないので、代わりに
-/// 手動再インストール用の PowerShell コマンドを案内する文字列を組み立てる純関数。
-/// README (Installation > Windows) と同一手順で、tag 解決行だけチャネルに追従させる
-/// (stable=/releases/latest, prerelease=/releases[0]。`fetch_version` と同義)。
+/// リポジトリ同梱インストーラ (`install.ps1`) を使う PowerShell コマンドを案内する純関数。
+/// 手打ちの変数展開ミス (空の $tag で HTML が落ちる等) を避けるため one-liner に統一する。
+/// チャネル追従: prerelease は `install.ps1` の既定 (`/releases[0]`) をそのまま `| iex`、
+/// stable は scriptblock 経由で `-Stable` を渡す (`| iex` は引数を渡せないため)。
 fn windows_update_hint(channel: UpdateChannel) -> String {
-    let tag_line = match channel {
-        UpdateChannel::Stable => format!(
-            "  $tag  = (Invoke-RestMethod 'https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest').tag_name"
-        ),
-        UpdateChannel::Prerelease => format!(
-            "  $tag  = (Invoke-RestMethod 'https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases')[0].tag_name"
-        ),
+    let raw =
+        format!("https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/install.ps1");
+    let cmd = match channel {
+        // 既定 (prerelease 含む最新) はそのままパイプで実行。
+        UpdateChannel::Prerelease => format!("  irm {raw} | iex"),
+        // 安定版は install.ps1 -Stable。irm|iex は引数を渡せないので scriptblock 化する。
+        UpdateChannel::Stable => format!("  & ([scriptblock]::Create((irm {raw}))) -Stable"),
     };
     let lines = [
         "Self-update is not supported on Windows.".to_string(),
-        "To update, re-run the installer in PowerShell:".to_string(),
+        "To update, run the installer in PowerShell:".to_string(),
         String::new(),
-        "  $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'aarch64' } else { 'x86_64' }"
-            .to_string(),
-        tag_line,
-        "  $dir  = \"$env:LOCALAPPDATA\\Programs\\aish\"".to_string(),
-        "  New-Item -ItemType Directory -Force -Path $dir | Out-Null".to_string(),
-        format!(
-            "  Invoke-WebRequest -Uri \"https://github.com/{REPO_OWNER}/{REPO_NAME}/releases/download/$tag/aish-$arch-pc-windows-msvc.exe\" -OutFile \"$dir\\aish.exe\""
-        ),
+        cmd,
     ];
     lines.join("\n")
 }
@@ -293,20 +287,21 @@ mod tests {
 
     #[test]
     fn windows_update_hint_is_channel_aware() {
-        let stable = windows_update_hint(UpdateChannel::Stable);
-        // 手順の要点: PowerShell 再インストール + windows-msvc アセット名。
-        assert!(stable.contains("PowerShell"));
-        assert!(stable.contains("aish-$arch-pc-windows-msvc.exe"));
-        assert!(stable.contains("x86_64"));
-        assert!(stable.contains("aarch64"));
-        // stable は /releases/latest を参照する。
-        assert!(stable.contains("/releases/latest"));
-        assert!(!stable.contains("/releases')[0]"));
+        // どちらも同梱インストーラ install.ps1 (raw URL) を使う。
+        let installer = "https://raw.githubusercontent.com/tryandhappy/aish/main/install.ps1";
 
-        // prerelease は /releases 一覧の先頭 ([0]) を参照し、latest は使わない。
+        // prerelease (既定) は素のパイプ実行。-Stable は付けない。
         let pre = windows_update_hint(UpdateChannel::Prerelease);
-        assert!(pre.contains("/releases')[0].tag_name"));
-        assert!(!pre.contains("/releases/latest"));
+        assert!(pre.contains("PowerShell"));
+        assert!(pre.contains(installer));
+        assert!(pre.contains("| iex"));
+        assert!(!pre.contains("-Stable"));
+
+        // stable は scriptblock 経由で -Stable を渡す。
+        let stable = windows_update_hint(UpdateChannel::Stable);
+        assert!(stable.contains(installer));
+        assert!(stable.contains("-Stable"));
+        assert!(stable.contains("scriptblock"));
     }
 
     #[test]

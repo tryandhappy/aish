@@ -77,19 +77,19 @@ sudo chmod 755 /usr/local/bin/aish
 
 ### Windows (x86_64 / ARM64)
 
-Run in PowerShell. Downloads `aish.exe` for your architecture from the latest release into `%LOCALAPPDATA%\Programs\aish` and adds it to your user `PATH`.
+Run in PowerShell. The installer detects your architecture, downloads `aish.exe`, verifies its SHA-256, installs it to `%LOCALAPPDATA%\Programs\aish`, and adds it to your user `PATH`.
 
 ```powershell
-$arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
-$tag  = (Invoke-RestMethod 'https://api.github.com/repos/tryandhappy/aish/releases')[0].tag_name
-$dir  = "$env:LOCALAPPDATA\Programs\aish"
-New-Item -ItemType Directory -Force -Path $dir | Out-Null
-Invoke-WebRequest -Uri "https://github.com/tryandhappy/aish/releases/download/$tag/aish-$arch-pc-windows-msvc.exe" -OutFile "$dir\aish.exe"
-$userPath = [Environment]::GetEnvironmentVariable('Path','User')
-if ($userPath -notlike "*$dir*") { [Environment]::SetEnvironmentVariable('Path', "$userPath;$dir", 'User') }
+irm https://raw.githubusercontent.com/tryandhappy/aish/main/install.ps1 | iex
 ```
 
-Open a new terminal so the updated `PATH` takes effect, then run `aish`. The binary is unsigned, so Windows SmartScreen may warn on first run (choose **More info → Run anyway**). `aish --update` is not supported on Windows — re-run the command above to upgrade.
+Prefer a file you can inspect first? Download [`install.ps1`](https://raw.githubusercontent.com/tryandhappy/aish/main/install.ps1) (or [`install.cmd`](https://raw.githubusercontent.com/tryandhappy/aish/main/install.cmd) to double-click) and run it. Add `-Stable` to install the latest stable release instead of the newest (prerelease-inclusive) one:
+
+```powershell
+.\install.ps1 -Stable
+```
+
+Open a new terminal so the updated `PATH` takes effect, then run `aish`. The binary is unsigned, so Windows SmartScreen may warn on first run (choose **More info → Run anyway**). `aish --update` is not supported on Windows — re-run the installer to upgrade.
 
 
 ## Update

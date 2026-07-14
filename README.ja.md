@@ -77,19 +77,19 @@ sudo chmod 755 /usr/local/bin/aish
 
 ### Windows (x86_64 / ARM64)
 
-PowerShell で実行。アーキテクチャに合った `aish.exe` を最新リリースから `%LOCALAPPDATA%\Programs\aish` に取得し、ユーザ `PATH` に追加します。
+PowerShell で実行。インストーラがアーキテクチャを判定し `aish.exe` を取得、SHA-256 を検証して `%LOCALAPPDATA%\Programs\aish` に配置、ユーザ `PATH` に追加します。
 
 ```powershell
-$arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
-$tag  = (Invoke-RestMethod 'https://api.github.com/repos/tryandhappy/aish/releases')[0].tag_name
-$dir  = "$env:LOCALAPPDATA\Programs\aish"
-New-Item -ItemType Directory -Force -Path $dir | Out-Null
-Invoke-WebRequest -Uri "https://github.com/tryandhappy/aish/releases/download/$tag/aish-$arch-pc-windows-msvc.exe" -OutFile "$dir\aish.exe"
-$userPath = [Environment]::GetEnvironmentVariable('Path','User')
-if ($userPath -notlike "*$dir*") { [Environment]::SetEnvironmentVariable('Path', "$userPath;$dir", 'User') }
+irm https://raw.githubusercontent.com/tryandhappy/aish/main/install.ps1 | iex
 ```
 
-`PATH` を反映させるためターミナルを開き直してから `aish` を実行してください。バイナリは未署名のため初回実行時に Windows SmartScreen の警告が出ることがあります (**詳細情報 → 実行**)。Windows では `aish --update` 非対応のため、更新は上記コマンドを再実行してください。
+中身を確認してから実行したい場合は [`install.ps1`](https://raw.githubusercontent.com/tryandhappy/aish/main/install.ps1)(ダブルクリック用は [`install.cmd`](https://raw.githubusercontent.com/tryandhappy/aish/main/install.cmd))をダウンロードして実行してください。`-Stable` を付けると prerelease を含む最新ではなく安定版を入れます:
+
+```powershell
+.\install.ps1 -Stable
+```
+
+`PATH` を反映させるためターミナルを開き直してから `aish` を実行してください。バイナリは未署名のため初回実行時に Windows SmartScreen の警告が出ることがあります (**詳細情報 → 実行**)。Windows では `aish --update` 非対応のため、更新はインストーラを再実行してください。
 
 
 ## アップデート
