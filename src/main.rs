@@ -373,6 +373,13 @@ fn try_handle_slash_command(
     }
 }
 
+/// stderr が端末で、かつ `NO_COLOR` が未設定なら true（エラー出力を着色してよいか）。
+/// `install_guide` の名前太字/URL 淡色と、`Error:` プレフィックスの赤字に共通で使う。
+fn stderr_use_color() -> bool {
+    use std::io::IsTerminal;
+    std::env::var_os("NO_COLOR").is_none() && std::io::stderr().is_terminal()
+}
+
 /// 終了時にユーザに表示する情報をまとめた構造体。
 /// 端末を cooked モードに戻した後で表示するために `run()` の戻り値とする。
 struct ExitInfo {
@@ -451,8 +458,9 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
             // 直接 exit すると main の restore_terminal_settings / cleanup_terminal_indicator が
             // 走らず端末が raw モードで残るので、必ず Err で抜けて main 側のクリーンアップを通す。
             // 他のエラーと同じく `Error:` プレフィックス付きで出力される。
+            // 名前太字 / URL 淡色の着色は stderr が端末 (かつ NO_COLOR 未設定) のときだけ。
             None => {
-                return Err(ai::install_guide().into());
+                return Err(ai::install_guide(stderr_use_color()).into());
             }
         }
     }
@@ -912,7 +920,12 @@ fn main() {
                     }
                 }
                 Err(e) => {
-                    eprintln!("Error: {e}");
+                    // `Error:` は端末なら赤字 (install_guide の名前太字/URL 淡色と統一の判定)。
+                    if stderr_use_color() {
+                        eprintln!("\x1b[31mError:\x1b[0m {e}");
+                    } else {
+                        eprintln!("Error: {e}");
+                    }
                     std::process::exit(1);
                 }
             }

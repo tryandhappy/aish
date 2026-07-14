@@ -62,9 +62,12 @@ pub fn auto_detect_order() -> [BackendKind; 6] {
 
 /// AI CLI が 1 つも見つからないときに表示する導入案内。`auto_detect_order` と同じ
 /// backend を同順（人気順）に、各公式インストール/クイックスタート URL 付きで列挙する。
-/// 先頭 1 行 + 空行区切りの `名前\nURL` ブロック（末尾改行なし）。REST(Cloudflare/Nvidia)
-/// と generic は対象外（インストール概念が無い / URL が定まらない）。
-pub fn install_guide() -> String {
+/// レイアウトは `  ▸ 名前` + 次行に `      URL`（名前と URL を段差で分離してリストと
+/// 分かるようにする）。REST(Cloudflare/Nvidia)と generic は対象外（インストール概念が
+/// 無い / URL が定まらない）。`color=true` のとき名前を太字・URL を淡色に着色する
+/// （呼び出し側が stderr の TTY / NO_COLOR を見て決める）。先頭見出しの `Error:` 着色は
+/// main 側（他エラーと共通の経路）が行う。
+pub fn install_guide(color: bool) -> String {
     // 順序は auto_detect_order と一致させる（テスト install_guide_lists_all_backends）。
     let entries: [(&str, &str); 6] = [
         ("Claude Code", "https://code.claude.com/docs/ja/quickstart"),
@@ -80,11 +83,17 @@ pub fn install_guide() -> String {
         ("Cursor", "https://cursor.com/docs/cli/installation"),
         ("Qwen", "https://github.com/QwenLM/qwen-code"),
     ];
-    let mut blocks = vec!["No AI agent found. Please install one:".to_string()];
+    // 太字 (名前) / 淡色 (URL)。color=false なら無装飾。
+    let (nb, ne, ub, ue) = if color {
+        ("\x1b[1m", "\x1b[0m", "\x1b[2m", "\x1b[0m")
+    } else {
+        ("", "", "", "")
+    };
+    let mut s = String::from("No AI agent found. Please install one:\n");
     for (name, url) in entries {
-        blocks.push(format!("{name}\n{url}"));
+        s.push_str(&format!("\n  \u{25B8} {nb}{name}{ne}\n      {ub}{url}{ue}"));
     }
-    blocks.join("\n\n")
+    s
 }
 
 /// 選択した backend が未インストールのときに、実際に使える AI CLI を探す。
@@ -119,7 +128,7 @@ mod tests {
 
     #[test]
     fn install_guide_lists_all_backends() {
-        let g = install_guide();
+        let g = install_guide(false);
         assert!(g.starts_with("No AI agent found. Please install one:"));
         // auto_detect_order の 6 backend を人気順で列挙し、各 URL を含む。
         for needle in [
@@ -138,7 +147,16 @@ mod tests {
         ] {
             assert!(g.contains(needle), "install_guide should contain {needle}");
         }
+        // 箇条書きレイアウト (▸ + 名前)。
+        assert!(g.contains("\u{25B8} Claude Code"));
         // Claude が Codex より前 (人気順)。
         assert!(g.find("Claude Code").unwrap() < g.find("Codex").unwrap());
+        // color=false は ANSI を含まない。
+        assert!(!g.contains('\x1b'), "no ANSI escapes when color=false");
+        // color=true は ANSI (太字/淡色) を含む。
+        assert!(
+            install_guide(true).contains('\x1b'),
+            "ANSI escapes present when color=true"
+        );
     }
 }
