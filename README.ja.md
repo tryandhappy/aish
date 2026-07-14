@@ -75,6 +75,22 @@ sudo curl -fsSL -o /usr/local/bin/aish "https://github.com/tryandhappy/aish/rele
 sudo chmod 755 /usr/local/bin/aish
 ```
 
+### Windows (x86_64 / ARM64)
+
+PowerShell で実行。アーキテクチャに合った `aish.exe` を最新リリースから `%LOCALAPPDATA%\Programs\aish` に取得し、ユーザ `PATH` に追加します。
+
+```powershell
+$arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
+$tag  = (Invoke-RestMethod 'https://api.github.com/repos/tryandhappy/aish/releases')[0].tag_name
+$dir  = "$env:LOCALAPPDATA\Programs\aish"
+New-Item -ItemType Directory -Force -Path $dir | Out-Null
+Invoke-WebRequest -Uri "https://github.com/tryandhappy/aish/releases/download/$tag/aish-$arch-pc-windows-msvc.exe" -OutFile "$dir\aish.exe"
+$userPath = [Environment]::GetEnvironmentVariable('Path','User')
+if ($userPath -notlike "*$dir*") { [Environment]::SetEnvironmentVariable('Path', "$userPath;$dir", 'User') }
+```
+
+`PATH` を反映させるためターミナルを開き直してから `aish` を実行してください。バイナリは未署名のため初回実行時に Windows SmartScreen の警告が出ることがあります (**詳細情報 → 実行**)。Windows では `aish --update` 非対応のため、更新は上記コマンドを再実行してください。
+
 
 ## アップデート
 
