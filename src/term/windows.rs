@@ -150,6 +150,13 @@ struct Pump {
     pending_high_surrogate: Option<u16>,
 }
 
+/// `AISH_DEBUG_KEYS` が設定されていれば true (pump が生 KEY_EVENT を stderr へ出す)。
+/// 起動時に 1 度だけ env を見てキャッシュする。
+fn debug_keys_enabled() -> bool {
+    static E: OnceLock<bool> = OnceLock::new();
+    *E.get_or_init(|| std::env::var_os("AISH_DEBUG_KEYS").is_some())
+}
+
 fn pump() -> &'static Mutex<Pump> {
     static PUMP: OnceLock<Mutex<Pump>> = OnceLock::new();
     PUMP.get_or_init(|| {
@@ -185,14 +192,23 @@ fn pump_available_events() {
                     }
                     let unit = unsafe { key.uChar.UnicodeChar };
                     let repeat = key.wRepeatCount.max(1) as usize;
-                    // Ctrl+/ = aish のエントリキー。経路によって uChar が
-                    //   0x1f (native conhost) / 0 (一部 VT 端末) /
-                    //   0x2f (RDP/Remmina 等のレイアウト変換) と揺れるため、uChar 値に
-                    //   依らず Ctrl+VK_OEM_2 を 0x1f へ正規化する (エントリキーの生命線)。
-                    // Shift は見ない → Ctrl+Shift+/ (= Ctrl+?) も同じく拾う。
+                    // AISH_DEBUG_KEYS=1 のとき、pump が受け取った生 KEY_EVENT を stderr に出す
+                    // (JIS/RDP 等でエントリキーが拾えない不具合の実測用。既定は無効)。
+                    if debug_keys_enabled() {
+                        eprintln!(
+                            "[aish-key vk=0x{:04X} char=0x{:04X} ctrl=0x{:08X}]",
+                            key.wVirtualKeyCode, unit, key.dwControlKeyState
+                        );
+                    }
+                    // Ctrl+/ = aish のエントリキー。経路/配列/コンソールモードによって届き方が
+                    // 揺れる: (a) 従来レコード = Ctrl + VK_OEM_2(0xBF)、(b) VT 入力モードでは
+                    // VK=0 で uChar のみ = 0x1f (US) / 0x2f (JIS 等で '/' のまま届く) / 0。
+                    // VK でも uChar でも拾えるよう、ctrl 押下下で VK_OEM_2 か uChar∈{0x1f,0x2f}
+                    // を 0x1f に正規化する (エントリキーの生命線)。Shift は見ない
+                    // → Ctrl+Shift+/ (= Ctrl+?) も同経路。
                     let ctrl =
                         key.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED) != 0;
-                    if ctrl && key.wVirtualKeyCode == VK_OEM_2 {
+                    if ctrl && (key.wVirtualKeyCode == VK_OEM_2 || unit == 0x1f || unit == 0x2f) {
                         for _ in 0..repeat {
                             p.queue.push_back(0x1f);
                         }
