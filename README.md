@@ -29,7 +29,7 @@ https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
 
 - Linux (tested on Ubuntu 24.04)
 - Windows WSL2 (tested on Ubuntu 24.04)
-- Windows 10 1809+ native (Windows Terminal recommended) — experimental, not yet tested on real hardware, no prebuilt binary (requires `cargo build`)
+- Windows 10 1809+ native (Windows Terminal recommended) — prebuilt binaries provided (x86_64 / aarch64 `.exe` and `.zip`); `--update` self-update is not supported (run the installer/download manually)
 - macOS (Intel / Apple Silicon) — not thoroughly tested
 
 #### Required Commands

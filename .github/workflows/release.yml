@@ -31,15 +31,37 @@ jobs:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             cross: true
+            ext: ''
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             cross: true
+            ext: ''
           - target: x86_64-apple-darwin
             os: macos-latest
             cross: false
+            ext: ''
           - target: aarch64-apple-darwin
             os: macos-latest
             cross: false
+            ext: ''
+          # Windows は MSVC ネイティブ/クロス。aarch64 は windows-latest (x86_64) から
+          # VS2022 同梱の ARM64 ツールでクロスリンク (windows-11-arm ランナー不要)。
+          # 成果物は生 exe + zip (tar.gz でなく 7z で zip 化)。
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            cross: false
+            ext: .exe
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            cross: false
+            ext: .exe
+
+    # Windows ランナーの既定 shell は pwsh。既存ステップは全て bash 構文
+    # (if [ ] / $GITHUB_OUTPUT / cp / find / sha256sum) なので Git Bash に統一する。
+    # Unix ランナーは元々 bash なので挙動不変。
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - uses: actions/checkout@v5
@@ -95,18 +117,27 @@ jobs:
 
       - name: Copy raw binary
         run: |
-          cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "${BINARY_NAME}-${{ matrix.target }}"
-          ${{ steps.sha.outputs.cmd }} "${BINARY_NAME}-${{ matrix.target }}" > "${BINARY_NAME}-${{ matrix.target }}.sha256"
+          BIN="${BINARY_NAME}${{ matrix.ext }}"
+          RAW="${BINARY_NAME}-${{ matrix.target }}${{ matrix.ext }}"
+          cp "target/${{ matrix.target }}/release/${BIN}" "$RAW"
+          ${{ steps.sha.outputs.cmd }} "$RAW" > "${RAW}.sha256"
 
+      # Unix は tar.gz、Windows は zip (7z は windows-latest 同梱、Git Bash から呼べる)。
       - name: Package archive
         run: |
+          BIN="${BINARY_NAME}${{ matrix.ext }}"
           ARCHIVE="${BINARY_NAME}-${{ steps.version.outputs.tag }}-${{ matrix.target }}"
           mkdir "$ARCHIVE"
-          cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "$ARCHIVE/"
+          cp "target/${{ matrix.target }}/release/${BIN}" "$ARCHIVE/"
           cp README.md "$ARCHIVE/" 2>/dev/null || true
           cp config.toml.example "$ARCHIVE/" 2>/dev/null || true
-          tar czf "${ARCHIVE}.tar.gz" "$ARCHIVE"
-          ${{ steps.sha.outputs.cmd }} "${ARCHIVE}.tar.gz" > "${ARCHIVE}.tar.gz.sha256"
+          if [ -n "${{ matrix.ext }}" ]; then
+            7z a "${ARCHIVE}.zip" "$ARCHIVE" >/dev/null
+            ${{ steps.sha.outputs.cmd }} "${ARCHIVE}.zip" > "${ARCHIVE}.zip.sha256"
+          else
+            tar czf "${ARCHIVE}.tar.gz" "$ARCHIVE"
+            ${{ steps.sha.outputs.cmd }} "${ARCHIVE}.tar.gz" > "${ARCHIVE}.tar.gz.sha256"
+          fi
 
       - name: Build deb package
         if: matrix.cross
@@ -121,10 +152,12 @@ jobs:
         with:
           name: ${{ env.BINARY_NAME }}-${{ matrix.target }}
           path: |
-            ${{ env.BINARY_NAME }}-${{ matrix.target }}
-            ${{ env.BINARY_NAME }}-${{ matrix.target }}.sha256
+            ${{ env.BINARY_NAME }}-${{ matrix.target }}${{ matrix.ext }}
+            ${{ env.BINARY_NAME }}-${{ matrix.target }}${{ matrix.ext }}.sha256
             ${{ env.BINARY_NAME }}-*.tar.gz
             ${{ env.BINARY_NAME }}-*.tar.gz.sha256
+            ${{ env.BINARY_NAME }}-*.zip
+            ${{ env.BINARY_NAME }}-*.zip.sha256
             target/${{ matrix.target }}/debian/*.deb
             target/${{ matrix.target }}/generate-rpm/*.rpm
           retention-days: 1
@@ -151,9 +184,9 @@ jobs:
       - name: Flatten artifact structure
         run: |
           mkdir -p dist
-          find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' -o -name '*.deb' -o -name '*.rpm' \) -exec mv {} dist/ \;
-          # 生バイナリ (拡張子なし) は Linux musl と macOS darwin の両方を回収する
-          find artifacts -type f \( -name 'aish-*-unknown-linux-musl' -o -name 'aish-*-apple-darwin' \) -exec mv {} dist/ \;
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.sha256' -o -name '*.deb' -o -name '*.rpm' \) -exec mv {} dist/ \;
+          # 生バイナリ: Linux musl / macOS darwin は拡張子なし、Windows は .exe
+          find artifacts -type f \( -name 'aish-*-unknown-linux-musl' -o -name 'aish-*-apple-darwin' -o -name 'aish-*-pc-windows-msvc.exe' \) -exec mv {} dist/ \;
           ls -la dist/
 
       # SemVer のハイフン付きタグ (v0.9.0-rc.1, v0.9.0-beta.1 等) を prerelease として
