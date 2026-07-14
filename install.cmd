@@ -9,4 +9,8 @@ if exist "%~dp0install.ps1" (
     powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/tryandhappy/aish/main/install.ps1 | iex"
 )
 echo.
-pause
+REM Pause only when double-clicked from Explorer (so the window stays open to read
+REM the result). When run from a console (e.g. the documented curl one-liner),
+REM %cmdcmdline% is the parent cmd.exe line and does not contain this script name,
+REM so it does not block.
+echo %cmdcmdline% | find /i "%~nx0" >nul && pause

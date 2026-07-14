@@ -77,16 +77,24 @@ sudo chmod 755 /usr/local/bin/aish
 
 ### Windows (x86_64 / ARM64)
 
-Run in PowerShell. The installer detects your architecture, downloads `aish.exe`, verifies its SHA-256, installs it to `%LOCALAPPDATA%\Programs\aish`, and adds it to your user `PATH`.
+The installer detects your architecture, downloads `aish.exe`, verifies its SHA-256, installs it to `%LOCALAPPDATA%\Programs\aish`, and adds it to your user `PATH`.
+
+**PowerShell:**
 
 ```powershell
 irm https://raw.githubusercontent.com/tryandhappy/aish/main/install.ps1 | iex
 ```
 
-Prefer a file you can inspect first? Download [`install.ps1`](https://raw.githubusercontent.com/tryandhappy/aish/main/install.ps1) (or [`install.cmd`](https://raw.githubusercontent.com/tryandhappy/aish/main/install.cmd) to double-click) and run it. Add `-Stable` to install the latest stable release instead of the newest (prerelease-inclusive) one:
+Add `-Stable` to install the latest stable release instead of the newest (prerelease-inclusive) one:
 
 ```powershell
-.\install.ps1 -Stable
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tryandhappy/aish/main/install.ps1))) -Stable
+```
+
+**cmd.exe** (downloads, runs, then removes the installer):
+
+```cmd
+curl -fsSL -o install.cmd https://raw.githubusercontent.com/tryandhappy/aish/main/install.cmd && install.cmd && del install.cmd
 ```
 
 Open a new terminal so the updated `PATH` takes effect, then run `aish`. The binary is unsigned, so Windows SmartScreen may warn on first run (choose **More info → Run anyway**). `aish --update` is not supported on Windows — re-run the installer to upgrade.
