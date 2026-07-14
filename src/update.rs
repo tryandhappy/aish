@@ -129,6 +129,35 @@ fn compute_sha256(path: &str) -> Result<String, Box<dyn std::error::Error>> {
     parse_sha256_hash(&stdout).map_err(|e| e.into())
 }
 
+/// Windows は自己更新 (実行中 exe の rename が不可) をサポートしないので、代わりに
+/// 手動再インストール用の PowerShell コマンドを案内する文字列を組み立てる純関数。
+/// README (Installation > Windows) と同一手順で、tag 解決行だけチャネルに追従させる
+/// (stable=/releases/latest, prerelease=/releases[0]。`fetch_version` と同義)。
+fn windows_update_hint(channel: UpdateChannel) -> String {
+    let tag_line = match channel {
+        UpdateChannel::Stable => format!(
+            "  $tag  = (Invoke-RestMethod 'https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest').tag_name"
+        ),
+        UpdateChannel::Prerelease => format!(
+            "  $tag  = (Invoke-RestMethod 'https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases')[0].tag_name"
+        ),
+    };
+    let lines = [
+        "Self-update is not supported on Windows.".to_string(),
+        "To update, re-run the installer in PowerShell:".to_string(),
+        String::new(),
+        "  $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'aarch64' } else { 'x86_64' }"
+            .to_string(),
+        tag_line,
+        "  $dir  = \"$env:LOCALAPPDATA\\Programs\\aish\"".to_string(),
+        "  New-Item -ItemType Directory -Force -Path $dir | Out-Null".to_string(),
+        format!(
+            "  Invoke-WebRequest -Uri \"https://github.com/{REPO_OWNER}/{REPO_NAME}/releases/download/$tag/aish-$arch-pc-windows-msvc.exe\" -OutFile \"$dir\\aish.exe\""
+        ),
+    ];
+    lines.join("\n")
+}
+
 pub fn run_update(channel: UpdateChannel) -> Result<(), Box<dyn std::error::Error>> {
     let current = env!("CARGO_PKG_VERSION");
     let channel_label = match channel {
@@ -136,6 +165,13 @@ pub fn run_update(channel: UpdateChannel) -> Result<(), Box<dyn std::error::Erro
         UpdateChannel::Prerelease => "prerelease",
     };
     println!("aish v{current} (channel: {channel_label})");
+
+    // Windows は自己更新非対応。エラーで落とさず、手動更新コマンドを案内して正常終了する
+    // (detect_target() は windows で Err を返すので、それより前に分岐する)。
+    if cfg!(windows) {
+        println!("{}", windows_update_hint(channel));
+        return Ok(());
+    }
 
     let target = detect_target()?;
     let tag = fetch_version(channel)?;
@@ -253,6 +289,24 @@ mod tests {
         assert!(target_for("windows", "x86_64").is_err());
         assert!(target_for("linux", "riscv64").is_err());
         assert!(target_for("freebsd", "x86_64").is_err());
+    }
+
+    #[test]
+    fn windows_update_hint_is_channel_aware() {
+        let stable = windows_update_hint(UpdateChannel::Stable);
+        // 手順の要点: PowerShell 再インストール + windows-msvc アセット名。
+        assert!(stable.contains("PowerShell"));
+        assert!(stable.contains("aish-$arch-pc-windows-msvc.exe"));
+        assert!(stable.contains("x86_64"));
+        assert!(stable.contains("aarch64"));
+        // stable は /releases/latest を参照する。
+        assert!(stable.contains("/releases/latest"));
+        assert!(!stable.contains("/releases')[0]"));
+
+        // prerelease は /releases 一覧の先頭 ([0]) を参照し、latest は使わない。
+        let pre = windows_update_hint(UpdateChannel::Prerelease);
+        assert!(pre.contains("/releases')[0].tag_name"));
+        assert!(!pre.contains("/releases/latest"));
     }
 
     #[test]
