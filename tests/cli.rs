@@ -50,6 +50,10 @@ fn list_providers_includes_native_and_builtin_recipes() {
     }
 }
 
+// Windows CI ランナーは stdin が非コンソール (pipe) なので、backend parse より前に
+// console_ok() が "stdin is not a console" で先に落ちる。unknown backend の parse エラー
+// 検証は console を要求しない unix でのみ行う (Windows 実機では手動チェックリスト §15.13)。
+#[cfg(unix)]
 #[test]
 fn unknown_ai_backend_fails_with_available_list() {
     let out = aish()

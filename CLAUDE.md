@@ -73,6 +73,7 @@ drain / 入力スレッド（§ 15.6）:
 ring_buffer / backend（§ 15.9）:
 - **未送信 cursor は backend ごと独立**（`get_unsent_for`/`mark_sent_for`、sent_marks は `HashMap`）。**新規 native backend は `all_native()` に追加**（enum 名 ≠ 実行ファイル名なら `binary()` に分岐）。
 - **`BackendKind::parse` は native → generic registry の 2 段。`main::run` は Config::load → `init_generics` → parse の順序を守る**。
+- **選択 backend が未インストールなら `ai::auto_detect_backend()` で実在する AI CLI にフォールバック**（探索順 = `auto_detect_order()`: Claude→Codex→Gemini→copilot→cursor→qwen の固定人気順 → generic registry 順。**REST backend の Cloudflare/Nvidia は binary=curl で誤検出するため除外**）。順序は純関数で golden test 固定。1 つも無ければ従来の Claude 導入案内を Err で返す。切替時は `println!` で 1 行通知（raw モードでも OPOST/newline-auto-return 前提で桁ズレしない）。
 - **AI 応答の注釈記録は `record_ai_exchange` 経由**（append → `mark_sent_for(current)` の順序不変条件）。`/clear` は `mark_sent_all()`（AI CLI 内部 session は current のみリセット）。
 
 AI backends（§ 15.10）:

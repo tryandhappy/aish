@@ -11,5 +11,5 @@ mod nvidia_nim;
 mod qwen;
 mod types;
 
-pub use factory::{check_installed, create_backend};
+pub use factory::{auto_detect_backend, check_installed, create_backend};
 pub use types::{AiBackend, AiError, AiRequest, AiResponse, BackendKind};

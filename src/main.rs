@@ -431,18 +431,32 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
     };
 
     if !ai::check_installed(kind) {
-        // 直接 exit すると main の restore_terminal_settings / cleanup_terminal_indicator が
-        // 走らず端末が raw モードで残るので、必ず Err で抜けて main 側のクリーンアップを通す。
-        return Err(match kind {
-            ai::BackendKind::Claude => {
-                "Please install Claude Code.\ncurl -fsSL https://claude.ai/install.sh | bash".into()
+        // 選択した backend (既定 = claude、または --ai/config 指定) が未インストールなら、
+        // 実際に使える AI CLI を自動検出してフォールバックする (探索順は auto_detect_order:
+        // Claude Code → Codex → Gemini → 人気順 → generic)。見つかればそれに切り替え、
+        // 起動バナー (print_startup_banner) にも切替後の kind が反映される。
+        match ai::auto_detect_backend() {
+            Some(found) => {
+                // OPOST 温存 (Unix) / newline auto-return (Windows) 前提で println! の \n は
+                // CRLF になる (banner と同じ)。raw モードでも桁ズレしない。
+                println!(
+                    "  \x1b[38;5;245mAI backend `{}` not found — using `{}`.\x1b[0m",
+                    kind.as_str(),
+                    found.as_str()
+                );
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+                kind = found;
             }
-            other => format!(
-                "Backend `{}` is not installed or not on PATH.",
-                other.as_str()
-            )
-            .into(),
-        });
+            // 1 つも見つからなければ従来どおり Claude 導入を案内する。
+            // 直接 exit すると main の restore_terminal_settings / cleanup_terminal_indicator が
+            // 走らず端末が raw モードで残るので、必ず Err で抜けて main 側のクリーンアップを通す。
+            None => {
+                return Err(
+                    "Please install Claude Code.\ncurl -fsSL https://claude.ai/install.sh | bash"
+                        .into(),
+                );
+            }
+        }
     }
 
     // バックエンド初期化は PTY 起動より先に行う。

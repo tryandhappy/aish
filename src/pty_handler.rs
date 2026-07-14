@@ -144,7 +144,12 @@ impl PtyHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // mpsc / Duration は下記 cfg(unix) 限定の実 PTY スモークだけで使う。
+    // windows ターゲットでは当該ヘルパーが cfg で消えるので import も unix 限定にする
+    // (さもないと windows clippy cross-check が unused import で落ちる)。
+    #[cfg(unix)]
     use std::sync::mpsc;
+    #[cfg(unix)]
     use std::time::Duration;
 
     #[test]
