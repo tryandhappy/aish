@@ -152,7 +152,9 @@ jobs:
         run: |
           RPM_VERSION="${{ steps.version.outputs.tag }}"
           RPM_VERSION="${RPM_VERSION#v}"
-          RPM_VERSION="${RPM_VERSION//-/~}"
+          # tr で '-'→'~'。bash の ${var//-/~} は replacement の '~' が tilde 展開されて
+          # $HOME に化け sed のデリミタを壊すので使わない。
+          RPM_VERSION="$(printf '%s' "$RPM_VERSION" | tr '-' '~')"
           sed -i "s/^version = \".*\"/version = \"${RPM_VERSION}\"/" Cargo.toml
           cargo generate-rpm --target ${{ matrix.target }}
 
