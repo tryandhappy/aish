@@ -492,6 +492,8 @@ TOML 形式。未指定はデフォルト。サンプルは `config.toml.example
 
 ### 15.8 その他の UI ルール
 
+- **起動バナー（`print_startup_banner`）は PTY spawn より前に描画する**。Windows Terminal + PowerShell（ConPTY）では、**ConPTY が spawn 時点の実カーソル位置を基準に子シェルの描画をアンカーする**。spawn 後にバナーを出すと、ConPTY 内で生成された初回プロンプト（row1 への絶対位置 `\x1b[H` 等を含む）が最初の `drain_pty` で流れてバナーを上書きする（2026-07 実測: 起動バナーが一瞬出て PowerShell プロンプトに消える）。バナーを spawn 前に出し、カーソルをバナー下へ進めてから spawn すれば ConPTY はバナーの下にアンカーされる（`main.rs` で `print_startup_banner` を `spawn_local_shell` の直前に配置）。**Bug 2（未修正・調査中）**: aish プロンプト→AI 応答→確認 Enter でコマンド実行した瞬間、AI 応答行が上書きされる。原因は PSReadLine が承認コマンドの入力行を自分のプロンプトアンカー行（= minibuffer 前の shell プロンプト行 R）に再描画するが、aish は cursor を R に復元して AI 応答を R 以降に直接描くため。ConPTY は aish の直接 stdout 描画で動いた実カーソルを追跡できず絶対位置で R を指す（Unix の bash は相対再描画なので起きない）。trust-critical な minibuffer/描画コード（§15.4/15.5）なので、`AISH_DEBUG_PTY` で ConPTY の実シーケンスを捕捉してから修正する方針。
+- **PTY 出力の実測は `AISH_DEBUG_PTY=1`**: `drain_pty` が受け取った生チャンクを `debug_bytes` で escape して **stderr** に出す（`main::debug_pty`。`AISH_DEBUG_KEYS` と対で既定無効・OnceLock キャッシュ）。`/tmp/aish-debug.log` に書く `AISH_DEBUG`（Unix 前提）とは別系統で、**stderr 出力なので Windows でも `aish 2> pty.log` で取れる**。ConPTY のカーソル位置指定シーケンス調査用。
 - **TUI（vim / less / top 等）終了後は aish から何も出さない**。旧ステータスバー復旧の `Ctrl+L` はステータスバー廃止（commit 7d13700）で全廃。再導入するなら vim insert モードへの `^L` 混入を避けるため passive 検出だけで「終了」を一意判定できる根拠が必要（`\x1b[2J`・DECSTBM・alt screen 突入は TUI 動作中にも出るので使えない）。
 - **Shift+Enter 改行は非対応**（端末間で CSI u / legacy が揃わない）。改行は `Alt+Enter`（§14）。
 - **IME の未確定文字（preedit）は取得不能**。preedit は OS 入力メソッド層が保持し確定まで stdin に 1 バイトも流れない（端末が overlay 描画するだけ）。Kitty keyboard protocol でも変わらない。確定済み文字でマッチするのが現実解。

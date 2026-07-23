@@ -56,6 +56,9 @@ pub fn drain_pty(
     let mut first_chunk = true;
     while let Ok(data) = rx.try_recv() {
         got_any = true;
+        // AISH_DEBUG_PTY=1 のとき、ConPTY/子シェルが出す生チャンクを stderr にダンプ
+        // (Windows 描画ズレ調査用。カーソル位置指定シーケンスを実測する)。既定無効。
+        crate::debug_pty(&data);
         if let Some(count) = debug_chunk_count.as_deref_mut() {
             *count += 1;
             if *count <= 3 {

@@ -69,6 +69,8 @@ drain / 入力スレッド（§ 15.6）:
 - **入力スレッド再開は `InputGate` + `rearm_on_drop()` RAII guard**（idle に戻る arm の入口で取得。手書き arm 呼び出しを増やさない）。
 
 その他 UI（§ 15.8）:
+- **起動バナー（`print_startup_banner`）は PTY spawn より前に描画する**（Windows ConPTY は spawn 時点のカーソル位置を基準に子シェル描画をアンカーするため。後に出すと初回プロンプトがバナーを上書きする）。順序を戻さない。
+- **PTY 出力の実測は `AISH_DEBUG_PTY=1`**（`drain_pty` が生チャンクを escape して stderr にダンプ。`AISH_DEBUG_KEYS` と対で既定無効・stderr 出力。ConPTY のカーソル位置指定シーケンス調査用。`/tmp` ログの `AISH_DEBUG` とは別で Windows でも `2> pty.log` で取れる）。
 - **TUI(vim/less/top) 終了後は aish から何も出さない**。**Shift+Enter 非対応**（改行は `Alt+Enter`）。**IME の未確定文字(preedit) は取得不能**。
 
 ring_buffer / backend（§ 15.9）:

@@ -16,6 +16,7 @@ mod vetted_command;
 use mode::Mode;
 use std::io::{self, Read, Write};
 use std::sync::mpsc;
+use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
 
@@ -232,6 +233,27 @@ fn debug_bytes(data: &[u8], max: usize) -> String {
         s.push_str(&format!(" ... (+{} more bytes)", data.len() - max));
     }
     s
+}
+
+/// 環境変数 AISH_DEBUG_PTY が設定されていれば true。起動時に 1 度だけ env を見てキャッシュ。
+fn debug_pty_enabled() -> bool {
+    static E: OnceLock<bool> = OnceLock::new();
+    *E.get_or_init(|| std::env::var_os("AISH_DEBUG_PTY").is_some())
+}
+
+/// AISH_DEBUG_PTY=1 のとき、drain した PTY(子シェル/ConPTY) 出力チャンクを escape して
+/// **stderr** に出す (`AISH_DEBUG_KEYS` と同じく既定無効・stderr 出力なので Windows でも
+/// `aish 2> pty.log` で取れる)。Windows の描画ズレ調査で ConPTY のカーソル位置指定
+/// シーケンス (`\e[行;列H` 等) を実測する用途。TUI 表示 (stdout) とは別系統なので
+/// リダイレクトすれば画面を汚さない。
+pub(crate) fn debug_pty(data: &[u8]) {
+    if debug_pty_enabled() {
+        eprintln!(
+            "[aish-pty {} bytes] {}",
+            data.len(),
+            debug_bytes(data, 4096)
+        );
+    }
 }
 
 /// `/model` `/effort` の共通処理。
@@ -480,6 +502,21 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
         Mode::Remote
     };
 
+    // 起動バナー: 1 度だけ画面上部に表示する (status bar は廃止)。
+    // backend ごとに色を変える 2 行 ASCII アート + バージョン・モデル・effort・キーヒント。
+    // model / effort 未指定時はその欄を省略する。
+    // **PTY spawn より前に描画する**: Windows の ConPTY は spawn 時点のカーソル位置を基準に
+    // 子シェルの描画をアンカーするため、spawn 後にバナーを出すと子の初回プロンプト(絶対位置
+    // 指定)がバナーを上書きする。先に描いてカーソルをバナー下へ進めてから spawn する。
+    let banner_model = ai_session.model();
+    let banner_effort = ai_session.effort();
+    ui::print_startup_banner(
+        kind,
+        banner_model.as_deref(),
+        banner_effort.as_deref(),
+        env!("CARGO_PKG_VERSION"),
+    );
+
     let mut pty = if mode == Mode::Local {
         pty_handler::PtyHandler::spawn_local_shell(pty_rows, term_cols)?
     } else {
@@ -531,18 +568,6 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
         &config.display.term_fg_color,
         &config.display.term_bg_color,
         &config.display.term_cursor_color,
-    );
-
-    // 起動バナー: 1 度だけ画面上部に表示する (status bar は廃止)
-    // backend ごとに色を変える 2 行 ASCII アート + バージョン・モデル・effort・キーヒント。
-    // model / effort 未指定時はその欄を省略する。
-    let banner_model = ai_session.model();
-    let banner_effort = ai_session.effort();
-    ui::print_startup_banner(
-        kind,
-        banner_model.as_deref(),
-        banner_effort.as_deref(),
-        env!("CARGO_PKG_VERSION"),
     );
 
     let aish_label = format!(
