@@ -77,19 +77,22 @@ try {
 
 # 5. Install to %LOCALAPPDATA%\Programs\aish.
 #    Move-Item -Force can throw ERROR_ALREADY_EXISTS overwriting an existing aish.exe,
-#    and a running aish.exe can't be overwritten at all. Renaming a locked exe IS
-#    allowed on Windows, so move the old one aside first, then drop the new one in and
-#    best-effort delete the leftover (skipped silently if the old exe is still running).
+#    and a running aish.exe can't be overwritten at all. Renaming a locked exe IS allowed
+#    on Windows, so move the old one aside first, then drop the new one in.
+#    The aside name must be UNIQUE: a leftover/locked "aish.exe.old" from a previous run
+#    would otherwise block Rename-Item (which, even with -Force, does NOT overwrite an
+#    existing target and can't delete a locked one). Then best-effort delete every stale
+#    *.old (skips ones still locked/running — harmless leftovers).
 $dir = Join-Path $env:LOCALAPPDATA 'Programs\aish'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $dest = Join-Path $dir 'aish.exe'
-$old = "$dest.old"
 if (Test-Path $dest) {
-    Remove-Item $old -Force -ErrorAction SilentlyContinue
-    Rename-Item -Path $dest -NewName 'aish.exe.old' -Force
+    $aside = 'aish.exe.' + [System.IO.Path]::GetRandomFileName() + '.old'
+    Rename-Item -Path $dest -NewName $aside -Force
 }
 Move-Item -Path $tmp -Destination $dest -Force
-Remove-Item $old -Force -ErrorAction SilentlyContinue
+Get-ChildItem -Path $dir -Filter 'aish.exe.*.old' -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
 
 # 6. Add the install dir to the user PATH (idempotent).
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
