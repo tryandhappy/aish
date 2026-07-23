@@ -26,7 +26,7 @@ use windows_sys::Win32::System::Console::{
     GetConsoleCP, GetConsoleMode, GetConsoleOutputCP, GetConsoleScreenBufferInfo,
     GetNumberOfConsoleInputEvents, GetStdHandle, ReadConsoleInputW, SetConsoleCP, SetConsoleMode,
     SetConsoleOutputCP, CONSOLE_SCREEN_BUFFER_INFO, ENABLE_ECHO_INPUT, ENABLE_EXTENDED_FLAGS,
-    ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT, ENABLE_QUICK_EDIT_MODE,
+    ENABLE_LINE_INPUT, ENABLE_MOUSE_INPUT, ENABLE_PROCESSED_INPUT, ENABLE_QUICK_EDIT_MODE,
     ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING, ENABLE_WINDOW_INPUT,
     INPUT_RECORD, KEY_EVENT, LEFT_CTRL_PRESSED, RIGHT_CTRL_PRESSED, STD_INPUT_HANDLE,
     STD_OUTPUT_HANDLE, WINDOW_BUFFER_SIZE_EVENT,
@@ -99,11 +99,14 @@ pub fn save_terminal_settings() {
         // raw 相当: 行編集/エコー/シグナル処理を切り、VT 入力 + リサイズイベントを有効化。
         // ENABLE_PROCESSED_INPUT off → Ctrl+C が生 0x03 (Unix の ISIG off と同義)。
         // ENABLE_QUICK_EDIT_MODE off にはENABLE_EXTENDED_FLAGS が必要。
+        // ENABLE_MOUSE_INPUT も落とす: aish はマウス未使用で、落とさないと VT 入力モード下で
+        // マウス移動が VK=0 の KEY_EVENT/VT マウスシーケンスとして届き入力キューへ injection される。
         let raw_in = (in_mode
             & !(ENABLE_LINE_INPUT
                 | ENABLE_ECHO_INPUT
                 | ENABLE_PROCESSED_INPUT
-                | ENABLE_QUICK_EDIT_MODE))
+                | ENABLE_QUICK_EDIT_MODE
+                | ENABLE_MOUSE_INPUT))
             | ENABLE_VIRTUAL_TERMINAL_INPUT
             | ENABLE_WINDOW_INPUT
             | ENABLE_EXTENDED_FLAGS;
