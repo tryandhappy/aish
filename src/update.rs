@@ -132,22 +132,22 @@ fn compute_sha256(path: &str) -> Result<String, Box<dyn std::error::Error>> {
 /// Windows は自己更新 (実行中 exe の rename が不可) をサポートしないので、代わりに
 /// リポジトリ同梱インストーラ (`install.ps1`) を使う PowerShell コマンドを案内する純関数。
 /// 手打ちの変数展開ミス (空の $tag で HTML が落ちる等) を避けるため one-liner に統一する。
-/// チャネル追従: prerelease は `install.ps1` の既定 (`/releases[0]`) をそのまま `| iex`、
-/// stable は scriptblock 経由で `-Stable` を渡す (`| iex` は引数を渡せないため)。
-fn windows_update_hint(channel: UpdateChannel) -> String {
+/// Windows は `--update`/`--prerelease` の指定に関わらず両チャネルのコマンドを併記する
+/// (自己更新非対応でユーザが選ぶため。channel は見ない): prerelease 含む最新は `install.ps1`
+/// の既定 (`/releases[0]`) をそのまま `| iex`、安定版は scriptblock 経由で `-Stable` を渡す
+/// (`| iex` は引数を渡せないため)。
+fn windows_update_hint() -> String {
     let raw =
         format!("https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/install.ps1");
-    let cmd = match channel {
-        // 既定 (prerelease 含む最新) はそのままパイプで実行。
-        UpdateChannel::Prerelease => format!("  irm {raw} | iex"),
-        // 安定版は install.ps1 -Stable。irm|iex は引数を渡せないので scriptblock 化する。
-        UpdateChannel::Stable => format!("  & ([scriptblock]::Create((irm {raw}))) -Stable"),
-    };
     let lines = [
         "Self-update is not supported on Windows.".to_string(),
-        "To update, run the installer in PowerShell:".to_string(),
+        "To update, run one of these in PowerShell:".to_string(),
         String::new(),
-        cmd,
+        "  # latest (including prereleases)".to_string(),
+        format!("  irm {raw} | iex"),
+        String::new(),
+        "  # latest stable".to_string(),
+        format!("  & ([scriptblock]::Create((irm {raw}))) -Stable"),
     ];
     lines.join("\n")
 }
@@ -163,7 +163,7 @@ pub fn run_update(channel: UpdateChannel) -> Result<(), Box<dyn std::error::Erro
     // Windows は自己更新非対応。エラーで落とさず、手動更新コマンドを案内して正常終了する
     // (detect_target() は windows で Err を返すので、それより前に分岐する)。
     if cfg!(windows) {
-        println!("{}", windows_update_hint(channel));
+        println!("{}", windows_update_hint());
         return Ok(());
     }
 
@@ -286,22 +286,18 @@ mod tests {
     }
 
     #[test]
-    fn windows_update_hint_is_channel_aware() {
-        // どちらも同梱インストーラ install.ps1 (raw URL) を使う。
+    fn windows_update_hint_lists_both_channels() {
+        // Windows は channel を見ず、両チャネルのコマンドを併記する。
         let installer = "https://raw.githubusercontent.com/tryandhappy/aish/main/install.ps1";
+        let hint = windows_update_hint();
 
-        // prerelease (既定) は素のパイプ実行。-Stable は付けない。
-        let pre = windows_update_hint(UpdateChannel::Prerelease);
-        assert!(pre.contains("PowerShell"));
-        assert!(pre.contains(installer));
-        assert!(pre.contains("| iex"));
-        assert!(!pre.contains("-Stable"));
-
-        // stable は scriptblock 経由で -Stable を渡す。
-        let stable = windows_update_hint(UpdateChannel::Stable);
-        assert!(stable.contains(installer));
-        assert!(stable.contains("-Stable"));
-        assert!(stable.contains("scriptblock"));
+        assert!(hint.contains("PowerShell"));
+        assert!(hint.contains(installer));
+        // prerelease 含む最新は素のパイプ実行。
+        assert!(hint.contains("| iex"));
+        // 安定版は scriptblock 経由で -Stable を渡す。
+        assert!(hint.contains("-Stable"));
+        assert!(hint.contains("scriptblock"));
     }
 
     #[test]
