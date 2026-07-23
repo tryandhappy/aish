@@ -143,9 +143,18 @@ jobs:
         if: matrix.cross
         run: cargo deb --no-build --no-strip --target ${{ matrix.target }}
 
+      # RPM のバージョンは '-' を含められない (allowed: 英数 . _ + % { } ~ ^)。
+      # SemVer prerelease の '-' を RPM 慣習の '~' に変換して渡す (~ は安定版より小さく
+      # ソートされる)。generate-rpm は再ビルドせず Cargo.toml の [package] version を
+      # 読むだけなので version 行の書き換えで足りる (deb はこの後に無く '-' も許容)。
       - name: Build rpm package
         if: matrix.cross
-        run: cargo generate-rpm --target ${{ matrix.target }}
+        run: |
+          RPM_VERSION="${{ steps.version.outputs.tag }}"
+          RPM_VERSION="${RPM_VERSION#v}"
+          RPM_VERSION="${RPM_VERSION//-/~}"
+          sed -i "s/^version = \".*\"/version = \"${RPM_VERSION}\"/" Cargo.toml
+          cargo generate-rpm --target ${{ matrix.target }}
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v6
