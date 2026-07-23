@@ -30,6 +30,7 @@ SSH でサーバを管理する道具なので、**ユーザが画面で承認�
 - **低レベル入力の framing は `src/input.rs` に集約**。fd 0 直読みを増やさない。passthrough は `ev.raw` をそのまま PTY へ送り、**`Tok::Char` を再エンコードしない**。byte→Tok は golden test で固定。
 - **termios は `c_lflag`(ICANON|ECHO|ISIG|IEXTEN) + `c_iflag` raw 化群を落とす。`c_oflag`(OPOST) は触らない**。
 - **パススルーの ESC/CSI/SS3 は完全な形まで読み切ってからまとめて送る。追加 byte 読みは poll(50ms) 付き**（blocking にしない）。
+- **win32-input-mode（`ESC[Vk;Sc;Uc;Kd;Cs;Rc_`）は `input.rs` の `classify_win32_input_mode` でデコード**（`classify_csi` が final byte `_` で呼ぶ純関数。`#[cfg]` を付けず golden test 対象）。Windows Terminal + PowerShell では PSReadLine がこのモードを有効化し、Ctrl+/ 等が KEY_EVENT でなくこのシーケンスで届くため（付けないと Ctrl+/ が PowerShell に素通りしミニバッファが開かない）。**key-down のみ Tok 化、key-up/解釈不能は None→EscSeq に握りつぶす**（二重入力防止・新 Tok variant 不要）。**raw は保持したまま**なので passthrough は生バイトを PowerShell/子 TUI へ転送し復号させる（透明性維持）。
 
 確認プロンプト Y/n/a/q（§ 15.2）:
 - **1 キー即確定**（`read_confirm_key`）。Enter/Space=実行、`n`=1 回スキップ、`a`=残り自動承認、`q`=残り中止(follow-up あり)、Ctrl+C/Ctrl+D=残り中止(AI に問わない)、**ESC=`n`**。未知キーは無視して再読み取り。**ESC を Ctrl+C 系 abort に戻さない**。

@@ -154,6 +154,15 @@ fn decode_csi(src: &mut impl ByteSource, mut raw: Vec<u8>) -> InEvent {
 }
 
 fn classify_csi(params: &[u8], final_byte: u8) -> Tok {
+    // win32-input-mode (ESC [ Vk ; Sc ; Uc ; Kd ; Cs ; Rc _)。Windows Terminal + PowerShell
+    // では PSReadLine がこのモードを有効化するため、キー入力が KEY_EVENT でなくこの
+    // シーケンスのバイト列で aish に届く (SPEC §15.13)。final byte `_`(0x5F) は 0x40..=0x7E に
+    // 含まれ decode_csi が既に終端として読み切っているので、ここは params の解釈だけを担う。
+    if final_byte == b'_' {
+        if let Some(tok) = classify_win32_input_mode(params) {
+            return tok;
+        }
+    }
     // フォーカスイベント (ESC [ I / ESC [ O)
     if params.is_empty() && final_byte == b'I' {
         return Tok::FocusIn;
@@ -179,6 +188,74 @@ fn classify_csi(params: &[u8], final_byte: u8) -> Tok {
         (b"3", b'~') => Tok::Delete,
         _ => Tok::EscSeq,
     }
+}
+
+/// win32-input-mode (`ESC [ Vk ; Sc ; Uc ; Kd ; Cs ; Rc _`) のパラメータを `Tok` に変換する。
+/// `#[cfg]` を付けない純関数 (Unix では `ESC[..._` が来ず無害。無条件にすることで ubuntu CI で
+/// golden test が回る)。**raw は呼び出し側の `InEvent` に保持されるので passthrough は生の
+/// win32 バイトをそのまま PTY へ転送でき、PowerShell / 子 TUI がそれを復号する** (透明性の根幹)。
+///
+/// key-down (Kd != 0) だけ `Some(Tok)` を返す。key-up と解釈不能は `None` を返し、呼び出し側の
+/// `EscSeq` フォールバックに委ねる (全 tok 消費者が `EscSeq` を無視し、passthrough は raw を送る
+/// ので 1 キー = down/up 2 連でも二重入力にならず down/up 整合も保たれる → 新 variant 不要)。
+fn classify_win32_input_mode(params: &[u8]) -> Option<Tok> {
+    let s = std::str::from_utf8(params).ok()?;
+    // 各フィールドを数値化 (空は 0 = win32-input-mode の省略既定)。非数値が混じる = win32 でない
+    // → `?` で None にして EscSeq へフォールバック (別種の `ESC[..._` を誤解釈しない安全側)。
+    let mut fields: Vec<u32> = Vec::new();
+    for part in s.split(';') {
+        let t = part.trim();
+        fields.push(if t.is_empty() { 0 } else { t.parse().ok()? });
+    }
+    // 最低 Vk;Sc;Uc;Kd の 4 フィールドが無ければ win32-input-mode とみなさない。
+    if fields.len() < 4 {
+        return None;
+    }
+    let vk = fields[0];
+    let uc = fields[2];
+    let kd = fields[3];
+    let cs = fields.get(4).copied().unwrap_or(0);
+
+    // key-up は無視 (down だけ Tok 化)。
+    if kd == 0 {
+        return None;
+    }
+    const LEFT_CTRL_PRESSED: u32 = 0x0008;
+    const RIGHT_CTRL_PRESSED: u32 = 0x0004;
+    let ctrl = cs & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED) != 0;
+
+    // Ctrl+/ (エントリキー)。VK_OEM_2(0xBF) または uChar が 0x1f/0x2f。term/windows.rs の
+    // pump 正規化と同一値・同一条件 (US=0x1f / JIS=0x2f / VK 経路)。
+    if ctrl && (vk == 0xBF || uc == 0x1F || uc == 0x2F) {
+        return Some(Tok::Ctrl(0x1f));
+    }
+    // Vk による特殊キー (Enter/Backspace/Esc は制御文字フィルタより先に判定する — さもないと
+    // uChar<0x20 の下の分岐に飲まれる。next_event の順序トラップと同じ理由)。
+    match vk {
+        0x0D => return Some(Tok::Enter),     // VK_RETURN
+        0x08 => return Some(Tok::Backspace), // VK_BACK
+        0x1B => return Some(Tok::Esc),       // VK_ESCAPE
+        0x25 => return Some(Tok::Left),      // VK_LEFT
+        0x26 => return Some(Tok::Up),        // VK_UP
+        0x27 => return Some(Tok::Right),     // VK_RIGHT
+        0x28 => return Some(Tok::Down),      // VK_DOWN
+        0x24 => return Some(Tok::Home),      // VK_HOME
+        0x23 => return Some(Tok::End),       // VK_END
+        0x2E => return Some(Tok::Delete),    // VK_DELETE
+        _ => {}
+    }
+    // Ctrl+英字等の C0 制御文字 (uChar が 0x01..=0x1f)。
+    if uc != 0 && uc < 0x20 {
+        return Some(Tok::Ctrl(uc as u8));
+    }
+    // 印字可能文字 (BMP)。非 BMP=サロゲート (1 record=1 UTF-16 unit) は稀なので None →
+    // EscSeq にフォールバック (passthrough は raw で無事)。制約として文書化。
+    if let Some(c) = char::from_u32(uc) {
+        if !c.is_control() {
+            return Some(Tok::Char(c));
+        }
+    }
+    None
 }
 
 fn decode_ss3(src: &mut impl ByteSource, mut raw: Vec<u8>) -> InEvent {
@@ -544,5 +621,79 @@ mod tests {
         );
         // confirm の代表入力
         assert_eq!(decode_all(b"Yn"), vec![Tok::Char('Y'), Tok::Char('n')]);
+    }
+
+    // ---- win32-input-mode (ESC[Vk;Sc;Uc;Kd;Cs;Rc_) ----
+    // Windows Terminal + PowerShell の PSReadLine が有効化するモード。実測 (2026-07):
+    // Ctrl+/ は ESC[191;53;0;1;40;1_ (Vk=191=0xBF, Cs=40=0x28 に LEFT_CTRL_PRESSED)。
+
+    #[test]
+    fn win32_ctrl_slash_via_vk_oem2() {
+        // Ctrl+/ = VK_OEM_2(191) + Ctrl (Cs=8)、uChar=0。エントリキー 0x1f に正規化。
+        assert_eq!(decode_all(b"\x1b[191;53;0;1;8;1_"), vec![Tok::Ctrl(0x1f)]);
+        // 実測の Cs=40 (0x28 = NUMLOCK_ON|LEFT_CTRL) でも拾う。
+        assert_eq!(decode_all(b"\x1b[191;53;0;1;40;1_"), vec![Tok::Ctrl(0x1f)]);
+    }
+
+    #[test]
+    fn win32_ctrl_slash_via_uchar() {
+        // US 配列で uChar=0x1f、JIS 等で uChar=0x2f のまま届くケース (Vk は 0 でも拾う)。
+        assert_eq!(decode_all(b"\x1b[0;0;31;1;8;1_"), vec![Tok::Ctrl(0x1f)]); // 0x1f
+        assert_eq!(decode_all(b"\x1b[0;0;47;1;8;1_"), vec![Tok::Ctrl(0x1f)]); // 0x2f
+    }
+
+    #[test]
+    fn win32_printable_char() {
+        // 'a' = Vk=0x41, uChar=0x61, key-down, 修飾なし。
+        assert_eq!(decode_all(b"\x1b[65;30;97;1;0;1_"), vec![Tok::Char('a')]);
+        // space。
+        assert_eq!(decode_all(b"\x1b[32;57;32;1;0;1_"), vec![Tok::Char(' ')]);
+    }
+
+    #[test]
+    fn win32_special_keys_by_vk() {
+        assert_eq!(decode_all(b"\x1b[13;28;13;1;0;1_"), vec![Tok::Enter]);
+        assert_eq!(decode_all(b"\x1b[8;14;8;1;0;1_"), vec![Tok::Backspace]);
+        assert_eq!(decode_all(b"\x1b[27;1;27;1;0;1_"), vec![Tok::Esc]);
+        assert_eq!(decode_all(b"\x1b[37;75;0;1;0;1_"), vec![Tok::Left]);
+        assert_eq!(decode_all(b"\x1b[38;72;0;1;0;1_"), vec![Tok::Up]);
+        assert_eq!(decode_all(b"\x1b[39;77;0;1;0;1_"), vec![Tok::Right]);
+        assert_eq!(decode_all(b"\x1b[40;80;0;1;0;1_"), vec![Tok::Down]);
+        assert_eq!(decode_all(b"\x1b[36;71;0;1;0;1_"), vec![Tok::Home]);
+        assert_eq!(decode_all(b"\x1b[35;79;0;1;0;1_"), vec![Tok::End]);
+        assert_eq!(decode_all(b"\x1b[46;83;0;1;0;1_"), vec![Tok::Delete]);
+    }
+
+    #[test]
+    fn win32_ctrl_letters() {
+        // Ctrl+C = Vk=0x43('C'), uChar=0x03, Ctrl。転送/中断に使う 0x03。
+        assert_eq!(decode_all(b"\x1b[67;46;3;1;8;1_"), vec![Tok::Ctrl(0x03)]);
+        // Ctrl+D = uChar=0x04。
+        assert_eq!(decode_all(b"\x1b[68;32;4;1;8;1_"), vec![Tok::Ctrl(0x04)]);
+    }
+
+    #[test]
+    fn win32_key_up_is_ignored() {
+        // key-up (Kd=0) は Tok を生まず EscSeq に落ちる (二重入力防止)。
+        assert_eq!(decode_all(b"\x1b[65;30;97;0;0;1_"), vec![Tok::EscSeq]);
+    }
+
+    #[test]
+    fn win32_malformed_falls_back_to_escseq() {
+        // フィールド不足 (< 4) は win32 とみなさず EscSeq。
+        assert_eq!(decode_all(b"\x1b[1;2_"), vec![Tok::EscSeq]);
+        // 非数値混じり (param 域に残る 0x3A ':' 等) も EscSeq。英字はそもそも CSI 終端
+        // (0x40..=0x7E) 扱いになり params に入らないので、param 域の記号で検証する。
+        assert_eq!(decode_all(b"\x1b[1;2;:;4_"), vec![Tok::EscSeq]);
+    }
+
+    #[test]
+    fn win32_raw_is_preserved_for_passthrough() {
+        // Ctrl+/ を tok 化しても raw は生の win32 バイト列を保持する
+        // (passthrough は raw を PowerShell へ転送する)。
+        let mut src = SliceSource::new(b"\x1b[191;53;0;1;8;1_");
+        let ev = next_event(&mut src);
+        assert_eq!(ev.tok, Tok::Ctrl(0x1f));
+        assert_eq!(ev.raw, b"\x1b[191;53;0;1;8;1_");
     }
 }
