@@ -96,20 +96,29 @@ impl PtyHandler {
         &[0x01, 0x0b]
     };
 
+    /// シェルへ送る「Enter」1 byte。
+    /// - Unix: `\n` (LF)。bash 等の line discipline は LF を行確定として扱う。
+    /// - Windows: `\r` (CR)。PSReadLine (win32-input-mode 経由) は bare `\n` を
+    ///   Enter でなく複数行編集の改行挿入として扱い、`>> ` 継続プロンプトのまま
+    ///   固まる (空行の `refresh_prompt` だけでなく、コマンド文字列 + `\n` の
+    ///   `send_approved_command` でも同様。2026-07 実機報告 + portable_pty で
+    ///   PowerShell に直接バイト列を送って再現・確認済み)。`\r` は即座に確定・実行される。
+    const ENTER_BYTE: u8 = if cfg!(windows) { b'\r' } else { b'\n' };
+
     /// シェルの打ちかけ行を消去する。打ちかけが無ければ no-op。
     pub fn kill_line(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.write(Self::KILL_LINE_BYTES)
     }
 
     /// 打ちかけ消去 + 改行でシェルプロンプトを再表示させる。
-    /// 消去せず `\n` だけ送ると、ユーザが Enter していない打ちかけコマンドを
+    /// 消去せず改行だけ送ると、ユーザが Enter していない打ちかけコマンドを
     /// 勝手に実行してしまう (信頼の根幹: 承認していないコマンドを実行しない)。
     /// 2 送信を分離できないようメソッドに固定する。
     /// エラー処理は旧コード互換: 消去側の write エラーは無視し、改行側の Result を
     /// 返す (呼び出し側の `let _` / `?` 使い分けを保つため。消去側を `?` にしないこと)。
     pub fn refresh_prompt(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let _ = self.write(Self::KILL_LINE_BYTES);
-        self.write(b"\n")
+        self.write(&[Self::ENTER_BYTE])
     }
 
     /// ユーザが画面で承認した AI 提案コマンド + 改行を PTY に送る。
@@ -120,7 +129,9 @@ impl PtyHandler {
         &mut self,
         cmd: &VettedCommand<'_>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.write(format!("{}\n", cmd.as_str()).as_bytes())
+        let mut bytes = cmd.as_str().as_bytes().to_vec();
+        bytes.push(Self::ENTER_BYTE);
+        self.write(&bytes)
     }
 
     pub fn resize(&self, rows: u16, cols: u16) -> Result<(), Box<dyn std::error::Error>> {
@@ -160,6 +171,17 @@ mod tests {
             assert_eq!(PtyHandler::KILL_LINE_BYTES, &[0x1b]);
         } else {
             assert_eq!(PtyHandler::KILL_LINE_BYTES, &[0x01, 0x0b]);
+        }
+    }
+
+    #[test]
+    fn enter_byte_per_platform() {
+        // Enter バイトの固定: unix=LF / windows=CR。
+        // (windows-latest ランナーでは windows 値が検証される)
+        if cfg!(windows) {
+            assert_eq!(PtyHandler::ENTER_BYTE, b'\r');
+        } else {
+            assert_eq!(PtyHandler::ENTER_BYTE, b'\n');
         }
     }
 
