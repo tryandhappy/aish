@@ -451,7 +451,11 @@ fn wait_for_command_completion(
             // 中止判定はプロンプト復帰時に行う (この場で抜けると ^C + プロンプトの
             // 出力を取りこぼし、画面とリングバッファがずれる)。Ctrl+D (0x04) は
             // 対話プログラムの EOF として正当なので中止扱いにはしない。
-            if stdin_bytes.contains(&0x03) {
+            // 素の `contains(&0x03)` でなく `bytes_contain_ctrl_c` を使う: Windows の
+            // win32-input-mode 環境では Ctrl+C が生の 0x03 でなくマルチバイトの
+            // win32-input-mode シーケンスで届くため、素の比較だと検出できず
+            // interrupted が立たないまま follow-up 判定を誤る (§ 15.13)。
+            if crate::input::bytes_contain_ctrl_c(&stdin_bytes) {
                 interrupted = true;
             }
             pty.write(&stdin_bytes)?;

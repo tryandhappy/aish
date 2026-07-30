@@ -295,14 +295,17 @@ pub fn drain_stdin_nonblocking() -> Vec<u8> {
 
 /// stdinからCtrl+C (0x03) が入力されているかノンブロッキングでチェック。
 /// Ctrl+C 以外の入力は破棄する (Unix 版と同セマンティクス)。
+///
+/// 素の `byte == 0x03` 比較ではなく `input::bytes_contain_ctrl_c` を通す
+/// (win32-input-mode 有効時は Ctrl+C が生の 0x03 でなく `ESC[Vk;Sc;Uc;Kd;Cs;Rc_`
+/// のマルチバイトシーケンスで届くため、素の比較だと検出できず AI 応答待ち中の
+/// Ctrl+C が無反応になっていた。2026-07 実機報告、詳細は § 15.13)。
 pub fn check_stdin_cancel() -> bool {
-    let mut found = false;
-    while let Some(b) = read_stdin_byte(0) {
-        if b == 0x03 {
-            found = true;
-        }
+    let bytes = drain_stdin_nonblocking();
+    if bytes.is_empty() {
+        return false;
     }
-    found
+    crate::input::bytes_contain_ctrl_c(&bytes)
 }
 
 /// `\x1b[6n` (DSR) を端末に送り、応答 `\x1b[{row};{col}R` を 80ms 以内に受信して

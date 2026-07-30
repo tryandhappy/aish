@@ -328,6 +328,43 @@ fn utf8_char_len(b: u8) -> usize {
     }
 }
 
+/// 既にノンブロッキングで読み終えたバイト列を再生する `ByteSource`。
+/// バッファの終端に達したら `timeout_ms` に関わらず即座に `None` を返す
+/// (これ以上バイトが来ることはない再生専用バッファなので、待っても無意味)。
+struct SliceSource<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl ByteSource for SliceSource<'_> {
+    fn read_byte(&mut self, _timeout_ms: i32) -> Option<u8> {
+        let b = *self.bytes.get(self.pos)?;
+        self.pos += 1;
+        Some(b)
+    }
+}
+
+/// バイト列に Ctrl+C (0x03) 相当のキー入力が含まれるかを判定する。
+///
+/// Windows Terminal + PSReadLine 環境では win32-input-mode (`ESC[Vk;Sc;Uc;Kd;Cs;Rc_`) が
+/// 有効になり、Ctrl+C は生の `0x03` 1 byte でなくこのマルチバイトシーケンスで届く
+/// (§ 15.13)。素の `bytes.contains(&0x03)` 比較ではこのシーケンスを検出できず、
+/// AI 応答待ち中 (`ai/common.rs` の `check_stdin_cancel` 呼び出し) やコマンド実行中
+/// (`conversation.rs` の `wait_for_command_completion`) の Ctrl+C が無反応になっていた
+/// (2026-07 実機報告)。`next_event` (本モジュール唯一の byte→Tok デコーダ、
+/// win32-input-mode 込みで既に対応済み) にバッファを再生させ `Tok::Ctrl(0x03)` の
+/// 有無で判定することで、生バイトでも win32-input-mode 経由でも同じ経路で拾う。
+pub fn bytes_contain_ctrl_c(bytes: &[u8]) -> bool {
+    let mut src = SliceSource { bytes, pos: 0 };
+    loop {
+        match next_event(&mut src).tok {
+            Tok::Eof => return false,
+            Tok::Ctrl(0x03) => return true,
+            _ => {}
+        }
+    }
+}
+
 // ---- fd 0 の実バイト源 ----
 
 /// fd 0 を `ManuallyDrop` で借りて raw モードで 1 byte ずつ読むバイト源。
@@ -670,6 +707,27 @@ mod tests {
         assert_eq!(decode_all(b"\x1b[67;46;3;1;8;1_"), vec![Tok::Ctrl(0x03)]);
         // Ctrl+D = uChar=0x04。
         assert_eq!(decode_all(b"\x1b[68;32;4;1;8;1_"), vec![Tok::Ctrl(0x04)]);
+    }
+
+    #[test]
+    fn bytes_contain_ctrl_c_detects_raw_byte() {
+        assert!(bytes_contain_ctrl_c(b"\x03"));
+        assert!(bytes_contain_ctrl_c(b"abc\x03def"));
+        assert!(!bytes_contain_ctrl_c(b"abcdef"));
+        assert!(!bytes_contain_ctrl_c(b""));
+    }
+
+    #[test]
+    fn bytes_contain_ctrl_c_detects_win32_input_mode() {
+        // win32-input-mode 有効時、Ctrl+C は生の 0x03 でなくこのシーケンスで届く
+        // (win32_ctrl_letters と同じ実測バイト列)。
+        assert!(bytes_contain_ctrl_c(b"\x1b[67;46;3;1;8;1_"));
+        // Ctrl を伴わない同じキー ('C' 単体) は検出しない。
+        assert!(!bytes_contain_ctrl_c(b"\x1b[67;46;99;1;0;1_"));
+        // 他の win32-input-mode イベントに混じっていても拾う。
+        assert!(bytes_contain_ctrl_c(
+            b"\x1b[65;30;97;1;0;1_\x1b[67;46;3;1;8;1_"
+        ));
     }
 
     #[test]
