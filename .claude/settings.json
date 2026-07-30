@@ -1,8 +1,14 @@
 {
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "CLAUDE_CODE_DISABLE_MOUSE": "1",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-fable-5",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-opus-4-8"
+  },
+  "model": "opusplan",
   "permissions": {
     "acceptEdits": "auto"
   },
-  "model": "opus",
   "statusLine": {
     "type": "command",
     "command": "bash ~/.claude/statusline.sh"
@@ -12,6 +18,8 @@
   },
   "effort": "auto",
   "defaultMode": "auto",
+  "editorMode": "vim",
+  "skipAutoPermissionPrompt": true,
   "allowedTools": [
     "Search(*)",
     "Read(*)",
