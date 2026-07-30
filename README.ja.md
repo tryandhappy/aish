@@ -171,6 +171,53 @@ aish --ai \
 ```
 
 
+### AI別 設定例 (config.toml)
+
+```toml
+# ~/.aish/config.toml — backend に以下のいずれかを設定
+
+# Claude Code (既定)
+[ai]
+backend = "claude"
+
+# Codex
+[ai]
+backend = "codex"
+
+# Gemini
+[ai]
+backend = "gemini"
+
+# Qwen
+[ai]
+backend = "qwen"
+
+# Cursor
+[ai]
+backend = "cursor"
+
+# GitHub Copilot
+[ai]
+backend = "copilot"
+
+# Kimi
+[ai]
+backend = "kimi"
+
+# OpenCode
+[ai]
+backend = "opencode"
+
+# Cloudflare Workers AI  (認証は環境変数: CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN)
+[ai]
+backend = "cloudflare"
+
+# NVIDIA NIM  (認証は環境変数: NVIDIA_API_KEY)
+[ai]
+backend = "nvidia"
+```
+
+
 ## 対話シェルを常に aish にする
 
 極めて便利です。

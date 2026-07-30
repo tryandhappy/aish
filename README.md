@@ -171,6 +171,53 @@ aish --ai \
 ```
 
 
+### AI Setup (config.toml)
+
+```toml
+# ~/.aish/config.toml — set backend = one of the following
+
+# Claude Code (default)
+[ai]
+backend = "claude"
+
+# Codex
+[ai]
+backend = "codex"
+
+# Gemini
+[ai]
+backend = "gemini"
+
+# Qwen
+[ai]
+backend = "qwen"
+
+# Cursor
+[ai]
+backend = "cursor"
+
+# GitHub Copilot
+[ai]
+backend = "copilot"
+
+# Kimi
+[ai]
+backend = "kimi"
+
+# OpenCode
+[ai]
+backend = "opencode"
+
+# Cloudflare Workers AI  (auth via env: CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN)
+[ai]
+backend = "cloudflare"
+
+# NVIDIA NIM  (auth via env: NVIDIA_API_KEY)
+[ai]
+backend = "nvidia"
+```
+
+
 ## Make aish Your Default Interactive Shell
 
 Extremely convenient.
