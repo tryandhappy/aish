@@ -47,9 +47,23 @@
 # `backend` selects which CLI to drive. `--ai <kind>` (CLI flag) overrides this.
 # Supported: claude (Claude Code), codex (OpenAI Codex CLI), gemini (Google Gemini CLI),
 #            qwen (Alibaba Qwen Code), cursor (Cursor Agent CLI / `cursor-agent`),
-#            copilot (GitHub Copilot CLI), cloudflare (Cloudflare Workers AI; REST を curl で呼ぶ).
+#            copilot (GitHub Copilot CLI), cloudflare (Cloudflare Workers AI; REST を curl で呼ぶ),
+#            nvidia (NVIDIA NIM; REST を curl で呼ぶ), kimi / opencode (同梱 recipe), or any [[ai.providers]].name.
 # `system_prompt` / `language` here override the top-level values; if empty, the
 # top-level values above are used (backward compatibility).
+#
+# 各 backend の設定例 (backend 行だけ切り替えれば OK。以下から 1 つ選ぶ):
+#   [ai]
+#   backend = "claude"     # Claude Code (既定)
+#   backend = "codex"      # Codex
+#   backend = "gemini"     # Gemini
+#   backend = "qwen"       # Qwen
+#   backend = "cursor"     # Cursor
+#   backend = "copilot"    # GitHub Copilot
+#   backend = "kimi"       # Kimi (同梱 recipe)
+#   backend = "opencode"   # OpenCode (同梱 recipe)
+#   backend = "cloudflare" # Cloudflare Workers AI (認証は環境変数: CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN)
+#   backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
 [ai]
 # backend = "claude"                                             # default: "claude" — claude|codex|gemini|qwen|cursor|copilot|cloudflare, or any [[ai.providers]].name
 # model = ""                                                     # default: "" — モデル名 (例: "sonnet", "gpt-5", "gemini-2.5-pro")
