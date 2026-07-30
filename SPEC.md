@@ -311,6 +311,22 @@ TOML 形式。未指定はデフォルト。サンプルは `config.toml.example
 | `effort` | `""` | claude/codex/copilot に変換、gemini/qwen/cursor は無視。`--effort` で上書き可 |
 | `system_prompt` / `language` | `""` | 空ならトップレベルにフォールバック |
 
+各 backend の設定例（`backend` 行を切り替えるだけ。`--ai <name>` でも同値を指定可）:
+
+```toml
+[ai]
+backend = "claude"     # Claude Code (既定)
+backend = "codex"      # Codex
+backend = "gemini"     # Gemini
+backend = "qwen"       # Qwen
+backend = "cursor"     # Cursor
+backend = "copilot"    # GitHub Copilot
+backend = "kimi"       # Kimi (同梱 recipe)
+backend = "opencode"   # OpenCode (同梱 recipe)
+backend = "cloudflare" # Cloudflare Workers AI (認証は環境変数: CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN)
+backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
+```
+
 ##### `/model` `/effort` 候補リスト（全 backend 共通フィールド）
 
 各 backend テーブル（`[ai.claude]` 等 + `[ai.cloudflare-workers-ai]` + `[[ai.providers]]`）に `#[serde(flatten)]` で `OptionLists` が埋め込まれ、ピッカー候補を決める:
