@@ -23,9 +23,6 @@ const PROMPT_QUIET_THRESHOLD: Duration = Duration::from_millis(200);
 const EXEC_POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// kill_line (打ちかけ消去) 送信後、bash の消去 redisplay が pty_rx に到着するのを待つ時間。
 /// SSH 越しでは取りこぼし得るが、その場合も次の main loop drain で追従するだけで実害はない。
-/// Windows では別用途でも流用: kill_line (単独 ESC) 送信直後にコマンド文字列を送ると
-/// PowerShell の VT 入力デコーダが `ESC` + コマンド先頭の `[` 等を CSI シーケンスとして
-/// 誤消費し先頭文字が欠落する (§ 15.13)。ESC が単独キーとして確定する猶予として使う。
 const KILL_LINE_REDISPLAY_WAIT: Duration = Duration::from_millis(150);
 /// refresh_prompt (打ちかけ消去 + 改行) 送信後、シェルプロンプトの再表示出力を待つ時間。
 const PROMPT_REFRESH_WAIT: Duration = Duration::from_millis(200);
@@ -279,19 +276,23 @@ impl AiConversation<'_> {
             // プロンプトに戻った状態で送られるので、追加不要。
             // (executed への push はコマンド完了後なので、
             //  「空 = まだ何も実行していない」が成立する)
+            //
+            // Windows では kill_line 単体 (単独 ESC) でなく refresh_prompt
+            // (ESC + `\n`) を使う。単独 ESC の直後にコマンド文字列を送ると、
+            // コマンドが `[` 始まりかつ2文字目が CSI の終端バイトとして解釈
+            // できる場合 (`[System.Environment]` の `[S` = ESC `[` `S` = SU
+            // (Scroll Up) 等)、PowerShell 側の VT 入力パーサが `ESC`+続く数
+            // バイトを完成した CSI シーケンスとして即座に消費してしまい、
+            // 先頭 1-2 文字が欠落したまま実行される (ユーザ承認内容と実際に
+            // 実行される文字列が食い違う trust 上の問題)。これは完成した
+            // シーケンスの即時解釈でありタイミング競合ではないため、送信を
+            // 遅らせても直らない (実測: 150ms待機を入れても再現した)。
+            // `\n` は `[` 以外の何物でもなくCSI継続にならないため、ESC の直後
+            // に挟むと ESC は単独キーとして打ち切られ、後続のコマンド文字列は
+            // 新しい行から送られるので衝突しない。kill_line で消去済みの空行に
+            // 対する `\n` は空 Enter (無害) として処理される。
             if executed.is_empty() {
-                self.pty.kill_line()?;
-                // Windows: kill_line は単独 ESC (0x1b) 送信。直後に間を置かず
-                // コマンド文字列を送ると、コマンドが `[` 始まりの場合
-                // (`[System.Environment]` 等) PowerShell の VT 入力デコーダが
-                // `ESC` + `[` + 次バイトを 1 個の CSI シーケンスとして消費し、
-                // 先頭 1-2 文字が欠落したまま実行される (ユーザ承認内容と実際に
-                // 実行される文字列が食い違う trust 上の問題)。ESC が単独キーとして
-                // 確定する猶予を与えるため送信を遅らせる。Unix は kill_line が
-                // Ctrl+A+Ctrl+K でこの衝突が起きないため待つ必要はないが、
-                // 分岐を増やさず両OSで同じ待ちを入れる (実害はコマンド実行が
-                // 150ms 遅れるだけ)。
-                thread::sleep(KILL_LINE_REDISPLAY_WAIT);
+                self.pty.refresh_prompt()?;
             }
 
             // ユーザが承認したコマンドをそのまま PTY に送る。ラップしない。
