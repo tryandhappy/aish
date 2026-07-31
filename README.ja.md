@@ -29,7 +29,7 @@ https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
 
 - Linux (Testing on Ubuntu 24.04)
 - Windows WSL2 (Testing on Ubuntu 24.04)
-- Windows 10 1809+ ネイティブ (Windows Terminal 推奨) ※プレビルドバイナリ配布あり (x86_64 / aarch64 の `.exe`・`.zip`)。`--update` 自己更新は非対応 (手動でダウンロード)
+- Windows 10 1809+ ネイティブ **(ベータ版)** (Windows Terminal 推奨) ※プレビルドバイナリ配布あり (x86_64 / aarch64 の `.exe`・`.zip`)。`--update` 自己更新は非対応 (手動でダウンロード)
 - macOS (Intel・Apple Silicon) ※テスト不十分
 
 #### 必要なコマンド
@@ -75,7 +75,7 @@ sudo curl -fsSL -o /usr/local/bin/aish "https://github.com/tryandhappy/aish/rele
 sudo chmod 755 /usr/local/bin/aish
 ```
 
-### Windows (x86_64 / ARM64)
+### Windows (ベータ版) (x86_64 / ARM64)
 
 インストーラがアーキテクチャを判定し `aish.exe` を取得、SHA-256 を検証して `%LOCALAPPDATA%\Programs\aish` に配置、ユーザ `PATH` に追加します。
 

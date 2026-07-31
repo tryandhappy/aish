@@ -29,7 +29,7 @@ https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
 
 - Linux (tested on Ubuntu 24.04)
 - Windows WSL2 (tested on Ubuntu 24.04)
-- Windows 10 1809+ native (Windows Terminal recommended) — prebuilt binaries provided (x86_64 / aarch64 `.exe` and `.zip`); `--update` self-update is not supported (run the installer/download manually)
+- Windows 10 1809+ native **(Beta)** (Windows Terminal recommended) — prebuilt binaries provided (x86_64 / aarch64 `.exe` and `.zip`); `--update` self-update is not supported (run the installer/download manually)
 - macOS (Intel / Apple Silicon) — not thoroughly tested
 
 #### Required Commands
@@ -75,7 +75,7 @@ sudo curl -fsSL -o /usr/local/bin/aish "https://github.com/tryandhappy/aish/rele
 sudo chmod 755 /usr/local/bin/aish
 ```
 
-### Windows (x86_64 / ARM64)
+### Windows (Beta) (x86_64 / ARM64)
 
 The installer detects your architecture, downloads `aish.exe`, verifies its SHA-256, installs it to `%LOCALAPPDATA%\Programs\aish`, and adds it to your user `PATH`.
 
