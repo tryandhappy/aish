@@ -46,8 +46,10 @@
 # AI backend settings
 # `backend` selects which CLI to drive. `--ai <kind>` (CLI flag) overrides this.
 # Supported: claude (Claude Code), codex (OpenAI Codex CLI), gemini (Google Gemini CLI),
+#            antigravity (Google Antigravity CLI / `agy`; Gemini CLI 後継),
 #            qwen (Alibaba Qwen Code), cursor (Cursor Agent CLI / `cursor-agent`),
-#            copilot (GitHub Copilot CLI), cloudflare (Cloudflare Workers AI; REST を curl で呼ぶ),
+#            copilot (GitHub Copilot CLI), grok (xAI Grok CLI / `grok`),
+#            cloudflare (Cloudflare Workers AI; REST を curl で呼ぶ),
 #            nvidia (NVIDIA NIM; REST を curl で呼ぶ), kimi / opencode (同梱 recipe), or any [[ai.providers]].name.
 # `system_prompt` / `language` here override the top-level values; if empty, the
 # top-level values above are used (backward compatibility).
@@ -57,9 +59,11 @@
 #   backend = "claude"     # Claude Code (既定)
 #   backend = "codex"      # Codex
 #   backend = "gemini"     # Gemini
+#   backend = "antigravity" # Antigravity CLI (`agy`, Gemini CLI 後継)
 #   backend = "qwen"       # Qwen
 #   backend = "cursor"     # Cursor
 #   backend = "copilot"    # GitHub Copilot
+#   backend = "grok"       # xAI Grok (`grok`, https://x.ai/cli)
 #   backend = "kimi"       # Kimi (同梱 recipe)
 #   backend = "opencode"   # OpenCode (同梱 recipe)
 #   backend = "cloudflare" # Cloudflare Workers AI (認証は環境変数: CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN)
@@ -108,16 +112,39 @@
                                                                  # 注: --disallowedTools は args 末尾で必ず付与されるので、ここに
                                                                  # --disallowedTools を書いても上書きできない。値の調整は上の項目で。
 
-# Codex / Gemini / Qwen / Cursor don't have JSON-schema flags, so JSON output is enforced via system prompt.
-# Use extra_args for model selection or other CLI-specific flags.
+# Codex / Gemini / Antigravity / Qwen / Cursor / Grok don't have JSON-schema flags, so JSON output
+# is enforced via system prompt. Use extra_args for model selection or other CLI-specific flags.
 [ai.codex]
 # extra_args = []                                                # e.g. ["-m", "gpt-5.5"]
 
 [ai.gemini]
 # extra_args = []                                                # e.g. ["-m", "gemini-2.5-pro"]
 
+# Google Antigravity CLI (`agy`, https://antigravity.google/docs/cli/install)。Gemini CLI の後継。
+# aish は `agy -p`（headless）を stdin プロンプトで都度呼び出す。`--model` / `--effort`
+# (low|medium|high) は native 対応。
+# 注意: headless (`-p`) 実行では read-only / plan の permission-layer 強制が提供されない
+# (Antigravity Issue #45)。aish はローカルで AI CLI を動かすだけで、サーバへ送るコマンドは
+# 必ず確認プロンプトを通るため信頼の根幹は保たれるが、AI CLI 自身がローカルで write/exec
+# ツールを使う余地は system prompt の「提案のみ」指示のみで抑える (gemini/qwen と同じ姿勢)。
+# `--dangerously-skip-permissions` は絶対に付けない (aish は付与しない。extra_args にも書かない)。
+[ai.antigravity]
+# extra_args = []                                                # e.g. ["--sandbox"]
+# models = ["gemini-3-pro", "gemini-3-flash"]                    # 省略時は組み込み既定 (`agy models` で最新確認)
+# efforts = ["low", "medium", "high"]                            # 省略時は組み込み既定
+
 [ai.qwen]
 # extra_args = []
+
+# xAI Grok CLI (`grok`, https://x.ai/cli)。aish は `grok -p`（headless）を stdin プロンプトで
+# 都度呼び出す。model は `-m`、reasoning effort フラグは無し。
+# 注意: antigravity と同様、headless での read-only / plan 強制は保証できず、AI CLI 自身の
+# ローカル書き込みは system prompt の「提案のみ」指示のみで抑える。`--always-approve` は絶対に
+# 付けない。`grok` はコミュニティ製 `@vibe-kit/grok-cli` (npm, 別ツール) とバイナリ名が衝突し
+# うるので、公式 CLI を使っているか `which -a grok` で確認すること。
+[ai.grok]
+# extra_args = []                                                # e.g. ["--model", "grok-4-fast"]
+# models = ["grok-4", "grok-4-fast", "grok-code-fast-1"]         # 省略時は組み込み既定
 
 # Cursor Agent CLI (`cursor-agent`). aish は `-p --output-format json --trust` で都度呼び出す。
 # --trust は headless モードで必須なので aish が常に自動で付与する (config からは指定不可)。
@@ -252,25 +279,8 @@
 # model_flag = "--model"
 # color = 39
 #
-# 例 3: xAI Grok Build (`grok`, https://x.ai/cli) → `aish --ai grok`
-# 同梱していない理由: headless (`-p`) 実行時に write ツールが確認なしで拒否される
-# ことをドキュメント/実機で確認できなかった (plan mode の read-only 強制は TUI の
-# Shift+Tab のみ文書化されており、headless 既定の permission_mode="ask" が非対話
-# 実行でどう振る舞うかは未検証)。使う場合は必ず自分の環境で検証すること:
-# 空の scratch ディレクトリで `grok -p "<書き込みを促す指示>" --output-format json`
-# を `--always-approve` 無しで実行し、ファイルが変更されないことを確認してから使う。
-# `--always-approve` は絶対に args に含めないこと。
-# 注意: `grok` はコミュニティ製 `@vibe-kit/grok-cli` (npm, xAI API 直叩き、read-only
-# モード無し) ともバイナリ名が衝突する。`which -a grok` で実体を確認すること。
-# [[ai.providers]]
-# name = "grok"
-# binary = "grok"
-# args = ["--output-format", "json"]
-# prompt_delivery = "flag"
-# prompt_flag = "-p"
-# parse = "extract_json"          # 出力 JSON のトップレベルキー構成は要実機確認
-# model_flag = "-m"
-# color = 45
+# (xAI Grok は native backend `grok` として同梱済み → 上の [ai.grok] を参照。
+#  `--ai grok` / `backend = "grok"` で使える。ここに [[ai.providers]] で書く必要はない)
 
 # GitHub Copilot CLI (`copilot`). aish は以下の必須安全フラグを常に自動付与する (config 指定不可):
 #   --output-format json   (JSONL 形式の応答)

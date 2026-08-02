@@ -1,3 +1,4 @@
+use super::antigravity::AntigravityBackend;
 use super::claude::ClaudeBackend;
 use super::cloudflare_workers_ai::CloudflareWorkersAiBackend;
 use super::codex::CodexBackend;
@@ -5,6 +6,7 @@ use super::copilot::CopilotBackend;
 use super::cursor::CursorBackend;
 use super::gemini::GeminiBackend;
 use super::generic::GenericCliBackend;
+use super::grok::GrokBackend;
 use super::nvidia_nim::NvidiaNimBackend;
 use super::qwen::QwenBackend;
 use super::types::{AiBackend, AiError, BackendKind};
@@ -25,6 +27,8 @@ pub fn create_backend(
         BackendKind::Copilot => Ok(Box::new(CopilotBackend::new(cfg, log))),
         BackendKind::Cloudflare => Ok(Box::new(CloudflareWorkersAiBackend::new(cfg, log))),
         BackendKind::Nvidia => Ok(Box::new(NvidiaNimBackend::new(cfg, log))),
+        BackendKind::Antigravity => Ok(Box::new(AntigravityBackend::new(cfg, log))),
+        BackendKind::Grok => Ok(Box::new(GrokBackend::new(cfg, log))),
         BackendKind::Generic(_) => {
             let meta = kind.generic_meta().ok_or_else(|| {
                 AiError::Other(format!(
@@ -45,15 +49,19 @@ pub fn check_installed(kind: BackendKind) -> bool {
         .unwrap_or(false)
 }
 
-/// 自動検出で試す native backend の優先順 (Claude Code → Codex → Gemini → 人気順)。
+/// 自動検出で試す native backend の優先順 (Claude Code → Codex → Gemini → Antigravity → 人気順)。
 /// REST backend (Cloudflare/Nvidia) は `binary()`="curl" でほぼ常に検出成功してしまい、
 /// かつ API key が必須なので自動選択から除外する (curl は AI CLI ではない)。
+/// Grok も除外する (バイナリ名 `grok` がコミュニティ製 `@vibe-kit/grok-cli` と衝突しうるため、
+/// 誤検出を避け明示 `--ai grok` 指定に限定する)。
 /// 純関数なので順序を golden test で固定する。
-pub fn auto_detect_order() -> [BackendKind; 6] {
+pub fn auto_detect_order() -> [BackendKind; 7] {
     [
         BackendKind::Claude,
         BackendKind::Codex,
         BackendKind::Gemini,
+        // Antigravity は Gemini CLI の後継なので Gemini の直後に置く。
+        BackendKind::Antigravity,
         BackendKind::Copilot,
         BackendKind::Cursor,
         BackendKind::Qwen,
@@ -69,13 +77,14 @@ pub fn auto_detect_order() -> [BackendKind; 6] {
 /// main 側（他エラーと共通の経路）が行う。
 pub fn install_guide(color: bool) -> String {
     // 順序は auto_detect_order と一致させる（テスト install_guide_lists_all_backends）。
-    let entries: [(&str, &str); 6] = [
+    let entries: [(&str, &str); 7] = [
         ("Claude Code", "https://code.claude.com/docs/ja/quickstart"),
         (
             "Codex",
             "https://learn.chatgpt.com/docs/codex/cli#getting-started",
         ),
         ("Gemini", "https://github.com/google-gemini/gemini-cli"),
+        ("Antigravity", "https://antigravity.google/docs/cli/install"),
         (
             "GitHub Copilot",
             "https://docs.github.com/copilot/how-tos/set-up/install-copilot-cli",
@@ -122,7 +131,15 @@ mod tests {
         let order = auto_detect_order();
         assert_eq!(
             order.map(|k| k.as_str()),
-            ["claude", "codex", "gemini", "copilot", "cursor", "qwen"]
+            [
+                "claude",
+                "codex",
+                "gemini",
+                "antigravity",
+                "copilot",
+                "cursor",
+                "qwen"
+            ]
         );
     }
 
@@ -138,6 +155,8 @@ mod tests {
             "https://learn.chatgpt.com/docs/codex/cli#getting-started",
             "Gemini",
             "https://github.com/google-gemini/gemini-cli",
+            "Antigravity",
+            "https://antigravity.google/docs/cli/install",
             "GitHub Copilot",
             "https://docs.github.com/copilot/how-tos/set-up/install-copilot-cli",
             "Cursor",

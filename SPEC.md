@@ -24,7 +24,7 @@ CLI SSH + AI (Claude Code) ツール。クライアント側の Claude Code か�
 | `ui.rs` | ターミナル制御。raw モード（セッション全体で維持）、ライン編集、パススルー、ANSI 色、ミニバッファ |
 | `input.rs` | 低レベル端末入力の framing（唯一の場所）。`ByteSource` → `next_event` → `Tok` |
 | `input_gate.rs` | パススルー入力スレッド再開の 3 状態管理 (`InputGate` + `rearm_on_drop` RAII guard) |
-| `ai/` | AI backend 層。`AiBackend` trait + claude/codex/gemini/qwen/cursor/copilot/cloudflare/generic 実装、factory、共通 prompt/spawn (`common.rs`) |
+| `ai/` | AI backend 層。`AiBackend` trait + claude/codex/gemini/qwen/cursor/copilot/cloudflare/nvidia/antigravity/grok/generic 実装、factory、共通 prompt/spawn (`common.rs`) |
 | `config.rs` | TOML 設定ロード |
 | `pty_handler.rs` | portable-pty による SSH / ローカルシェル起動。実端末サイズ + SIGWINCH 追従。`kill_line` / `refresh_prompt` / `send_approved_command` |
 | `pty_drain.rs` | PTY 出力吸い出しの一元化 (`drain_pty` + `DrainOpts`) |
@@ -57,7 +57,7 @@ CLI SSH + AI (Claude Code) ツール。クライアント側の Claude Code か�
 | `--config <path>` | 設定ファイルパス（既定 `~/.aish/config.toml`） |
 | `--ai <name>` | backend 選択。built-in または `[[ai.providers]]` の `name`。`[ai].backend` を上書き。built-in 名は予約語 |
 | `--model <name>` | モデル名。`[ai].model` と `extra_args` の `-m` より優先 |
-| `--effort <level>` | reasoning effort。claude → `--effort`、codex → `-c model_reasoning_effort=`、copilot → `--effort`。gemini/qwen/cursor は CLI 非対応で無視 |
+| `--effort <level>` | reasoning effort。claude → `--effort`、codex → `-c model_reasoning_effort=`、copilot → `--effort`、antigravity → `--effort`。gemini/qwen/cursor/grok は CLI 非対応で無視 |
 | `--list-providers` | native + 組み込み + config の全 backend を出所タグ付き一覧表示 |
 | それ以外 | SSH 引数として `ssh` に渡す |
 
@@ -130,9 +130,9 @@ CLI SSH + AI (Claude Code) ツール。クライアント側の Claude Code か�
 | コマンド | 動作 |
 |---|---|
 | `/help` | 一覧表示 |
-| `/effort [LEVEL]` | reasoning effort を runtime 変更（次回 send 以降）。引数なし=候補ピッカー（§15.12）、`-`/`clear`=クリア、その他=検証せず set。gemini/qwen/cursor は保存のみ |
+| `/effort [LEVEL]` | reasoning effort を runtime 変更（次回 send 以降）。引数なし=候補ピッカー（§15.12）、`-`/`clear`=クリア、その他=検証せず set。gemini/qwen/cursor/grok は保存のみ（antigravity は native 適用） |
 | `/model [NAME]` | モデルを runtime 変更（session/history 維持）。引数の扱いは `/effort` と同じ |
-| `/clear` | 会話履歴/セッションをクリア。claude/codex/cursor/copilot/generic(native resume) は session_id を None、gemini/qwen/cloudflare/generic(非 native) は内部 history を空に |
+| `/clear` | 会話履歴/セッションをクリア。claude/codex/cursor/copilot/generic(native resume) は session_id を None、gemini/qwen/cloudflare/nvidia/antigravity/grok/generic(非 native) は内部 history を空に |
 | `/ai <NAME>` | backend 切替。`create_backend` で新規構築し現セッション破棄 |
 | `/<unknown>` | 未知なら入力をそのまま AI へ（`/root/test.txt` 等も AI に届く） |
 
@@ -145,7 +145,7 @@ CLI SSH + AI (Claude Code) ツール。クライアント側の Claude Code か�
 ## 6. AI 連携
 
 trait `AiBackend` で対応:
-- **native backend**: Claude Code / OpenAI Codex CLI / Google Gemini CLI / Alibaba Qwen Code / Cursor Agent CLI / GitHub Copilot CLI / Cloudflare Workers AI（`src/ai/<name>.rs` に bespoke 実装）。
+- **native backend**: Claude Code / OpenAI Codex CLI / Google Gemini CLI / Alibaba Qwen Code / Cursor Agent CLI / GitHub Copilot CLI / Cloudflare Workers AI / NVIDIA NIM / Google Antigravity CLI（`agy`）/ xAI Grok CLI（`grok`）（`src/ai/<name>.rs` に bespoke 実装）。
 - **Generic CLI backend**: 任意 CLI を `src/ai/generic.rs` の単一 driver で解釈。recipe の出所は (a) 組み込みデフォルト recipe（`config::builtin_providers()` 同梱、zero-config で `--ai <name>` 可）、(b) ユーザの `[[ai.providers]]`。`name` は native 予約語と衝突不可。
 
 各 backend は JSON で `{message, commands[]}` 相当を返し、aish は提案ベースで動作。透明性・サーバ無書き込みの原則は trait 実装側の責任。選択優先順位: `--ai` > `[ai].backend` > `claude`（既定）。
@@ -163,20 +163,21 @@ trait `AiBackend` で対応:
 | セッション再開 | `--resume <sid>`（JSON `session_id`） | `exec resume <UUID>`（rollout ファイル名） | best-effort (`--resume latest`) | best-effort (`--continue`) | `--resume <sid>`（JSON `session_id`） | `--resume <sid>`（JSONL `result.sessionId`） |
 | reasoning effort | `--effort` | `-c model_reasoning_effort=` | なし | なし | なし | `--effort`（`none/low/medium/high/xhigh/max`） |
 
-- プロンプト渡しは全 backend stdin。cloudflare は表外（curl 経由 REST、§15.10）。
+- プロンプト渡しは全 backend stdin。cloudflare/nvidia は表外（curl 経由 REST、§15.10）。
+- **Antigravity（`agy`）/ Grok（`grok`）も表外**（Gemini 行と同型の system-prompt-only backend、§15.10）。Antigravity=`agy -p`（stdin）/ 実行ファイル `agy` / JSON 強制なし / 危険ツール無効化は system prompt のみ / resume `agy --continue`（best-effort）/ **reasoning effort `--effort low|medium|high` は native 対応**。Grok=`grok -p`（stdin）/ 実行ファイル `grok` / JSON 強制なし / 危険ツール無効化は system prompt のみ / resume なし / effort フラグなし / model は `-m`。両者とも headless で read-only/plan の permission-layer 強制を持たないため `--dangerously-skip-permissions` / `--always-approve` は絶対に付けない。
 - JSON Schema 強制が無い backend は system prompt で `{"message":..., "commands":[...]}` 単独出力を指示し `extract_json` で抽出。失敗時は出力全体を `message` / `commands: []` でフォールバック。
 
 **セッション履歴の持ち方**:
 - Claude/Cursor/Copilot: 初回 send で `session_id` 捕獲、以降 `--resume <sid>`。Cursor/Copilot は `--append-system-prompt` 相当が無いので system prompt を初回プロンプト先頭に焼き込む（resume 後は再送しない）。Copilot は JSONL 行走査で最後の `assistant.message` の `data.content` を応答、`result` 行の `sessionId` を捕獲。
 - Codex: 初回後 `~/.codex/sessions/.../rollout-...-<UUID>.jsonl` から UUID 捕獲し `codex exec resume <UUID>`（`--ephemeral` は付けない）。
-- Gemini/Qwen/Cloudflare: 非対話の session resume が不安定/無いため、backend 内部で直近 8 ターン (user, ai) を保持し毎回プロンプトに再送（ring buffer 差分と合わせ multi-step の文脈を保つ）。
+- Gemini/Qwen/Cloudflare/Nvidia/Antigravity/Grok: 非対話の session resume が不安定/無いため、backend 内部で直近 8 ターン (user, ai) を保持し毎回プロンプトに再送（ring buffer 差分と合わせ multi-step の文脈を保つ）。
 
 **安全性の差**（最大安全は `--ai claude` か `--ai copilot`）:
 - **Claude**: `--disallowedTools "Bash,Edit,Write,Read"` でフラグレベル拒否。最も強力。
 - **Codex**: `codex exec` はエージェントなので、確認 UI を迂回しないようツール系 feature 12 種を `--disable`（shell_tool / unified_exec / browser_use / computer_use / multi_agent / image_generation / tool_search / tool_suggest / plugins / apps / skill_mcp_dependency_install / tool_call_mcp_elicitation）+ `-s read-only`。純粋 LLM に退化。
 - **Copilot**: claude 同等（四段 deny、§15.10）。
 - **Cursor**: 個別ツール無効化フラグ無し。`--mode plan`（read-only、aish の提案セマンティクスと一致）既定 + `[ai.cursor].sandbox` + system prompt。`--trust` は headless 必須で常時付与。
-- **Gemini/Qwen**: フラグ制約なし、system prompt の「ツール禁止」指示のみ。
+- **Gemini/Qwen/Antigravity/Grok**: フラグ制約なし、system prompt の「ツール禁止」指示のみ（Antigravity/Grok の read-only 非強制の判断経緯は §15.10）。
 
 ### 6.1 起動
 - 選択 backend のバイナリを `--version` で確認し、失敗なら「Please install ...」表示して終了（Claude のみインストールコマンドも表示）。実行ファイル名は `BackendKind::binary()`（cursor=`cursor-agent`、cloudflare=`curl`、他は `as_str()` と同じ）。
@@ -219,8 +220,8 @@ trait `AiBackend` で対応:
 
 ### 6.7 セッション再開コマンド表示
 - 終了時 `AiBackend::resume_command()` が `Some(cmd)` なら stderr に `Resume this <kind> session with:\n  <cmd>`。
-- claude `claude --resume <UUID>` / codex `codex resume <UUID>` / gemini `gemini --resume latest` / qwen `qwen --continue` / cursor `cursor-agent --resume <UUID>` / copilot `copilot --resume <UUID>` / generic `<binary> <resume_flag> <sid>`。
-- gemini/qwen は非対話 session 永続化が CLI 仕様で保証されず読み戻せないことがある。cursor/copilot は実機確認済み。
+- claude `claude --resume <UUID>` / codex `codex resume <UUID>` / gemini `gemini --resume latest` / qwen `qwen --continue` / cursor `cursor-agent --resume <UUID>` / copilot `copilot --resume <UUID>` / antigravity `agy --continue`（best-effort） / generic `<binary> <resume_flag> <sid>`。grok は resume コマンドを出さない（None）。
+- gemini/qwen/antigravity は非対話 session 永続化が CLI 仕様で保証されず読み戻せないことがある。cursor/copilot は実機確認済み。
 
 ### 6.8 JSON 抽出
 - `extract_json` が最外の `{...}` をバランス解析で抽出（前後テキスト混入対応）。
@@ -318,9 +319,11 @@ TOML 形式。未指定はデフォルト。サンプルは `config.toml.example
 backend = "claude"     # Claude Code (既定)
 backend = "codex"      # Codex
 backend = "gemini"     # Gemini
+backend = "antigravity" # Antigravity CLI (`agy`, Gemini CLI 後継)
 backend = "qwen"       # Qwen
 backend = "cursor"     # Cursor
 backend = "copilot"    # GitHub Copilot
+backend = "grok"       # xAI Grok (`grok`, https://x.ai/cli)
 backend = "kimi"       # Kimi (同梱 recipe)
 backend = "opencode"   # OpenCode (同梱 recipe)
 backend = "cloudflare" # Cloudflare Workers AI (認証は環境変数: CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN)
@@ -339,7 +342,7 @@ backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
 
 候補解決の優先順位（`common::resolve_option_list`）: **static list 非空 > 取得コマンド > backend 組み込み既定**。取得コマンドはピッカーを開く時だけ実行。
 
-**組み込み既定**: effort は claude `low/medium/high`、codex `minimal/low/medium/high`、copilot `none/low/medium/high/xhigh/max`、他は無し（effort 非適用 or recipe 由来のみ）。model は全 native backend に同梱（各 `MODEL_DEFAULTS` const。例: claude `claude-opus-4-8/sonnet-4-6/haiku-4-5`、codex `gpt-5.5/...`、cursor `auto/composer-1/…`）。値は best-effort で更新にはリリースが必要（§15.12）。generic は recipe 由来のみ。
+**組み込み既定**: effort は claude `low/medium/high`、codex `minimal/low/medium/high`、copilot `none/low/medium/high/xhigh/max`、他は無し（effort 非適用 or recipe 由来のみ）。model は全 native backend に同梱（各 `MODEL_DEFAULTS` const。例: claude `claude-opus-4-8/sonnet-4-6/haiku-4-5`、codex `gpt-5.5/...`、cursor `auto/composer-1/…`、antigravity `gemini-3-pro/gemini-3-flash/…`、grok `grok-4/grok-4-fast/…`）。値は best-effort で更新にはリリースが必要（§15.12）。generic は recipe 由来のみ。
 
 #### `[ai.claude]`
 | キー | 既定値 | 説明 |
@@ -348,8 +351,9 @@ backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
 | `allow_unsafe_tools` | `false` | `true` のときのみ `disallowed_tools` を verbatim 使用（危険） |
 | `extra_args` | `[]` | 追加引数（ビルトイン引数の後ろ） |
 
-#### `[ai.codex]` / `[ai.gemini]` / `[ai.qwen]`
+#### `[ai.codex]` / `[ai.gemini]` / `[ai.qwen]` / `[ai.antigravity]` / `[ai.grok]`
 - `extra_args` (`[]`): 各 CLI への追加引数（例 `["-m", "gpt-5.5"]`）。
+- `[ai.antigravity]` は `models` / `efforts`、`[ai.grok]` は `models` のピッカー候補も持つ（`OptionLists`）。
 
 #### `[ai.cursor]`
 | キー | 既定値 | 説明 |
@@ -407,7 +411,7 @@ backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
 起動時 `validate_recipes` で検証（配列長 ≤ 256 / `name` 一意 / native 予約語と非衝突 / `binary` 非空 / `parse`・`prompt_delivery` 妥当性 / `flag` 時 `prompt_flag` 非空）。予約語は `BackendKind::all_native()` から導出。不正なら `Invalid [[ai.providers]] in <path>: ...` で起動拒否。同名ユーザエントリは重複エラーにせず後勝ちマージ。
 
 - **安全性**: 新規 provider は強制 deny フラグを付けない。利用者が `args` に `--mode plan` 等を明示する想定。**信頼できる CLI のみ登録**（§15.10）。
-- **メモリ**: 各エントリは起動時 `Box::leak` で `&'static` 化（reload なし）。ordinal は `7 + index`（native 0..=6 の後。ring_buffer の sent_marks キー）。
+- **メモリ**: 各エントリは起動時 `Box::leak` で `&'static` 化（reload なし）。ordinal は `NATIVE_COUNT + index`（native 0..=(NATIVE_COUNT-1) の後。ring_buffer の sent_marks キー。NATIVE_COUNT は native backend 追加のたびに増える）。
 - トップレベル `system_prompt` / `language` は後方互換（`[ai]` 側が空ならコピー）。
 
 ---
@@ -516,9 +520,9 @@ backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
 
 ### 15.9 ring_buffer / backend 解決
 
-- **未送信 cursor は backend ごと独立**（`get_unsent_for(kind)` / `mark_sent_for(kind)`。`/ai` 切替時に新 AI が catch-up）。**sent_marks は `HashMap<usize, u64>`**（Generic を ordinal `7 + idx` で扱うため。entry なし = 0 = 全 catch-up）。`mark_sent_all()` は `all_native()` + `all_generics()` を回す。**新規 native backend は `all_native()` に追加**（実行ファイル名 ≠ enum 名なら `binary()` に分岐。spawn / `check_installed` は `binary()`、設定 / 表示は `as_str()`）。
+- **未送信 cursor は backend ごと独立**（`get_unsent_for(kind)` / `mark_sent_for(kind)`。`/ai` 切替時に新 AI が catch-up）。**sent_marks は `HashMap<usize, u64>`**（Generic を ordinal `NATIVE_COUNT + idx` で扱うため。entry なし = 0 = 全 catch-up）。`mark_sent_all()` は `all_native()` + `all_generics()` を回す。**新規 native backend は `all_native()` に追加**（実行ファイル名 ≠ enum 名なら `binary()` に分岐。spawn / `check_installed` は `binary()`、設定 / 表示は `as_str()`）。
 - **`BackendKind::parse(s)` は `parse_native` → `GENERIC_REGISTRY` 線形検索の 2 段**。`main::run()` は `Config::load`（`resolve_providers` + 検証）→ `init_generics(&config.ai.resolved_providers)` → parse の順序を守る。registry へ渡すのは生 `providers` でなく**マージ済み `resolved_providers`**。テストで Generic resolution を直接検証しない（`OnceLock` がプロセス共有で並列テスト干渉）。Generic の動作確認は `src/ai/generic.rs` 単体テストで `Box::leak(Box::new(recipe))` 直書き。
-- **backend 自動フォールバック（`ai::auto_detect_backend`、2026-07）**: parse で決めた `kind`（既定 `claude` / `--ai` / `[ai].backend`）が `check_installed` で未検出のとき、実際に使える AI CLI を探して切り替える（`main::run` の check_installed 分岐）。探索順は純関数 `auto_detect_order()` = `[claude, codex, gemini, copilot, cursor, qwen]`（Claude Code → Codex → Gemini → 以降は人気順）→ その後 `all_generics()`（registry 登録順）を `check_installed` で順に試し**最初に見つかったものを採用**。発動条件は「選択 backend が未インストールなら常に」（明示指定の未インストールでもフォールバックする ＝ 初回導入者が何か 1 つ入れれば動く体験を優先）。**REST backend（Cloudflare/Nvidia）は `binary()`="curl" でほぼ常に検出成功し、かつ API key 必須で AI CLI ではないため `auto_detect_order` から除外**（含めると curl 在中の全環境で Cloudflare に化ける）。切替時は `println!` で `AI backend \`X\` not found — using \`Y\`.` を 1 行表示（banner と同じく raw モードでも OPOST(Unix)/newline-auto-return(Windows) で `\n`→CRLF。切替後の `kind` は `print_startup_banner` に反映）。1 つも見つからなければ **`ai::install_guide(color)`**（先頭 `No AI agent found. Please install one:` + `  ▸ 名前` の次行に `      URL` を段差表示。`auto_detect_order` と同じ 6 種を人気順: Claude Code=code.claude.com/docs/ja/quickstart, Codex=learn.chatgpt.com/docs/codex/cli, Gemini=github.com/google-gemini/gemini-cli, GitHub Copilot=docs.github.com/copilot/…/install-copilot-cli, Cursor=cursor.com/docs/cli/installation, Qwen=github.com/QwenLM/qwen-code）を Err で返す（`main` が他の Err と同じく `Error:` プレフィックス付きで出力し非ゼロ終了。cleanup 経路を通すため直接 exit しない）。**着色は `main::stderr_use_color()`（`std::io::stderr().is_terminal()` かつ `NO_COLOR` 未設定。libc/Console API 直叩きでなく std の `IsTerminal` を使う）で判定**し、true のとき install_guide が名前太字(`\x1b[1m`)/URL 淡色(`\x1b[2m`)、main の error 分岐が `Error:` を赤(`\x1b[31m`)にする。名前と URL の交互行で「どこがリストか」が読みにくいという指摘への対応（2026-07）。`unknown` backend 名の parse エラー（フォールバック前段）とは区別する。順序不変条件は `auto_detect_order_is_stable`、URL 一覧/レイアウト/着色有無は `install_guide_lists_all_backends` で固定。
+- **backend 自動フォールバック（`ai::auto_detect_backend`、2026-07）**: parse で決めた `kind`（既定 `claude` / `--ai` / `[ai].backend`）が `check_installed` で未検出のとき、実際に使える AI CLI を探して切り替える（`main::run` の check_installed 分岐）。探索順は純関数 `auto_detect_order()` = `[claude, codex, gemini, antigravity, copilot, cursor, qwen]`（Claude Code → Codex → Gemini → Antigravity（Gemini CLI 後継なので直後）→ 以降は人気順）→ その後 `all_generics()`（registry 登録順）を `check_installed` で順に試し**最初に見つかったものを採用**。発動条件は「選択 backend が未インストールなら常に」（明示指定の未インストールでもフォールバックする ＝ 初回導入者が何か 1 つ入れれば動く体験を優先）。**REST backend（Cloudflare/Nvidia）は `binary()`="curl" でほぼ常に検出成功し、かつ API key 必須で AI CLI ではないため `auto_detect_order` から除外**（含めると curl 在中の全環境で Cloudflare に化ける）。**Grok も除外**（バイナリ名 `grok` がコミュニティ製 `@vibe-kit/grok-cli` と衝突しうるため誤検出を避け、明示 `--ai grok` 指定に限定）。切替時は `println!` で `AI backend \`X\` not found — using \`Y\`.` を 1 行表示（banner と同じく raw モードでも OPOST(Unix)/newline-auto-return(Windows) で `\n`→CRLF。切替後の `kind` は `print_startup_banner` に反映）。1 つも見つからなければ **`ai::install_guide(color)`**（先頭 `No AI agent found. Please install one:` + `  ▸ 名前` の次行に `      URL` を段差表示。`auto_detect_order` と同じ 7 種を人気順: Claude Code=code.claude.com/docs/ja/quickstart, Codex=learn.chatgpt.com/docs/codex/cli, Gemini=github.com/google-gemini/gemini-cli, Antigravity=antigravity.google/docs/cli/install, GitHub Copilot=docs.github.com/copilot/…/install-copilot-cli, Cursor=cursor.com/docs/cli/installation, Qwen=github.com/QwenLM/qwen-code）を Err で返す（`main` が他の Err と同じく `Error:` プレフィックス付きで出力し非ゼロ終了。cleanup 経路を通すため直接 exit しない）。**着色は `main::stderr_use_color()`（`std::io::stderr().is_terminal()` かつ `NO_COLOR` 未設定。libc/Console API 直叩きでなく std の `IsTerminal` を使う）で判定**し、true のとき install_guide が名前太字(`\x1b[1m`)/URL 淡色(`\x1b[2m`)、main の error 分岐が `Error:` を赤(`\x1b[31m`)にする。名前と URL の交互行で「どこがリストか」が読みにくいという指摘への対応（2026-07）。`unknown` backend 名の parse エラー（フォールバック前段）とは区別する。順序不変条件は `auto_detect_order_is_stable`、URL 一覧/レイアウト/着色有無は `install_guide_lists_all_backends` で固定。
 - **Generic（`BackendKind::Generic(u8)`）は registry で動的解決**。`init_generics` が OnceLock に 1 度 populate し `Box::leak` で `&'static` 化。init 前 / 範囲外は `"?"` フォールバック（panic せず spawn 失敗）。built-in と flat namespace（`generic:` prefix なし）。
 - **AI 応答の注釈記録は `RingBuffer::record_ai_exchange` 経由**。注釈（`[aish→<kind>]> ...` / `[ai/<kind>]> ...` / `[ai/<kind> suggests] ...`）の append → `mark_sent_for(current)` の順序不変条件（逆順だと current AI が自分の発話をループ受信。他 backend は次回 catch-up）をこのメソッドに閉じ、ばらの `append_text` + `mark_sent_for` を再導入しない。ラベル書式はここが唯一の定義（テスト `record_ai_exchange_format_is_stable`）。
 - **`/clear` は `mark_sent_all()` で全 backend の cursor を進める**が、AI CLI 内部 session/history は current backend のみリセット（他 backend の instance を保持していないため）。
@@ -532,7 +536,7 @@ backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
 - **copilot は `-p` フラグを付けない**（stdin 渡しと排他で `too many arguments` になる。CLI が stdin 自動検出。他の `-p` 必須 backend と逆）。**ツール抑制は四段**: `--allow-all-tools`（非対話必須）+ `--deny-tool=shell` + `--deny-tool=write` + `--no-ask-user` + `--mode plan`（deny が allow に優先）。config 不可。`--yolo`/`--allow-all` は絶対に付けない。**`--output-format json` は JSONL**（`parse_jsonl_envelope` で行走査、ephemeral 行は無視）。
 - **Generic backend（ユーザの新規 `[[ai.providers]]`）は安全フラグを自動付与しない**。recipe 著者が `args` に `--mode plan` 等を明示する想定。信頼できない CLI は確認 UI を迂回して shell 実行し得る。
 - **組み込みデフォルト recipe（`config::builtin_providers()`）は aish が著者なので安全フラグを `args` に焼き込んで同梱**（generic 原則の例外）。**read-only / plan 相当を強制できない CLI は同梱しない**（強制できないと承認 UI を迂回してサーバを変更し得る = 信頼の根幹違反）。同梱前に read-only モードの有無を実機検証（例: kimi の `--plan`）。追加・更新は `builtin_providers()` 1 関数に集約。
-  - **見送り例: xAI Grok Build（`grok`）**（2026-07 検討）。headless (`-p`) 実行時に write ツールが確認なしで拒否される保証をドキュメント上確認できず、実機インストール（`curl | bash` インストーラ）は外部スクリプト実行として環境側でブロックされ検証もできなかったため、同梱を見送り `config.toml.example` に検証手順つきのコメントアウト recipe を用意するに留めた。加えて `grok` はコミュニティ製 `@vibe-kit/grok-cli`（npm、xAI API を直接叩く別ツール、read-only モード無し）ともバイナリ名が衝突するため、登録前に実体確認が要る。実機検証（read-only 確認・JSON 出力構造・headless resume 可否）が取れ次第、同梱に格上げ検討可。
+  - **注記: read-only 強制の必須は「builtin generic recipe」の話**。native backend（gemini/qwen/antigravity/grok）は歴史的に system-prompt-only の安全 posture を許容してきた（フラグ制約なし、system prompt の「ツール禁止」指示のみ）。この住み分けは §15.10 の Antigravity/Grok 項参照。
 - **OpenCode（`opencode`、anomalyco/opencode = 旧 sst/opencode）は generic recipe として同梱**（2026-07、v1.17.13 で実機検証済み）。read-only 強制の設計:
   - **CLI フラグ単独では read-only を強制できない**。built-in の `plan` agent は edit/bash が deny でなく **ask** で、headless で ask に達すると無限ハングする既知 issue（anomalyco/opencode#14473）があるため **`--agent plan` を根拠にしない**。`--auto`（auto-approve。"explicit deny 以外を自動承認"）は `--yolo` 系と同類で**絶対に付けない**。
   - **強制経路は環境変数 `OPENCODE_CONFIG_CONTENT`**（インライン JSON config）。opencode の config マージ順は remote → global → `OPENCODE_CONFIG` → project → `.opencode` → **`OPENCODE_CONFIG_CONTENT`（最後）** → managed で、ユーザのグローバル/プロジェクト設定の allow を上書きできる。この注入のために `ProviderRecipe` に汎用 `env` フィールドを追加した（`run_cli_capture_stdout_env`。透明性のため env もログに記録）。
@@ -548,6 +552,12 @@ backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
 - **NVIDIA NIM（`nvidia` / `src/ai/nvidia_nim.rs`）は cloudflare と同方式の curl REST native backend**（2026-07 追加、実機検証済み）。OpenAI 互換 `POST https://integrate.api.nvidia.com/v1/chat/completions`、`binary()`="curl"、内部 history（gemini/qwen 同型）、system prompt でツール非使用 + JSON 出力を指示。
   - **認証は環境変数 `NVIDIA_API_KEY`（nvapi-...）のみ**、任意で `NVIDIA_MODEL`。config セクションは `[ai.nvidia-nim]`（OptionLists のみ。呼び出し名 `nvidia` と住み分け — cloudflare の命名規則に準拠）。既定モデル `meta/llama-3.3-70b-instruct`、ピッカー既定は MODEL_DEFAULTS 4 種、全カタログは `GET /v1/models`（config.toml.example に models_command 例）。
   - **成功判定は `choices[0].message.content` の有無**。cloudflare の `success` フィールドに相当する物が無く、**エラーボディは JSON とは限らない**（認証失敗は `{"status":403,"title":"Forbidden",...}` だが、存在しない model は素のテキスト `404 page not found`）ため、JSON parse 失敗も生ボディごとエラー化する。`max_tokens: 4096` を明示（モデル依存の小さい既定で JSON 応答が切れるのを防ぐ）。
+- **Google Antigravity CLI（`antigravity` / `src/ai/antigravity.rs`）は gemini/qwen と同型の system-prompt-only native backend**（2026-08 追加。呼び出し名 `antigravity`、実行ファイルは **`agy`**＝`binary()` で分岐、cursor と同じ enum名≠バイナリ名パターン）。`agy -p`（headless）で prompt を stdin 渡し、`parse_ai_response_lossy` で `{message,commands}` 抽出、内部 history 8 ターン。Gemini CLI の後継（2026、Gemini 系モデル）で `auto_detect_order` は Gemini の直後に挿入。
+  - **model は `--model`、reasoning effort は `--effort low|medium|high` を native 対応**（gemini/qwen と違い effort が効く。EFFORT_DEFAULTS=low/medium/high）。MODEL_DEFAULTS は Gemini 系 4 種の best-effort（`agy models` で最新確認）。resume は `agy --continue`（best-effort、履歴があるときだけ提示）。
+  - **read-only / plan の permission-layer 強制は headless では未提供**（Antigravity Issue #45。`-p` は非対話ユーザが居ないため write/exec を自動承認しうる。`--sandbox` は shell のみ制限で `write_file` は通り、`--mode plan` は `/plan` prompt 接頭辞で permission 層の deny ではない）。よって**同梱 generic recipe の「read-only 強制必須」ルールは適用せず**、gemini/qwen と同じ system-prompt-only 姿勢で native 化した。**判断根拠（ユーザ合意、2026-08）**: aish の信頼の根幹（サーバ保護）はコマンド承認 UI（Y/n/a/q）で担保され、AI backend の read-only 有無に依存しない。read-only 強制はローカルの AI CLI が承認 UI を迂回してクライアント側で write/exec する余地を塞ぐ defense-in-depth に過ぎず、リモート実行時のサーバ安全性は損なわれない。**`--dangerously-skip-permissions`（auto-approve）は絶対に付けない**（`args_use_headless_flag_and_never_bypass_permissions` で固定）。
+  - **未検証点（実機確認が取れ次第調整）**: `agy -p` が prompt を stdin から読むか（claude の `-p` と同じ boolean フラグ想定。値必須なら要調整）、非対話出力のフォーマット（現状は素のテキスト＝system prompt で bare JSON 指示 → lossy 抽出）、正確な model slug。config は `[ai.antigravity]`（extra_args + models/efforts）。
+- **xAI Grok CLI（`grok` / `src/ai/grok.rs`）は Antigravity と同型の system-prompt-only native backend**（2026-08 追加。呼び出し名 = 実行ファイル名 `grok`）。`grok -p`（headless）stdin 渡し、lossy 抽出、内部 history 8 ターン。model は `-m`、reasoning effort フラグは無し（保存のみ）。resume なし（None）。MODEL_DEFAULTS は grok 系 4 種の best-effort。
+  - read-only 非強制の姿勢・`--always-approve` 禁止は Antigravity と同じ理由（上記）。**`grok` はコミュニティ製 `@vibe-kit/grok-cli`（npm、別ツール、read-only モード無し）とバイナリ名が衝突しうる**ため `auto_detect_order` からは除外し（誤検出防止）、明示 `--ai grok` 指定に限定。ユーザには `which -a grok` で公式 CLI か確認を促す。config は `[ai.grok]`（extra_args + models）。以前は `config.toml.example` のコメントアウト generic recipe 例だったが native 化に伴い削除（`[ai.grok]` を参照）。
 
 ### 15.11 セルフアップデート 2 チャネル
 

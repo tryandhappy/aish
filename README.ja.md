@@ -38,7 +38,9 @@ https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
   - [Claude Code](https://code.claude.com/docs/ja/overview)
   - [ChatGPT Codex](https://openai.com/ja-JP/codex/)
   - [Gemini CLI](https://cloud.google.com/blog/ja/topics/developers-practitioners/introducing-gemini-cli/)
+  - [Antigravity CLI (`agy`)](https://antigravity.google/docs/cli/install) — Gemini CLI の後継
   - [Qwen Code](https://qwen.ai/qwencode)
+  - [xAI Grok CLI (`grok`)](https://x.ai/cli)
 - OpenSSH (リモートSSH)
 - bash または zsh (ローカルシェル)
 - curl (aish --update)
@@ -140,6 +142,14 @@ gemini login
 aish --ai gemini
 ```
 
+### Antigravity (`agy`, Gemini CLI の後継)
+``` bash
+# install: curl -fsSL https://antigravity.google/cli/install.sh | bash
+
+aish --ai antigravity
+aish --ai antigravity --model gemini-3-pro --effort high
+```
+
 ### Qwen
 ```bash
 qwen
@@ -188,6 +198,10 @@ backend = "codex"
 [ai]
 backend = "gemini"
 
+# Antigravity CLI (`agy`, Gemini CLI の後継)
+[ai]
+backend = "antigravity"
+
 # Qwen
 [ai]
 backend = "qwen"
@@ -199,6 +213,10 @@ backend = "cursor"
 # GitHub Copilot
 [ai]
 backend = "copilot"
+
+# xAI Grok CLI (`grok`)  — `which -a grok` で公式 CLI か確認
+[ai]
+backend = "grok"
 
 # Kimi
 [ai]

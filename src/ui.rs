@@ -105,13 +105,15 @@ pub fn build_color_start(color: &str) -> String {
 /// `BackendKind::generic_meta()` を直接見て recipe.color を取り出す。
 fn backend_color_code(name: &str) -> u8 {
     match name {
-        "claude" => 208, // orange (Anthropic 寄り)
-        "codex" => 39,   // cyan-blue
-        "gemini" => 135, // purple
-        "qwen" => 198,   // pink-magenta
-        "cursor" => 220, // amber/gold (Cursor brand 寄り)
-        "copilot" => 41, // emerald green (GitHub 寄り)
-        "nvidia" => 118, // bright green (NVIDIA brand 寄り)
+        "claude" => 208,     // orange (Anthropic 寄り)
+        "codex" => 39,       // cyan-blue
+        "gemini" => 135,     // purple
+        "qwen" => 198,       // pink-magenta
+        "cursor" => 220,     // amber/gold (Cursor brand 寄り)
+        "copilot" => 41,     // emerald green (GitHub 寄り)
+        "nvidia" => 118,     // bright green (NVIDIA brand 寄り)
+        "antigravity" => 33, // azure blue (Google/Antigravity 寄り)
+        "grok" => 244,       // neutral gray (xAI/Grok 寄り)
         _ => 208,
     }
 }

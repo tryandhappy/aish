@@ -1,3 +1,4 @@
+mod antigravity;
 mod claude;
 mod cloudflare_workers_ai;
 mod codex;
@@ -7,6 +8,7 @@ mod cursor;
 mod factory;
 mod gemini;
 mod generic;
+mod grok;
 mod nvidia_nim;
 mod qwen;
 mod types;
