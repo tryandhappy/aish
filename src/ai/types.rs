@@ -77,6 +77,10 @@ pub enum BackendKind {
     Cloudflare,
     /// NVIDIA NIM (integrate.api.nvidia.com。REST を curl 経由で叩く native backend)。
     Nvidia,
+    /// Google Antigravity CLI (`agy`。Gemini CLI 後継。system-prompt-only の native backend)。
+    Antigravity,
+    /// xAI Grok CLI (`grok`。x.ai/cli。system-prompt-only の native backend)。
+    Grok,
     /// Config 駆動 generic CLI backend。`u8` は `[[ai.providers]]` 配列のインデックス。
     /// 実 metadata (name / binary / color / recipe) は `init_generics` で leak された
     /// `GENERIC_REGISTRY` から `generic_at(idx)` 経由で取得する。
@@ -110,6 +114,8 @@ fn parse_native(s: &str) -> Result<BackendKind, ()> {
         "copilot" => Ok(BackendKind::Copilot),
         "cloudflare" => Ok(BackendKind::Cloudflare),
         "nvidia" => Ok(BackendKind::Nvidia),
+        "antigravity" => Ok(BackendKind::Antigravity),
+        "grok" => Ok(BackendKind::Grok),
         _ => Err(()),
     }
 }
@@ -195,6 +201,8 @@ impl BackendKind {
             BackendKind::Copilot => "copilot",
             BackendKind::Cloudflare => "cloudflare",
             BackendKind::Nvidia => "nvidia",
+            BackendKind::Antigravity => "antigravity",
+            BackendKind::Grok => "grok",
             BackendKind::Generic(_) => self.generic_meta().map(|m| m.display_name).unwrap_or("?"),
         }
     }
@@ -213,12 +221,15 @@ impl BackendKind {
             // check_installed が `curl --version` を見る (= 真の実行時依存)。
             BackendKind::Cloudflare => "curl",
             BackendKind::Nvidia => "curl",
+            // agy / grok は実行ファイル名 = 呼び出し名。
+            BackendKind::Antigravity => "agy",
+            BackendKind::Grok => "grok",
             BackendKind::Generic(_) => self.generic_meta().map(|m| m.binary).unwrap_or("?"),
         }
     }
 
     /// ring_buffer の sent_marks HashMap キーに使う。
-    /// native は固定 0..=5、Generic は `6 + idx`。
+    /// native は固定 0..=9、Generic は `NATIVE_COUNT + idx`。
     pub fn ordinal(self) -> usize {
         match self {
             BackendKind::Claude => 0,
@@ -229,14 +240,16 @@ impl BackendKind {
             BackendKind::Copilot => 5,
             BackendKind::Cloudflare => 6,
             BackendKind::Nvidia => 7,
-            BackendKind::Generic(idx) => 8 + idx as usize,
+            BackendKind::Antigravity => 8,
+            BackendKind::Grok => 9,
+            BackendKind::Generic(idx) => Self::NATIVE_COUNT + idx as usize,
         }
     }
 
     /// native backend の総数 (Generic を含まない)。
     /// 旧 `[T; BackendKind::COUNT]` 固定長配列の値は `ring_buffer` の HashMap 化により不要。
     /// 残存利用は test の網羅性チェックのみ。
-    pub const NATIVE_COUNT: usize = 8;
+    pub const NATIVE_COUNT: usize = 10;
 
     /// native backend 全種類を列挙。Generic は含まない (init 時のみ既知のため別系統)。
     pub fn all_native() -> [BackendKind; Self::NATIVE_COUNT] {
@@ -249,6 +262,8 @@ impl BackendKind {
             BackendKind::Copilot,
             BackendKind::Cloudflare,
             BackendKind::Nvidia,
+            BackendKind::Antigravity,
+            BackendKind::Grok,
         ]
     }
 
@@ -337,6 +352,11 @@ mod tests {
             BackendKind::Cloudflare
         );
         assert_eq!(BackendKind::parse("nvidia").unwrap(), BackendKind::Nvidia);
+        assert_eq!(
+            BackendKind::parse("antigravity").unwrap(),
+            BackendKind::Antigravity
+        );
+        assert_eq!(BackendKind::parse("grok").unwrap(), BackendKind::Grok);
     }
 
     #[test]
@@ -357,6 +377,8 @@ mod tests {
             BackendKind::Copilot,
             BackendKind::Cloudflare,
             BackendKind::Nvidia,
+            BackendKind::Antigravity,
+            BackendKind::Grok,
         ] {
             assert_eq!(BackendKind::parse(kind.as_str()).unwrap(), kind);
         }
@@ -366,6 +388,11 @@ mod tests {
     fn binary_overrides_as_str_for_cursor() {
         assert_eq!(BackendKind::Cursor.binary(), "cursor-agent");
         assert_eq!(BackendKind::Claude.binary(), "claude");
+        // antigravity は呼び出し名 `antigravity` だが実行ファイルは `agy`。
+        assert_eq!(BackendKind::Antigravity.as_str(), "antigravity");
+        assert_eq!(BackendKind::Antigravity.binary(), "agy");
+        // grok は呼び出し名 = 実行ファイル名。
+        assert_eq!(BackendKind::Grok.binary(), "grok");
     }
 
     #[test]
@@ -386,8 +413,11 @@ mod tests {
     #[test]
     fn generic_ordinal_starts_after_native() {
         // init 未呼び出しでも ordinal は計算可能 (registry を見ない)。
-        assert_eq!(BackendKind::Generic(0).ordinal(), 8);
-        assert_eq!(BackendKind::Generic(7).ordinal(), 15);
+        assert_eq!(BackendKind::Generic(0).ordinal(), BackendKind::NATIVE_COUNT);
+        assert_eq!(
+            BackendKind::Generic(7).ordinal(),
+            BackendKind::NATIVE_COUNT + 7
+        );
     }
 
     #[test]

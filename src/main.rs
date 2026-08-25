@@ -597,9 +597,9 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                     }
                     ui::passthrough_read(&input_tx, &input_bg, &input_aish_label);
                 }
-                ui::InputRequest::ReadConfirmKey => {
+                ui::InputRequest::ReadConfirmKey { default_all } => {
                     // Y/n/a 1 キー即確定。None は Ctrl+C / Ctrl+D / ESC = 全キャンセル。
-                    let event = match ui::read_confirm_key() {
+                    let event = match ui::read_confirm_key(default_all) {
                         Some(choice) => ui::InputEvent::Confirm(choice),
                         None => ui::InputEvent::ReadLineCancelled,
                     };
@@ -793,8 +793,8 @@ AISH OPTIONS:
     --model <NAME>         使用モデル名 (例: sonnet, gpt-5, gemini-2.5-pro)
                            [ai].model および extra_args の -m 指定より優先される
     --effort <LEVEL>       reasoning effort (low | medium | high など)
-                           claude: --effort、codex: -c model_reasoning_effort= に変換
-                           gemini / qwen は CLI 非対応のため無視される
+                           claude / antigravity: --effort、codex: -c model_reasoning_effort= に変換
+                           gemini / qwen / grok は CLI 非対応のため無視される
 
 OTHER OPTIONS:
     --version, -V          バージョン表示

@@ -29,7 +29,7 @@ https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
 
 - Linux (Testing on Ubuntu 24.04)
 - Windows WSL2 (Testing on Ubuntu 24.04)
-- Windows 10 1809+ ネイティブ (Windows Terminal 推奨) ※プレビルドバイナリ配布あり (x86_64 / aarch64 の `.exe`・`.zip`)。`--update` 自己更新は非対応 (手動でダウンロード)
+- Windows 10 1809+ ネイティブ **(ベータ版)** (Windows Terminal 推奨) ※プレビルドバイナリ配布あり (x86_64 / aarch64 の `.exe`・`.zip`)。`--update` 自己更新は非対応 (手動でダウンロード)
 - macOS (Intel・Apple Silicon) ※テスト不十分
 
 #### 必要なコマンド
@@ -38,7 +38,9 @@ https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
   - [Claude Code](https://code.claude.com/docs/ja/overview)
   - [ChatGPT Codex](https://openai.com/ja-JP/codex/)
   - [Gemini CLI](https://cloud.google.com/blog/ja/topics/developers-practitioners/introducing-gemini-cli/)
+  - [Antigravity CLI (`agy`)](https://antigravity.google/docs/cli/install) — Gemini CLI の後継
   - [Qwen Code](https://qwen.ai/qwencode)
+  - [xAI Grok CLI (`grok`)](https://x.ai/cli)
 - OpenSSH (リモートSSH)
 - bash または zsh (ローカルシェル)
 - curl (aish --update)
@@ -75,7 +77,7 @@ sudo curl -fsSL -o /usr/local/bin/aish "https://github.com/tryandhappy/aish/rele
 sudo chmod 755 /usr/local/bin/aish
 ```
 
-### Windows (x86_64 / ARM64)
+### Windows (ベータ版) (x86_64 / ARM64)
 
 インストーラがアーキテクチャを判定し `aish.exe` を取得、SHA-256 を検証して `%LOCALAPPDATA%\Programs\aish` に配置、ユーザ `PATH` に追加します。
 
@@ -140,6 +142,14 @@ gemini login
 aish --ai gemini
 ```
 
+### Antigravity (`agy`, Gemini CLI の後継)
+``` bash
+# install: curl -fsSL https://antigravity.google/cli/install.sh | bash
+
+aish --ai antigravity
+aish --ai antigravity --model gemini-3-pro --effort high
+```
+
 ### Qwen
 ```bash
 qwen
@@ -188,6 +198,10 @@ backend = "codex"
 [ai]
 backend = "gemini"
 
+# Antigravity CLI (`agy`, Gemini CLI の後継)
+[ai]
+backend = "antigravity"
+
 # Qwen
 [ai]
 backend = "qwen"
@@ -199,6 +213,10 @@ backend = "cursor"
 # GitHub Copilot
 [ai]
 backend = "copilot"
+
+# xAI Grok CLI (`grok`)  — `which -a grok` で公式 CLI か確認
+[ai]
+backend = "grok"
 
 # Kimi
 [ai]

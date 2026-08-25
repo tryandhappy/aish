@@ -29,7 +29,7 @@ https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
 
 - Linux (tested on Ubuntu 24.04)
 - Windows WSL2 (tested on Ubuntu 24.04)
-- Windows 10 1809+ native (Windows Terminal recommended) — prebuilt binaries provided (x86_64 / aarch64 `.exe` and `.zip`); `--update` self-update is not supported (run the installer/download manually)
+- Windows 10 1809+ native **(Beta)** (Windows Terminal recommended) — prebuilt binaries provided (x86_64 / aarch64 `.exe` and `.zip`); `--update` self-update is not supported (run the installer/download manually)
 - macOS (Intel / Apple Silicon) — not thoroughly tested
 
 #### Required Commands
@@ -38,7 +38,9 @@ https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
   - [Claude Code](https://code.claude.com/docs/en/overview)
   - [ChatGPT Codex](https://openai.com/codex/)
   - [Gemini CLI](https://cloud.google.com/blog/topics/developers-practitioners/introducing-gemini-cli/)
+  - [Antigravity CLI (`agy`)](https://antigravity.google/docs/cli/install) — successor to the Gemini CLI
   - [Qwen Code](https://qwen.ai/qwencode)
+  - [xAI Grok CLI (`grok`)](https://x.ai/cli)
 - OpenSSH (for remote SSH)
 - bash or zsh (for the local shell)
 - curl (for aish --update)
@@ -75,7 +77,7 @@ sudo curl -fsSL -o /usr/local/bin/aish "https://github.com/tryandhappy/aish/rele
 sudo chmod 755 /usr/local/bin/aish
 ```
 
-### Windows (x86_64 / ARM64)
+### Windows (Beta) (x86_64 / ARM64)
 
 The installer detects your architecture, downloads `aish.exe`, verifies its SHA-256, installs it to `%LOCALAPPDATA%\Programs\aish`, and adds it to your user `PATH`.
 
@@ -140,6 +142,14 @@ gemini login
 aish --ai gemini
 ```
 
+### Antigravity (`agy`, successor to the Gemini CLI)
+``` bash
+# install: curl -fsSL https://antigravity.google/cli/install.sh | bash
+
+aish --ai antigravity
+aish --ai antigravity --model gemini-3-pro --effort high
+```
+
 ### Qwen
 ```bash
 qwen
@@ -188,6 +198,10 @@ backend = "codex"
 [ai]
 backend = "gemini"
 
+# Antigravity CLI (`agy`, successor to the Gemini CLI)
+[ai]
+backend = "antigravity"
+
 # Qwen
 [ai]
 backend = "qwen"
@@ -199,6 +213,10 @@ backend = "cursor"
 # GitHub Copilot
 [ai]
 backend = "copilot"
+
+# xAI Grok CLI (`grok`)  — run `which -a grok` to confirm you have the official CLI
+[ai]
+backend = "grok"
 
 # Kimi
 [ai]

@@ -89,7 +89,12 @@ pub enum InputRequest {
     Passthrough(String),
     /// Y/n/a 確認プロンプト用。1 キー (Enter 不要) で確定する。
     /// IME 経由の全角・ひらがな確定文字 (`ｙ` / `ｎ` / `あ` 等) も受理する。
-    ReadConfirmKey,
+    /// `default_all` = 残コマンドがあり [a] が出ているとき true。
+    /// このとき Enter のデフォルトは All (残り自動承認)、最後のコマンド
+    /// ([Y/n] だけ) では false で Enter=Yes。
+    ReadConfirmKey {
+        default_all: bool,
+    },
 }
 
 pub fn build_color_start(color: &str) -> String {
@@ -105,13 +110,15 @@ pub fn build_color_start(color: &str) -> String {
 /// `BackendKind::generic_meta()` を直接見て recipe.color を取り出す。
 fn backend_color_code(name: &str) -> u8 {
     match name {
-        "claude" => 208, // orange (Anthropic 寄り)
-        "codex" => 39,   // cyan-blue
-        "gemini" => 135, // purple
-        "qwen" => 198,   // pink-magenta
-        "cursor" => 220, // amber/gold (Cursor brand 寄り)
-        "copilot" => 41, // emerald green (GitHub 寄り)
-        "nvidia" => 118, // bright green (NVIDIA brand 寄り)
+        "claude" => 208,     // orange (Anthropic 寄り)
+        "codex" => 39,       // cyan-blue
+        "gemini" => 135,     // purple
+        "qwen" => 198,       // pink-magenta
+        "cursor" => 220,     // amber/gold (Cursor brand 寄り)
+        "copilot" => 41,     // emerald green (GitHub 寄り)
+        "nvidia" => 118,     // bright green (NVIDIA brand 寄り)
+        "antigravity" => 33, // azure blue (Google/Antigravity 寄り)
+        "grok" => 244,       // neutral gray (xAI/Grok 寄り)
         _ => 208,
     }
 }
@@ -366,11 +373,12 @@ pub fn print_single_confirm_prompt(
     display: &DisplayConfig,
 ) {
     let color = &display.confirm_color;
-    // 残コマンドがある (= 最後ではない) ときだけ [Y/n/a/q] を出す。
+    // 残コマンドがある (= 最後ではない) ときだけ [y/n/A/q] を出す。
     // a = 残り全部を自動承認 (apt / sudo の慣習)、q = 残りを中止。
+    // 複数コマンド時はデフォルト = a なので A を大文字にして示す (Enter = All)。
     // 最後のコマンドでは「残り」が無いので a も q も隠して [Y/n] に畳む
-    // (q は押せば効くが最後では n とほぼ等価)。
-    let options = if index < total { "Y/n/a/q" } else { "Y/n" };
+    // (q は押せば効くが最後では n とほぼ等価)。デフォルトは Yes なので Y が大文字。
+    let options = if index < total { "y/n/A/q" } else { "Y/n" };
     // "Exec?" をオレンジ文字+暗い茶色背景 (prompt_color 系) で区別する試行。
     // 終了は再度 confirm_color を適用して元の薄黄/グレーに戻す。
     // 選択肢 [Y/n] / [Y/n/a] は bold + reverse で強調。
@@ -431,8 +439,10 @@ fn char_width(c: char) -> usize {
 /// 未知キー / 制御文字は無視して次のキーを待つ (打ち間違いで意図せず No に
 /// なるのを避けるため)。raw mode は ECHO off なので、マッチした文字のみ
 /// stdout に echo する。
-pub fn read_confirm_key() -> Option<ConfirmChoice> {
-    read_confirm_key_impl()
+/// `default_all` = 残コマンドがあり [a] が出ているとき true。Enter のデフォルト
+/// が All (残り自動承認) になる。false (最後のコマンド [Y/n]) では Enter=Yes。
+pub fn read_confirm_key(default_all: bool) -> Option<ConfirmChoice> {
+    read_confirm_key_impl(default_all)
 }
 
 /// 押されたキーをそのまま `\n` 付きでターミナルに描画する。
@@ -463,7 +473,7 @@ fn match_confirm_char(c: char) -> Option<ConfirmChoice> {
     }
 }
 
-fn read_confirm_key_impl() -> Option<ConfirmChoice> {
+fn read_confirm_key_impl(default_all: bool) -> Option<ConfirmChoice> {
     // 入力の framing は crate::input に集約済み。ここは Tok を解釈するだけの薄い層。
     // Enter が制御文字フィルタに飲まれる順序トラップは next_event 側で型として解消済み。
     let mut src = StdinSource::new();
@@ -475,8 +485,8 @@ fn read_confirm_key_impl() -> Option<ConfirmChoice> {
             // **必ず改行を出してから抜ける**。これをしないと、直後にメインループが
             // 送るシェルプロンプトのリフレッシュ (bash の `\r` + プロンプト文字列;
             // しかも先頭の改行は drain 側で除去される) が、カーソルがまだ
-            // `Exec? ... [Y/n/a/q] ` 行末にあるためその行を上書きして消してしまう
-            // (ユーザ報告: キャンセルで最終行がプロンプトに上書きされる)。Y/n/a/q は
+            // `Exec? ... [y/n/A/q] ` 行末にあるためその行を上書きして消してしまう
+            // (ユーザ報告: キャンセルで最終行がプロンプトに上書きされる)。y/n/A/q は
             // echo で改行が入るのでクリーン。Ctrl+C/Ctrl+D だけ echo char が無いので
             // ここで明示的に改行を出して揃える。
             Tok::Ctrl(0x03) | Tok::Ctrl(0x04) => {
@@ -491,8 +501,14 @@ fn read_confirm_key_impl() -> Option<ConfirmChoice> {
                 echo_confirm('n');
                 return Some(ConfirmChoice::No);
             }
-            // Enter = デフォルト Yes。入力 char が無いのでデフォルト表記の 'Y' を echo。
+            // Enter = デフォルト。複数コマンド時 (default_all) は All (残り自動承認)、
+            // 最後のコマンド ([Y/n]) は Yes。入力 char が無いのでデフォルト表記の
+            // 'A' / 'Y' を echo する (prompt の大文字と一致)。
             Tok::Enter => {
+                if default_all {
+                    echo_confirm('A');
+                    return Some(ConfirmChoice::All);
+                }
                 echo_confirm('Y');
                 return Some(ConfirmChoice::Yes);
             }

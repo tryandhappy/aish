@@ -52,6 +52,12 @@ pub struct AiConfig {
     pub cursor: CursorBackendConfig,
     #[serde(default)]
     pub copilot: CopilotBackendConfig,
+    /// Google Antigravity CLI (`agy`) backend 設定 (extra_args + `/model` `/effort` 候補)。
+    #[serde(default)]
+    pub antigravity: GenericBackendConfig,
+    /// xAI Grok CLI (`grok`) backend 設定 (extra_args + `/model` 候補。effort フラグ無し)。
+    #[serde(default)]
+    pub grok: GenericBackendConfig,
     /// Cloudflare Workers AI backend 設定。account/token は環境変数のみ (config 不可) なので
     /// ここは `/model` 候補リスト (OptionLists) のみ。TOML セクション名はハイフン形
     /// `[ai.cloudflare-workers-ai]` (呼び出し名 `cloudflare` とは住み分け)。
@@ -90,6 +96,8 @@ impl Default for AiConfig {
             qwen: GenericBackendConfig::default(),
             cursor: CursorBackendConfig::default(),
             copilot: CopilotBackendConfig::default(),
+            antigravity: GenericBackendConfig::default(),
+            grok: GenericBackendConfig::default(),
             cloudflare_workers_ai: CloudflareWorkersAiBackendConfig::default(),
             nvidia_nim: NvidiaNimBackendConfig::default(),
             providers: Vec::new(),
