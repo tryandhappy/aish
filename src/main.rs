@@ -597,9 +597,9 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                     }
                     ui::passthrough_read(&input_tx, &input_bg, &input_aish_label);
                 }
-                ui::InputRequest::ReadConfirmKey => {
+                ui::InputRequest::ReadConfirmKey { default_all } => {
                     // Y/n/a 1 キー即確定。None は Ctrl+C / Ctrl+D / ESC = 全キャンセル。
-                    let event = match ui::read_confirm_key() {
+                    let event = match ui::read_confirm_key(default_all) {
                         Some(choice) => ui::InputEvent::Confirm(choice),
                         None => ui::InputEvent::ReadLineCancelled,
                     };

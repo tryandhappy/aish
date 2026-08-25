@@ -249,7 +249,12 @@ impl AiConversation<'_> {
                 Approval::All => ConfirmDecision::Run,
                 Approval::AskEach => {
                     ui::print_single_confirm_prompt(&cmd, i + 1, total, self.display);
-                    let _ = self.prompt_tx.send(ui::InputRequest::ReadConfirmKey);
+                    // 残コマンドがある (最後ではない) とき [a] が出ており Enter=All。
+                    // print_single_confirm_prompt の `index < total` と同じ条件。
+                    let default_all = i + 1 < total;
+                    let _ = self
+                        .prompt_tx
+                        .send(ui::InputRequest::ReadConfirmKey { default_all });
                     wait_confirm_decision(self.input_rx)
                 }
             };

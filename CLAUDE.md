@@ -32,8 +32,9 @@ SSH でサーバを管理する道具なので、**ユーザが画面で承認�
 - **パススルーの ESC/CSI/SS3 は完全な形まで読み切ってからまとめて送る。追加 byte 読みは poll(50ms) 付き**（blocking にしない）。
 - **win32-input-mode（`ESC[Vk;Sc;Uc;Kd;Cs;Rc_`）は `input.rs` の `classify_win32_input_mode` でデコード**（`classify_csi` が final byte `_` で呼ぶ純関数。`#[cfg]` を付けず golden test 対象）。Windows Terminal + PowerShell では PSReadLine がこのモードを有効化し、Ctrl+/ 等が KEY_EVENT でなくこのシーケンスで届くため（付けないと Ctrl+/ が PowerShell に素通りしミニバッファが開かない）。**key-down のみ Tok 化、key-up/解釈不能は None→EscSeq に握りつぶす**（二重入力防止・新 Tok variant 不要）。**raw は保持したまま**なので passthrough は生バイトを PowerShell/子 TUI へ転送し復号させる（透明性維持）。
 
-確認プロンプト Y/n/a/q（§ 15.2）:
-- **1 キー即確定**（`read_confirm_key`）。Enter/Space=実行、`n`=1 回スキップ、`a`=残り自動承認、`q`=残り中止(follow-up あり)、Ctrl+C/Ctrl+D=残り中止(AI に問わない)、**ESC=`n`**。未知キーは無視して再読み取り。**ESC を Ctrl+C 系 abort に戻さない**。
+確認プロンプト y/n/A/q（§ 15.2）:
+- **1 キー即確定**（`read_confirm_key(default_all)`）。Space=実行(Yes)、`n`=1 回スキップ、`a`=残り自動承認、`q`=残り中止(follow-up あり)、Ctrl+C/Ctrl+D=残り中止(AI に問わない)、**ESC=`n`**。未知キーは無視して再読み取り。**ESC を Ctrl+C 系 abort に戻さない**。
+- **Enter のデフォルトは文脈依存**。残コマンドあり (`i+1 < total`、[a] 表示) = `default_all` true で **Enter=All**（プロンプトは `[y/n/A/q]`、echo `A`）、最後のコマンド ([Y/n]) = false で **Enter=Yes**（echo `Y`）。**`default_all` は `InputRequest::ReadConfirmKey { default_all }` で入力スレッドへ渡す**（`print_single_confirm_prompt` の `index < total` と同一条件）。Space は文脈に依らず Yes。
 - **Enter は `b < 0x20` 判定より先に `Tok::Enter` に分類**（golden test で固定）。
 - **`echo_confirm` は `match` を持たず `write!("{c}\x1b[0m\n")` だけ。大小区別の分岐を足さない**。キャンセル(Ctrl+C/Ctrl+D)時は抜ける前に stdout へ `\n` を 1 つ出す。
 
