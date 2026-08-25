@@ -9,6 +9,18 @@ pub struct PtyHandler {
     reader: Option<Box<dyn Read + Send>>,
 }
 
+/// シェルのパス/名前が PowerShell 系 (powershell / pwsh) かを判定する。
+/// 大小無視・`.exe` 有無・フルパス/ベース名のいずれも受理する
+/// (例: `powershell.exe`, `pwsh`, `C:\Program Files\PowerShell\7\pwsh.exe`)。
+fn is_powershell_shell(shell: &str) -> bool {
+    // `/` と `\` の両方でベース名を取る (std::path は Unix で `\` を区切らないため、
+    // Windows フルパスも判定できるよう手動分割する)。末尾 `.exe` は大小無視で剥がす。
+    let base = shell.rsplit(['/', '\\']).next().unwrap_or(shell);
+    let lower = base.to_ascii_lowercase();
+    let stem = lower.strip_suffix(".exe").unwrap_or(&lower);
+    stem == "powershell" || stem == "pwsh"
+}
+
 impl PtyHandler {
     pub fn spawn_ssh(
         ssh_args: &[String],
@@ -36,7 +48,14 @@ impl PtyHandler {
                 "/bin/bash".to_string()
             }
         });
-        let mut cmd = CommandBuilder::new(shell);
+        let mut cmd = CommandBuilder::new(shell.clone());
+        // PowerShell 系シェルは -NoLogo で起動ロゴ/著作権/更新通知を抑止する:
+        // 付けないと子 powershell.exe が自分の起動バナーを再出力し、その行数ぶん
+        // ビューポートがスクロールして aish の起動バナーが画面外へ押し出される (§ 15.8/15.13)。
+        // プロンプト形 (`PS C:\...> `) は変わらないので PromptSniffer には影響しない。
+        if is_powershell_shell(&shell) {
+            cmd.arg("-NoLogo");
+        }
         if let Ok(cwd) = std::env::current_dir() {
             cmd.cwd(cwd);
         }
@@ -182,6 +201,25 @@ mod tests {
             assert_eq!(PtyHandler::ENTER_BYTE, b'\r');
         } else {
             assert_eq!(PtyHandler::ENTER_BYTE, b'\n');
+        }
+    }
+
+    #[test]
+    fn is_powershell_shell_detects_variants() {
+        // 大小無視・.exe 有無・フルパスいずれも PowerShell 系と判定する。
+        for s in [
+            "powershell.exe",
+            "powershell",
+            "PowerShell.exe",
+            "pwsh",
+            "pwsh.exe",
+            r"C:\Program Files\PowerShell\7\pwsh.exe",
+        ] {
+            assert!(is_powershell_shell(s), "{s} should be powershell");
+        }
+        // cmd / bash 等には -NoLogo を付けない。
+        for s in ["cmd.exe", "cmd", "/bin/bash", "bash", "zsh", "powershelly"] {
+            assert!(!is_powershell_shell(s), "{s} should not be powershell");
         }
     }
 
