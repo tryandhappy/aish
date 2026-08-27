@@ -438,7 +438,7 @@ backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
 | 設定エラー（既定パス） | 警告して `Config::default()` で続行 |
 | 設定エラー（`--config` 明示） | エラー終了（`exit 1`） |
 | `--update` SHA256 検証失敗 / `.sha256` 取得失敗 | fail-closed でエラー終了 |
-| AI CLI 実行失敗（非ゼロ終了） | `[{ai}] AI CLI failed: ...` + `Please check your login or usage limit.`、ループ継続 |
+| AI CLI 実行失敗（非ゼロ終了） | `[{ai}] AI CLI failed: ...` + `Please check your login or usage limit.`、ループ継続。claude の `[claude-code:<tag>]` マーカー付きは `Claude Error: <tag>` 見出し + 種類別ヒント（§ 15.10） |
 | AI 出力が空 / JSON なし | `... returned empty output` / `No JSON found in ... output: ...` |
 | AI キャンセル（Ctrl+C） | `^C` 表示後対話ループ終了。aish 継続 |
 | PTY 終了 | 残り PTY 出力（logout 等）表示後 aish 終了 |
@@ -559,6 +559,7 @@ backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
   - **未検証点（実機確認が取れ次第調整）**: `agy -p` が prompt を stdin から読むか（claude の `-p` と同じ boolean フラグ想定。値必須なら要調整）、非対話出力のフォーマット（現状は素のテキスト＝system prompt で bare JSON 指示 → lossy 抽出）、正確な model slug。config は `[ai.antigravity]`（extra_args + models/efforts）。
 - **xAI Grok CLI（`grok` / `src/ai/grok.rs`）は Antigravity と同型の system-prompt-only native backend**（2026-08 追加。呼び出し名 = 実行ファイル名 `grok`）。`grok -p`（headless）stdin 渡し、lossy 抽出、内部 history 8 ターン。model は `-m`、reasoning effort フラグは無し（保存のみ）。resume なし（None）。MODEL_DEFAULTS は grok 系 4 種の best-effort。
   - read-only 非強制の姿勢・`--always-approve` 禁止は Antigravity と同じ理由（上記）。**`grok` はコミュニティ製 `@vibe-kit/grok-cli`（npm、別ツール、read-only モード無し）とバイナリ名が衝突しうる**ため `auto_detect_order` からは除外し（誤検出防止）、明示 `--ai grok` 指定に限定。ユーザには `which -a grok` で公式 CLI か確認を促す。config は `[ai.grok]`（extra_args + models）。以前は `config.toml.example` のコメントアウト generic recipe 例だったが native 化に伴い削除（`[ai.grok]` を参照）。
+- **claude headless の失敗 stderr は `[claude-code:<tag>] {json}` マーカーを含む**（例: `[claude-code:unrecognized_model] {"model":"Opus 5","query_source":"sdk"}`）。aish が `--model` を渡していなくても `~/.claude/settings.json` の `"model"` に表示名（"Opus 5" 等）が保存されていると headless (query_source=sdk) は slug 解決できず失敗する — 対話 UI とは解決経路が違う（2026-08 実障害。「limit では」と誤解された）。`conversation::format_ai_error` が `claude_error_tag`（純関数。tag は英数字+`_` のみ受理し引用文での誤検出を防ぐ）で抽出し、`Claude Error: <tag>` 見出し + stderr 原文 + `claude_error_hint` の種類別ヒント（`model` 系 → `/model`・settings.json 確認 / `auth`・`login`・`oauth`・`api_key`・`credential`・`billing` 系 → 再ログイン / `limit`・`quota`・`overloaded` 系 → limit 待ち）で表示。**未知 tag はヒント無しで原文のみ**（的外れな誘導をしない）。マーカー無しのエラーは従来の汎用文言（login or usage limit）を維持。いずれも golden test 対象。
 
 ### 15.11 セルフアップデート 2 チャネル
 
