@@ -57,7 +57,7 @@ minibuffer / 打ちかけ（§ 15.4, 15.5）:
 - **`ui::show_picker` は confirm と同じく main スレッドが fd0 直読みの同期ブロッキング関数**（`InputEvent`/`InputRequest` 経由にしない）。**termios 再設定はしない**。stdout 専用で PTY に書かない。
 - **領域は先に `\n`×N で確保→原点へ戻る相対描画（末尾改行を出さない）。DECSTBM 不使用**。終了時 `\x1b[<L-1>A\r\x1b[0J` で消去。**ナビは純関数 `picker_step` に分離し golden test**。
 - **候補解決は backend ごと `available_models`/`available_efforts` = static list > 取得コマンド > 組み込み既定**（`common::resolve_option_list`）。取得コマンドは**ピッカーを開く時だけローカル実行**。effort 既定は claude/codex/copilot のみ、model 既定は全 native backend（generic は recipe 由来のみ）。
-- **claude CLI には「モデル一覧」コマンドが無い**（`--model` help も alias/正式名を渡せと言うだけ）ので動的取得は不可。**claude の `MODEL_DEFAULTS` は先頭にエイリアス（`default`/`opus`/`sonnet`/`haiku`/`fable`）を並べ、後半に正式名スナップショット**（§ 15.12）。エイリアスは claude が常に最新へ解決＝陳腐化しないので**先頭のエイリアス群を消さない**。正式名の方は best-effort で更新にリリースが要る。
+- **どの native CLI も「モデル一覧」コマンドを持たない**ので動的取得は不可。**CLI 側に「最新へ解決するエイリアス」がある backend だけ `MODEL_DEFAULTS` 先頭にそれを並べて陳腐化を防ぐ**（§ 15.12）。適用済み: claude(`default`/`opus`/`sonnet`/`haiku`/`fable`) / grok(`grok-4-latest`/`grok-4`、xAI docs 準拠) / cursor(`auto`) / qwen(`qwen3-coder-plus`/`flash` ローリング tier)。**これら先頭のエイリアスは消さない**。codex/copilot/gemini/antigravity/REST 2 種は最新解決エイリアスが無く（codex は `(default)` 未指定で代替、gemini `-latest` は experimental で不採用、REST はモデル ID 直渡し）、`MODEL_DEFAULTS` は best-effort スナップショットのまま = 陳腐化回避は `(default)` エントリ / `models_command` / リリース更新に委ねる。
 - **`/model` `/effort` は常に `Some(...)` を返す**。引数なし=ピッカー、`-`/`clear`=クリア、その他=検証せず set。
 
 platform 層 / Windows（§ 15.13）:
