@@ -11,18 +11,31 @@
 //! 再描画は `\x1b[6;26H...`、ESC の行消去は `\x1b[24;26H\x1b[13X` の絶対座標)。
 //!
 //! 対策 = 再同期 (resync): 「PTY と実画面が同期している瞬間」の cursor 位置を
-//! anchor として記録しておき、aish の直接描画から PTY 表示へ戻る境目で、
-//! aish が描いた行を anchor 行より上へ全画面 LF スクロールで退避してから cursor を
-//! anchor へ絶対復帰する。以降 ConPTY の絶対座標と実画面が行単位で一致するので、
-//! パススルーは従来どおり無加工でよい。挿入するのは空行スクロールと cursor 移動
-//! だけで、PTY への入力注入もコマンド変形もしない (信頼の根幹は不変)。
+//! anchor として記録しておき、aish の直接描画から PTY 表示へ戻る境目で
+//! ConPTY 側の座標を実画面に合わせ直す。合わせ方は 2 方式:
+//!
+//! - **空 Enter 注入 (ローカルシェル、既定)**: aish が実画面に描いた行数ぶんの
+//!   空 Enter を子シェルへ送り、その出力 (プロンプト再表示) を非表示で吸収して
+//!   ConPTY 内部モデルの cursor 行を実 cursor 行まで進める (起動バナー整合と同じ
+//!   手法 — main::windows_local_startup)。**実画面には何も書かないので、ユーザの
+//!   見ているスクロール位置は一切動かない**。空 Enter は入力行が空の状態でしか
+//!   送らず、何も実行せず履歴にも残らない (信頼の根幹は不変)。
+//! - **全画面 LF スクロール退避 (リモート = SSH のフォールバック)**: リモートには
+//!   入力を注入しない原則のため、従来どおり aish が描いた行を anchor 行より上へ
+//!   全画面 LF スクロールで退避して cursor を anchor へ絶対復帰する (この方式は
+//!   実画面がスクロールする)。
+//!
+//! どちらも以降は ConPTY の絶対座標と実画面が行単位で一致するので、パススルーは
+//! 従来どおり無加工でよい。コマンド変形はしない (信頼の根幹は不変)。
 //!
 //! Unix では子シェル (bash readline) が相対シーケンスで redisplay するためこの
 //! 問題自体が起きない。`crate::term::cursor_position()` が Unix では常に None を
 //! 返すので、本モジュールの resync / capture は Unix では自然に no-op になる。
 
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// ConPTY の内部モデルと実画面が同期していた瞬間の cursor 位置 (row, col)。
 /// 記録タイミング: minibuffer 入口の DSR (入力スレッド) / AI 提案コマンド完了時
@@ -47,17 +60,35 @@ pub fn clear_anchor() {
     *ANCHOR.lock().unwrap() = None;
 }
 
-/// aish 直接描画 → PTY 表示再開の境目で、実画面を ConPTY モデルに合わせ直す。
+/// 空 Enter 注入による再同期を使ってよいか (= 子シェルがローカルか)。
+/// リモート (SSH) はサーバへ入力を注入しない原則のためスクロール方式へフォールバック。
+/// `main::run` が PTY spawn 時に 1 度だけ設定する。
+static INJECTION_ALLOWED: AtomicBool = AtomicBool::new(false);
+
+pub fn set_empty_enter_injection(allowed: bool) {
+    INJECTION_ALLOWED.store(allowed, Ordering::Relaxed);
+}
+
+/// 注入した空 Enter のプロンプト再表示 (非表示で吸収) の静音判定と待ち上限。
+const INJECT_DRAIN_QUIET: Duration = Duration::from_millis(120);
+const INJECT_DRAIN_MAX: Duration = Duration::from_millis(1000);
+
+/// aish 直接描画 → PTY 表示再開の境目で、ConPTY モデルと実画面を合わせ直す。
 ///
-/// aish が描いた行 (anchor 行以降に伸びた分) を全画面 LF スクロールで anchor 行より
-/// 上へ退避し、cursor を anchor へ絶対復帰する。全画面スクロールなので退避された行は
-/// 通常のシェル出力と同じく scrollback に残る (minibuffer の伸長と同じ方式)。
+/// ローカルシェル (INJECTION_ALLOWED): 実 cursor 行 − anchor 行ぶんの空 Enter を
+/// 子シェルへ注入し、その出力を非表示で吸収して ConPTY モデルの cursor を実 cursor
+/// 行まで進める。**実画面には何も書かないためスクロール位置は動かない**。
+/// リモート: `resync_scroll` (従来の全画面 LF 退避) にフォールバック。
 ///
-/// 戻り値 = 実画面をスクロールしたか。true のとき、表示上のシェルプロンプト行も
-/// 上へ動いているため、呼び出し側は次のコマンド送信前に `refresh_prompt` で
-/// 新しいプロンプトを描かせること (エコーが「プロンプトの無い行」に浮くのを防ぐ)。
+/// 戻り値 = 再同期を行ったか (= anchor 記録後に aish が何かを描いたか)。true のとき
+/// 呼び出し側は次のコマンド送信前に `refresh_prompt` で新しいプロンプトを描かせること
+/// (エコーが「プロンプトの無い行」に浮くのを防ぐ)。
 /// anchor 未記録 / Unix / cursor 取得不能 / 移動なしのときは何もせず false。
-pub fn resync() -> io::Result<bool> {
+pub fn resync(
+    pty: &mut crate::pty_handler::PtyHandler,
+    pty_rx: &std::sync::mpsc::Receiver<Vec<u8>>,
+    ring_buffer: &mut crate::ring_buffer::RingBuffer,
+) -> io::Result<bool> {
     let anchor = *ANCHOR.lock().unwrap();
     let Some((anchor_row, anchor_col)) = anchor else {
         return Ok(false);
@@ -68,6 +99,46 @@ pub fn resync() -> io::Result<bool> {
     if (cur_row, cur_col) == (anchor_row, anchor_col) {
         return Ok(false); // 何も描いていない (自動承認の連続実行等) → no-op
     }
+    if !INJECTION_ALLOWED.load(Ordering::Relaxed) {
+        return resync_scroll(anchor_row, anchor_col, cur_row, cur_col);
+    }
+    let inject = inject_rows_needed(anchor_row, cur_row);
+    if inject == 0 {
+        // aish 描画が anchor と同行以上で終わった (minibuffer キャンセルの復元等)。
+        // モデルは動かせないので cursor だけ anchor (= モデル位置) へ合わせる。
+        let mut out = io::stdout();
+        write!(out, "\x1b[{anchor_row};{anchor_col}H")?;
+        out.flush()?;
+        return Ok(true);
+    }
+    for _ in 0..inject {
+        pty.send_empty_enter()
+            .map_err(|e| io::Error::other(e.to_string()))?;
+    }
+    // 注入で出たプロンプト再表示を非表示で吸収する (記録は ring_buffer へ。
+    // 放置すると次の表示 drain で画面に流れてしまう)。
+    let deadline = Instant::now() + INJECT_DRAIN_MAX;
+    let mut last_output = Instant::now();
+    loop {
+        if crate::pty_drain::drain_pty(
+            pty_rx,
+            ring_buffer,
+            &mut io::stdout(),
+            crate::pty_drain::DrainOpts::default(), // Hidden
+        )? {
+            last_output = Instant::now();
+        }
+        if last_output.elapsed() >= INJECT_DRAIN_QUIET || Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(15));
+    }
+    Ok(true)
+}
+
+/// リモート用フォールバック: aish が描いた行を全画面 LF スクロールで anchor 行より
+/// 上へ退避し、cursor を anchor へ絶対復帰する (従来方式。実画面がスクロールする)。
+fn resync_scroll(anchor_row: u16, anchor_col: u16, cur_row: u16, cur_col: u16) -> io::Result<bool> {
     let scroll = scroll_rows_needed(anchor_row, cur_row, cur_col);
     let mut out = io::stdout();
     if scroll > 0 {
@@ -81,6 +152,15 @@ pub fn resync() -> io::Result<bool> {
     write!(out, "\x1b[{anchor_row};{anchor_col}H")?;
     out.flush()?;
     Ok(scroll > 0)
+}
+
+/// ConPTY モデルの cursor 行 (anchor_row) を実 cursor 行 (cur_row) まで進めるのに
+/// 必要な空 Enter 数 (純関数)。実 cursor が anchor と同行以下なら 0。
+/// 注入後に続く refresh_prompt の表示 (`\r\n` + プロンプト) が実画面では cur_row+1 に、
+/// モデルでは anchor_row + N + 1 に描かれるため、N = cur_row - anchor_row で一致する
+/// (下端は双方が同じだけスクロールして飽和するので同式でよい)。
+fn inject_rows_needed(anchor_row: u16, cur_row: u16) -> u16 {
+    cur_row.saturating_sub(anchor_row)
 }
 
 /// aish が描いた最終行を anchor 行より上に退避するのに必要なスクロール行数 (純関数)。
@@ -207,6 +287,16 @@ mod tests {
     #[test]
     fn scroll_amount_top_of_screen() {
         assert_eq!(scroll_rows_needed(1, 8, 1), 7);
+    }
+
+    #[test]
+    fn inject_rows_matches_cursor_delta() {
+        // AI 応答等で cursor が anchor(4) から (11,1) まで進んだ → 7 行注入
+        assert_eq!(inject_rows_needed(4, 11), 7);
+        // 同行 → 注入なし
+        assert_eq!(inject_rows_needed(4, 4), 0);
+        // anchor より上 (minibuffer キャンセル復元等) → 注入では戻せないので 0
+        assert_eq!(inject_rows_needed(10, 4), 0);
     }
 
     #[test]

@@ -64,6 +64,10 @@ pub fn drain_pty(
         // AISH_DEBUG_PTY=1 のとき、ConPTY/子シェルが出す生チャンクを stderr にダンプ
         // (Windows 描画ズレ調査用。カーソル位置指定シーケンスを実測する)。既定無効。
         crate::debug_pty(&data);
+        // win32-input-mode の set/reset を検出して合成キーのエンコード方式を切り替える
+        // (kill_line / refresh_prompt の生 ESC が握りつぶされる問題 — § 15.13)。
+        // 全 PTY 出力はこの関数を通る (choke point) ためここで一元的に観測する。
+        crate::pty_handler::note_pty_output(&data);
         if let Some(count) = debug_chunk_count.as_deref_mut() {
             *count += 1;
             if *count <= 3 {

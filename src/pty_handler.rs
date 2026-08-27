@@ -1,6 +1,79 @@
 use crate::vetted_command::VettedCommand;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+
+/// 子 ConPTY (conhost) が win32-input-mode (`\x1b[?9001h`) を要求しているか。
+/// Windows では conhost が起動直後にほぼ必ず要求する。これが立った後は、
+/// **素の ESC (0x1b) / 単独 `\r` を PTY に書いても入力として届かなくなる**ことがある:
+/// パススルーが転送するユーザキーストローク (win32-input-mode シーケンス) を conhost の
+/// VT 入力パーサが一度でも処理すると、以後の生 ESC / 単独 CR は握りつぶされる
+/// (2026-08 ConPTY 実測 — SPEC.md § 15.13。文字列 + `\r` のコマンド送信は影響なし)。
+/// そのため kill_line / refresh_prompt の合成キーは、このフラグが立っていれば
+/// win32-input-mode シーケンスにエンコードして送る (完全なシーケンスは常に確実に届く)。
+static WIN32_INPUT_MODE: AtomicBool = AtomicBool::new(false);
+/// チャンク境界で `\x1b[?9001h` が分断された場合に備えた持ち越しバッファ (直近 8 byte)。
+static SCAN_CARRY: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+/// PTY 出力チャンクから win32-input-mode の set/reset (`\x1b[?9001h` / `\x1b[?9001l`) を
+/// 検出してフラグを更新する。全 PTY 出力の choke point (`pty_drain::drain_pty`) から呼ぶ。
+pub fn note_pty_output(chunk: &[u8]) {
+    let mut carry = SCAN_CARRY.lock().unwrap();
+    if let Some(mode) = scan_win32_input_mode(&mut carry, chunk) {
+        WIN32_INPUT_MODE.store(mode, Ordering::Relaxed);
+    }
+}
+
+/// carry + chunk を走査し、最後に現れた `\x1b[?9001h`/`l` の状態を返す (純関数)。
+/// carry は次回の走査用に「結合列の末尾 8 byte」へ更新される (トークン長 9 byte なので
+/// 完全一致が carry 内で二重検出されることはない)。
+fn scan_win32_input_mode(carry: &mut Vec<u8>, chunk: &[u8]) -> Option<bool> {
+    const SET: &[u8] = b"\x1b[?9001h";
+    const RESET: &[u8] = b"\x1b[?9001l";
+    let mut combined = std::mem::take(carry);
+    combined.extend_from_slice(chunk);
+    let mut result = None;
+    for i in 0..combined.len().saturating_sub(SET.len() - 1) {
+        let w = &combined[i..i + SET.len()];
+        if w == SET {
+            result = Some(true);
+        } else if w == RESET {
+            result = Some(false);
+        }
+    }
+    let keep = combined.len().saturating_sub(8);
+    combined.drain(..keep);
+    *carry = combined;
+    result
+}
+
+/// win32-input-mode のキー 1 打鍵 (down + up) をエンコードする
+/// (`\x1b[Vk;Sc;Uc;Kd;Cs;Rc_`。conhost の VT 入力パーサが INPUT_RECORD に復号する)。
+fn win32_key_bytes(vk: u16, sc: u16, uc: u16) -> Vec<u8> {
+    format!("\x1b[{vk};{sc};{uc};1;0;1_\x1b[{vk};{sc};{uc};0;0;1_").into_bytes()
+}
+
+/// 打ちかけ消去キーのバイト列 (win32-input-mode 有効時は ESC をエンコード)。純関数。
+fn kill_line_bytes_for(win32_mode: bool) -> Vec<u8> {
+    if cfg!(windows) && win32_mode {
+        win32_key_bytes(27, 1, 27) // VK_ESCAPE / scancode 1
+    } else {
+        PtyHandler::KILL_LINE_BYTES.to_vec()
+    }
+}
+
+/// Enter キーのバイト列 (win32-input-mode 有効時は CR をエンコード)。純関数。
+/// 対象は refresh_prompt / 空 Enter 注入等の「単独 Enter」のみ。コマンド文字列に続く
+/// Enter (`send_approved_command`) は文字列直後の `\r` が実測で常に届くため素のまま
+/// (§ 15.13。変える必要が出たら実測してから)。
+fn enter_bytes_for(win32_mode: bool) -> Vec<u8> {
+    if cfg!(windows) && win32_mode {
+        win32_key_bytes(13, 28, 13) // VK_RETURN / scancode 28
+    } else {
+        vec![PtyHandler::ENTER_BYTE]
+    }
+}
 
 pub struct PtyHandler {
     master: Box<dyn MasterPty + Send>,
@@ -126,8 +199,12 @@ impl PtyHandler {
     const ENTER_BYTE: u8 = if cfg!(windows) { b'\r' } else { b'\n' };
 
     /// シェルの打ちかけ行を消去する。打ちかけが無ければ no-op。
+    /// Windows で子 conhost が win32-input-mode を要求済みなら ESC を
+    /// win32-input-mode シーケンスで送る (素の 0x1b はパススルー転送済みの
+    /// キーイベント列の後だと握りつぶされるため — § 15.13)。
     pub fn kill_line(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        self.write(Self::KILL_LINE_BYTES)
+        let bytes = kill_line_bytes_for(WIN32_INPUT_MODE.load(Ordering::Relaxed));
+        self.write(&bytes)
     }
 
     /// 打ちかけ消去 + 改行でシェルプロンプトを再表示させる。
@@ -137,16 +214,25 @@ impl PtyHandler {
     /// エラー処理は旧コード互換: 消去側の write エラーは無視し、改行側の Result を
     /// 返す (呼び出し側の `let _` / `?` 使い分けを保つため。消去側を `?` にしないこと)。
     pub fn refresh_prompt(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let _ = self.write(Self::KILL_LINE_BYTES);
-        // Windows: ESC と Enter (\r) が子 ConPTY に 1 バーストで届くと、VT 入力
-        // パーサが `ESC \r` を Alt+Enter として解釈し (ESC prefix = Alt modifier)、
-        // PSReadLine が両方を無視する = 打ちかけ消去もプロンプト再表示も起きない
-        // (2026-08 実測。到着タイミング依存で発生したりしなかったりする race)。
-        // 書き込みを時間で分離し、ESC を単独キーとして確定させてから Enter を送る。
-        if cfg!(windows) {
+        let win32 = WIN32_INPUT_MODE.load(Ordering::Relaxed);
+        let _ = self.write(&kill_line_bytes_for(win32));
+        // Windows (win32-input-mode 無効の fallback のみ): ESC と Enter (\r) が
+        // 子 ConPTY に 1 バーストで届くと、VT 入力パーサが `ESC \r` を Alt+Enter として
+        // 解釈し PSReadLine が両方を無視する (2026-08 実測)。書き込みを時間で分離し、
+        // ESC を単独キーとして確定させてから Enter を送る。win32-input-mode 有効時は
+        // 完全なシーケンス単位で届くため曖昧さが無く、分離は不要 (§ 15.13)。
+        if cfg!(windows) && !win32 {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        self.write(&[Self::ENTER_BYTE])
+        self.write(&enter_bytes_for(win32))
+    }
+
+    /// 空 Enter 1 打鍵を送る (ローカルシェル限定の ConPTY 座標合わせ注入用。
+    /// 入力行が空なので何も実行されず履歴にも残らない)。win32-input-mode 有効時は
+    /// エンコードして送る (kill_line と同じ理由)。リモートには送らないこと。
+    pub fn send_empty_enter(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let bytes = enter_bytes_for(WIN32_INPUT_MODE.load(Ordering::Relaxed));
+        self.write(&bytes)
     }
 
     /// ユーザが画面で承認した AI 提案コマンド + 改行を PTY に送る。
@@ -210,6 +296,57 @@ mod tests {
             assert_eq!(PtyHandler::ENTER_BYTE, b'\r');
         } else {
             assert_eq!(PtyHandler::ENTER_BYTE, b'\n');
+        }
+    }
+
+    #[test]
+    fn scan_win32_input_mode_detects_set_and_reset() {
+        let mut carry = Vec::new();
+        assert_eq!(scan_win32_input_mode(&mut carry, b"plain output"), None);
+        assert_eq!(
+            scan_win32_input_mode(&mut carry, b"\x1b[?9001h\x1b[?1004h"),
+            Some(true)
+        );
+        assert_eq!(
+            scan_win32_input_mode(&mut carry, b"\x1b[?9001l"),
+            Some(false)
+        );
+        // set → reset が同一チャンクに来たら最後の状態を返す
+        let mut carry2 = Vec::new();
+        assert_eq!(
+            scan_win32_input_mode(&mut carry2, b"\x1b[?9001h...\x1b[?9001l"),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn scan_win32_input_mode_handles_chunk_split() {
+        // トークンがチャンク境界で分断されても carry 経由で検出する
+        let mut carry = Vec::new();
+        assert_eq!(scan_win32_input_mode(&mut carry, b"xxx\x1b[?90"), None);
+        assert_eq!(scan_win32_input_mode(&mut carry, b"01h yyy"), Some(true));
+    }
+
+    #[test]
+    fn synthetic_key_bytes_per_mode() {
+        // win32-input-mode 無効時は従来バイト列 (全プラットフォーム)
+        assert_eq!(kill_line_bytes_for(false), PtyHandler::KILL_LINE_BYTES);
+        assert_eq!(enter_bytes_for(false), vec![PtyHandler::ENTER_BYTE]);
+        if cfg!(windows) {
+            // 有効時は down+up の win32 シーケンス (素の ESC/CR は conhost に
+            // 握りつぶされ得るため — § 15.13)
+            assert_eq!(
+                kill_line_bytes_for(true),
+                b"\x1b[27;1;27;1;0;1_\x1b[27;1;27;0;0;1_".to_vec()
+            );
+            assert_eq!(
+                enter_bytes_for(true),
+                b"\x1b[13;28;13;1;0;1_\x1b[13;28;13;0;0;1_".to_vec()
+            );
+        } else {
+            // Unix では win32-input-mode 自体が来ないが、来ても素のまま
+            assert_eq!(kill_line_bytes_for(true), PtyHandler::KILL_LINE_BYTES);
+            assert_eq!(enter_bytes_for(true), vec![PtyHandler::ENTER_BYTE]);
         }
     }
 

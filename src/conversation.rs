@@ -178,10 +178,10 @@ impl AiConversation<'_> {
             }
         }
 
-        // Windows ConPTY 再同期: 対話中に描いた AI 応答等を anchor 行より上へ退避
-        // してから refresh する。しないと refresh のプロンプト再描画 / 打ちかけ消去
+        // Windows ConPTY 再同期: 対話中に描いた AI 応答等の行数ぶん ConPTY モデルを
+        // 進めてから refresh する。しないと refresh のプロンプト再描画 / 打ちかけ消去
         // (絶対座標) が AI 応答の行に当たって上書きする (SPEC § 15.8 Bug 2)。
-        crate::conpty_sync::resync()?;
+        crate::conpty_sync::resync(self.pty, self.pty_rx, self.ring_buffer)?;
         // AI対話終了後、シェルのプロンプトを再表示させる。
         // 提案コマンドを1つも実行しなかった場合 (全拒否 / 提案なし) は
         // 初回実行直前の kill_line を通っていないため、ユーザが Ctrl+/ 前に
@@ -286,9 +286,9 @@ impl AiConversation<'_> {
             // Windows ConPTY 再同期 (SPEC § 15.8): aish が Exec? 確認や AI 応答を
             // 直接描画した分だけ実画面が ConPTY の内部モデルから行ズレしている。
             // コマンドを送ると PSReadLine のエコー再描画がモデル基準の絶対座標で
-            // 届き aish の出力を上書きするため、送信前に aish が描いた行を anchor
-            // 行より上へ退避して cursor を合わせ直す (Unix では常に no-op)。
-            let display_scrolled = crate::conpty_sync::resync()?;
+            // 届き aish の出力を上書きするため、送信前に描いた行数ぶん ConPTY
+            // モデルを進めて合わせ直す (Unix では常に no-op)。
+            let resynced = crate::conpty_sync::resync(self.pty, self.pty_rx, self.ring_buffer)?;
 
             // 最初に実行する AI 提案コマンドの直前で、bash の打ちかけ
             // 入力を消去する。後続コマンドは前のコマンドが完了して bash
@@ -310,12 +310,11 @@ impl AiConversation<'_> {
             // に挟むと ESC は単独キーとして打ち切られ、後続のコマンド文字列は
             // 新しい行から送られるので衝突しない。kill_line で消去済みの空行に
             // 対する `\n` は空 Enter (無害) として処理される。
-            // resync が実画面をスクロールした場合 (Windows で aish が何か描いた後)、
-            // 表示上のシェルプロンプト行も上へ動いているため、初回以外でも
-            // refresh_prompt で新しいプロンプトを描かせてから送る (エコーが
-            // 「プロンプトの無い行」に浮くのを防ぐ)。Unix では resync が常に
-            // false なので従来どおり初回のみ。
-            if executed.is_empty() || display_scrolled {
+            // resync が走った場合 (Windows で aish が何か描いた後)、シェルプロンプトが
+            // aish の描画より上に取り残されているため、初回以外でも refresh_prompt で
+            // 新しいプロンプトを描かせてから送る (エコーが「プロンプトの無い行」に
+            // 浮くのを防ぐ)。Unix では resync が常に false なので従来どおり初回のみ。
+            if executed.is_empty() || resynced {
                 self.pty.refresh_prompt()?;
                 if cfg!(windows) {
                     // Windows: refresh (ESC+\r) と直後のコマンド文字列が 1 バーストで

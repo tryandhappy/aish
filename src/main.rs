@@ -440,10 +440,12 @@ struct ExitInfo {
 /// 必ず消える。ここでは初期バーストを表示せずに吸収し、クリーンな形 (プロンプト
 /// 1 行だけ) なら:
 ///   1. win32-input-mode 等の端末状態シーケンスだけ実端末へ転送し、
-///   2. 実画面を全画面 LF スクロールで scrollback へ退避して原点からバナーを描き、
-///   3. バナー行数ぶんの空 Enter (`\r`) を子シェルへ送って ConPTY frame 側の
-///      プロンプト行をバナーの下の行まで進め (出力は非表示・記録のみ)、
-///   4. 最後にもう 1 回 `\r` を送り、そのプロンプト再表示だけを画面に流す
+///   2. バナーを現在の cursor 位置へインライン描画し (**実画面をスクロール退避
+///      しない**。ユーザのスクロール位置を動かさない — 2026-08 ユーザ要件)、
+///   3. 実 cursor 行 - 1 個の空 Enter を子シェルへ送って ConPTY frame 側の
+///      プロンプト行 (2J 後の 1 行目) を実画面のバナー下端まで進め
+///      (出力は非表示・記録のみ)、
+///   4. 最後にもう 1 回空 Enter を送り、そのプロンプト再表示だけを画面に流す
 ///      (main loop の drain が表示する。実測でこの出力は相対 `\r\n` + プロンプト)。
 ///
 /// これで ConPTY の絶対座標とバナー入りの実画面が行単位で一致し、以降の
@@ -509,30 +511,28 @@ fn windows_local_startup(
 
     // 端末状態シーケンス (win32-input-mode / フォーカス通知 / タイトル OSC) は転送する。
     stdout.write_all(&conpty_sync::filter_terminal_state(&captured))?;
-    // 実画面の内容 (親シェルの画面) を全画面 LF スクロールで scrollback へ退避し、
-    // 原点からバナーを描く (ConPTY の 2J と違い内容を破壊しない)。
-    let (rows, _) = ui::terminal_size();
-    write!(stdout, "\x1b[{rows};1H")?;
-    for _ in 0..rows {
-        stdout.write_all(b"\n")?;
-    }
-    write!(stdout, "\x1b[H")?;
     stdout.flush()?;
+    // バナーは現在の cursor 位置にインライン描画する (通常の CLI が出力するのと同じ
+    // 見え方)。実画面には全画面スクロール等を一切行わず、ユーザのスクロール位置を
+    // 動かさない。ConPTY モデル (2J 後の原点 = 1 行目にプロンプト) との行ズレは、
+    // 下の空 Enter 注入でモデル側の cursor を実 cursor 行まで進めて合わせる。
     print_banner();
 
-    // バナーの実行数 (折り返し込み) = 現在 cursor 行 - 1。取得できなければ注入なしで
+    // 注入数 = 実 cursor 行 - 1 (モデルは 1 行目から数える)。取得できなければ注入なしで
     // 通常フローへ (バナーは次の絶対座標描画で消え得るが起動は続行する)。
-    let banner_rows = match crate::term::cursor_position() {
+    let inject_rows = match crate::term::cursor_position() {
         Some((row, _)) => row.saturating_sub(1),
         None => {
-            pty.write(b"\r")?;
+            pty.send_empty_enter()?;
             return Ok(());
         }
     };
 
-    // ConPTY frame のプロンプト行をバナーの下まで進める空 Enter 注入 (出力は非表示)。
-    if banner_rows > 0 {
-        pty.write("\r".repeat(banner_rows as usize).as_bytes())?;
+    // ConPTY frame のプロンプト行を実画面のバナー下端まで進める空 Enter 注入 (出力は非表示)。
+    if inject_rows > 0 {
+        for _ in 0..inject_rows {
+            pty.send_empty_enter()?;
+        }
         let inject_deadline = Instant::now() + STARTUP_INJECT_TIMEOUT;
         let mut last_output: Option<Instant> = None;
         loop {
@@ -557,7 +557,7 @@ fn windows_local_startup(
     }
 
     // 最後の 1 回だけプロンプト再表示を画面に流す (main loop の drain が表示する)。
-    pty.write(b"\r")?;
+    pty.send_empty_enter()?;
     Ok(())
 }
 
@@ -674,6 +674,11 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
     if !windows_local {
         print_banner();
     }
+
+    // ConPTY 再同期の方式選択: ローカルシェルのみ空 Enter 注入を許可する
+    // (リモート = SSH にはサーバへ入力を注入しない原則。Unix では resync 自体が
+    // cursor_position() = None で no-op なのでどちらでも影響しない)。
+    conpty_sync::set_empty_enter_injection(mode == Mode::Local);
 
     let mut pty = if mode == Mode::Local {
         pty_handler::PtyHandler::spawn_local_shell(pty_rows, term_cols)?
@@ -851,7 +856,7 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                 let _rearm = gate.rearm_on_drop();
                 // Windows ConPTY 再同期: minibuffer が実画面をスクロールさせた分の
                 // 行ズレを合わせてから refresh する (Unix では no-op)。
-                let _ = conpty_sync::resync();
+                let _ = conpty_sync::resync(&mut pty, &pty_rx, &mut ring_buffer);
                 let _ = pty.refresh_prompt();
                 continue;
             }
@@ -874,7 +879,7 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                     ui::print_slash_result(&msg);
                     // Windows ConPTY 再同期: minibuffer + slash 結果表示の行ズレを
                     // 合わせてから refresh する (Unix では no-op)。
-                    let _ = conpty_sync::resync();
+                    let _ = conpty_sync::resync(&mut pty, &pty_rx, &mut ring_buffer);
                     // shell プロンプトをリフレッシュする。打ちかけ消去 + 改行の不可分な
                     // 組み合わせは PtyHandler::refresh_prompt に固定されている (信頼の根幹)。
                     let _ = pty.refresh_prompt();
