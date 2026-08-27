@@ -9,8 +9,25 @@ use crate::config::{AiConfig, LogConfig, OptionLists};
 const EFFORT_DEFAULTS: &[&str] = &["low", "medium", "high"];
 
 /// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort
-/// (検証せず `--model <値>` に渡すだけ。誤りの実害は CLI 起動エラー程度)。更新はリリース必要。
-const MODEL_DEFAULTS: &[&str] = &["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"];
+/// (検証せず `--model <値>` に渡すだけ。誤りの実害は CLI 起動エラー程度)。
+/// claude CLI には「モデル一覧」コマンドが無い (`--model` help も alias か正式名を渡せと言うだけ) ため
+/// 動的取得はできない。代わりに先頭へ **エイリアス** を並べる: claude 側が `opus`→常に最新 Opus のように
+/// 解決するので、新モデルが出てもこの配列を更新せず陳腐化しない。後半の正式名は「今どの世代か」を
+/// 具体的に選びたい人向けの best-effort スナップショット (これだけは更新にリリースが要る)。
+const MODEL_DEFAULTS: &[&str] = &[
+    // エイリアス (claude が常に最新へ解決 — 陳腐化しない)
+    "default",
+    "opus",
+    "sonnet",
+    "haiku",
+    "fable",
+    // 現状把握しているフルネーム (2026-08 時点の best-effort スナップショット)
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-opus-4-8",
+    "claude-haiku-4-5",
+];
 
 const AI_RESPONSE_SCHEMA: &str = r#"{
   "type": "object",

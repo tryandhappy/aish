@@ -342,7 +342,7 @@ backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
 
 候補解決の優先順位（`common::resolve_option_list`）: **static list 非空 > 取得コマンド > backend 組み込み既定**。取得コマンドはピッカーを開く時だけ実行。
 
-**組み込み既定**: effort は claude `low/medium/high`、codex `minimal/low/medium/high`、copilot `none/low/medium/high/xhigh/max`、他は無し（effort 非適用 or recipe 由来のみ）。model は全 native backend に同梱（各 `MODEL_DEFAULTS` const。例: claude `claude-opus-4-8/sonnet-4-6/haiku-4-5`、codex `gpt-5.5/...`、cursor `auto/composer-1/…`、antigravity `gemini-3-pro/gemini-3-flash/…`、grok `grok-4/grok-4-fast/…`）。値は best-effort で更新にはリリースが必要（§15.12）。generic は recipe 由来のみ。
+**組み込み既定**: effort は claude `low/medium/high`、codex `minimal/low/medium/high`、copilot `none/low/medium/high/xhigh/max`、他は無し（effort 非適用 or recipe 由来のみ）。model は全 native backend に同梱（各 `MODEL_DEFAULTS` const。例: claude `default/opus/sonnet/haiku/fable`（エイリアス先頭）+ `claude-opus-5/sonnet-5/…`（正式名スナップショット）、codex `gpt-5.5/...`、cursor `auto/composer-1/…`、antigravity `gemini-3-pro/gemini-3-flash/…`、grok `grok-4/grok-4-fast/…`）。値は best-effort で更新にはリリースが必要（§15.12）。generic は recipe 由来のみ。
 
 #### `[ai.claude]`
 | キー | 既定値 | 説明 |
@@ -573,7 +573,7 @@ backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
 - **描画モデル**: 先に `\n`×`total_lines` で領域確保（最下行なら scroll を先に発生）→ `\x1b[<total_lines>A` で原点へ。`render_picker` は原点開始・**最終行末で止まる**（末尾改行を出さない = 予約超え scroll を起こさない）。再描画は `picker_move_to_origin`（`\x1b[<L-1>A\r`）。終了時は原点 + `\x1b[0J` 消去（後続の `print_slash_result` が原点から出す）。**DECSTBM 不使用**（minibuffer と同じ理由）。長い候補は簡易ビューポート（可視 = 端末高 − 2）。
 - **キー**: ↑↓=移動（クランプ、wrap なし）、Home/End=端、Enter=確定、**Esc / Ctrl+C / Ctrl+D=取消**（confirm と揃える）。他は無視。**ナビは純関数 `picker_step` に分離し golden test**（`picker_step_navigation`）。
 - **候補解決**: trait `available_models` / `available_efforts` → `common::resolve_option_list`。優先順位・実行シェル・失敗時挙動は §11.4。取得コマンドは**ピッカーを開く時だけローカル実行**（起動時に走らせない。サーバ書き込み・承認フローと無関係）。
-- **model 組み込み既定（`MODEL_DEFAULTS`、§11.4）**: 動的取得は断念して静的リストを同梱（codex/copilot/cursor/gemini/qwen いずれも「stdout 1 行 1 モデル」の非対話一覧コマンドを持たない。copilot は未解決 Issue #700）。best-effort で**更新にはリリースが必要**。ユーザは `[ai.<backend>].models` で上書き可。
+- **model 組み込み既定（`MODEL_DEFAULTS`、§11.4）**: 動的取得は断念して静的リストを同梱（codex/copilot/cursor/gemini/qwen いずれも「stdout 1 行 1 モデル」の非対話一覧コマンドを持たない。copilot は未解決 Issue #700。**claude も同様で `--list-models` 相当が無い** — `--model` help は `fable`/`opus`/`sonnet` 等のエイリアスか `claude-fable-5` 等の正式名を渡せと言うだけ）。best-effort で**更新にはリリースが必要**。ユーザは `[ai.<backend>].models` で上書き可。**claude の `MODEL_DEFAULTS` だけは陳腐化対策として先頭にエイリアス（`default`/`opus`/`sonnet`/`haiku`/`fable`）を並べる**: claude 側が常に最新世代へ解決するので新モデルが出ても更新不要。後半の正式名（`claude-opus-5` 等）は「今どの世代か」を具体指定したい人向けの best-effort スナップショットで、これのみリリース更新対象（2026-08 導入）。
 - **`/model` `/effort` ハンドラ（`run_option_picker`）は常に `Some(...)` を返す**（None だと通常 AI プロンプト扱いになる）。引数なし=候補解決 → 空なら hint / 非空ならピッカー（末尾に `(default)` 疑似エントリ = 選べばクリア）、`-`/`clear`=クリア、その他=**検証せず set**（一覧外の値も許可）。取消時は変更しない。
 
 ### 15.13 Windows ネイティブ対応（platform 層 / term）
