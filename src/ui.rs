@@ -1090,12 +1090,23 @@ fn show_minibuffer(
     // 最大ミニバッファ行数: 端末高さの半分、かつ1以上
     let max_rows = (rows / 2).max(1);
 
-    // DSR (\x1b[6n) で現在の cursor 位置を取得して、画面下端かどうかを動的判定する。
-    // 応答が来ない端末では was_at_bottom = false の安全側 fallback (= 入口 \n を
+    // 現在の cursor 位置を取得して、画面下端かどうかを動的判定する。
+    // Windows は Console API (`term::cursor_position`) を優先する: DSR は応答が
+    // stdin 経由で届くため、win32-input-mode 環境で応答の断片が minibuffer 入力に
+    // 混入したりタイムアウトで fallback に落ちたりする (fallback だと conpty_sync の
+    // anchor が不正確になり再同期が効かない)。Unix は従来どおり DSR (\x1b[6n)。
+    // どちらも取れない端末では was_at_bottom = false の安全側 fallback (= 入口 \n を
     // 出さない / 終了時 cursor を rows 行目に置く)。
-    let (saved_row, saved_col) =
-        crate::term::query_cursor_position_dsr(stdout).unwrap_or((rows, 1));
+    let (saved_row, saved_col) = crate::term::cursor_position()
+        .or_else(|| crate::term::query_cursor_position_dsr(stdout))
+        .unwrap_or((rows, 1));
     let was_at_bottom = saved_row >= rows;
+
+    // Windows ConPTY 再同期用の anchor (SPEC § 15.8): この瞬間は直前まで PTY 出力を
+    // 無加工表示していたため、実 cursor == ConPTY の内部 cursor。ここから先の
+    // aish 直接描画 (minibuffer / AI 応答 / Exec? 確認) で生じる行ズレを、
+    // conpty_sync::resync がこの位置を基準に合わせ直す (Unix では未使用)。
+    crate::conpty_sync::set_anchor(saved_row, saved_col);
 
     // 画面下端のときだけ scroll 退避で空き行を確保。stdout 専用 LF: PTY には送らない。
     // 画面上半分のときは何もしない (上端を削らない)。
@@ -1207,8 +1218,10 @@ fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &st
                 show_minibuffer(&mut stdout, tx, input_bg, aish_label);
                 return;
             }
-            // フォーカスイベント (ESC[I / ESC[O) は破棄 (従来どおり TUI に流さない)
-            Tok::FocusIn | Tok::FocusOut => {}
+            // フォーカスイベント (ESC[I / ESC[O) は破棄 (従来どおり TUI に流さない)。
+            // win32-input-mode の修飾キー単体イベントも破棄: 転送すると Ctrl+/ エントリ時に
+            // down だけが PTY へ届き、子シェルが「Ctrl 押しっぱなし」になる (Tok::Win32Modifier)。
+            Tok::FocusIn | Tok::FocusOut | Tok::Win32Modifier => {}
             // それ以外は元バイト列をそのまま PTY へ (Ctrl+C / Enter / 矢印 / 文字すべて raw)
             _ => {
                 let _ = tx.send(InputEvent::PtyData(ev.raw));

@@ -58,6 +58,14 @@ pub enum Tok {
     /// フォーカス in/out (`ESC [ I` / `ESC [ O`)。
     FocusIn,
     FocusOut,
+    /// win32-input-mode の修飾キー単体イベント (Ctrl/Shift/Alt/Win 等の down/up、文字なし)。
+    /// passthrough は **破棄** し PTY へ転送しない: aish がキーを消費するモード境界
+    /// (Ctrl+/ のエントリ、確認プロンプト等) では down だけ転送され up が aish 側の
+    /// 読み取りループに飲まれて「子シェルが Ctrl 押しっぱなし」の状態に陥り、以後の
+    /// plain な ESC / \r (kill_line / refresh_prompt) が Ctrl 修飾扱いで無視される
+    /// (2026-08 実測、SPEC § 15.13)。文字キーのシーケンスは自身の Cs フィールドで
+    /// 修飾状態を運ぶため、修飾キー単体イベントを落としても子の解釈は壊れない。
+    Win32Modifier,
     /// bracketed paste 開始 / 終了 (`ESC [ 200 ~` / `ESC [ 201 ~`)。
     /// minibuffer はこの間の改行を送信ではなくバッファ挿入 (複数行入力) として扱う。
     PasteStart,
@@ -197,7 +205,9 @@ fn classify_csi(params: &[u8], final_byte: u8) -> Tok {
 ///
 /// key-down (Kd != 0) だけ `Some(Tok)` を返す。key-up と解釈不能は `None` を返し、呼び出し側の
 /// `EscSeq` フォールバックに委ねる (全 tok 消費者が `EscSeq` を無視し、passthrough は raw を送る
-/// ので 1 キー = down/up 2 連でも二重入力にならず down/up 整合も保たれる → 新 variant 不要)。
+/// ので 1 キー = down/up 2 連でも二重入力にならず down/up 整合も保たれる)。
+/// **例外: 修飾キー単体イベントは down/up とも `Tok::Win32Modifier`** で、passthrough が
+/// 破棄して PTY へ転送しない (理由は `Tok::Win32Modifier` のコメント参照)。
 fn classify_win32_input_mode(params: &[u8]) -> Option<Tok> {
     let s = std::str::from_utf8(params).ok()?;
     // 各フィールドを数値化 (空は 0 = win32-input-mode の省略既定)。非数値が混じる = win32 でない
@@ -215,6 +225,14 @@ fn classify_win32_input_mode(params: &[u8]) -> Option<Tok> {
     let uc = fields[2];
     let kd = fields[3];
     let cs = fields.get(4).copied().unwrap_or(0);
+
+    // 修飾キー単体イベント (down/up とも) は Win32Modifier として破棄対象にする
+    // (Tok::Win32Modifier のコメント参照。kd 判定より先: down も転送しない)。
+    // VK: 0x10-0x12=Shift/Ctrl/Alt, 0x14=CapsLock, 0x5B/0x5C=Win,
+    //     0x90/0x91=NumLock/ScrollLock, 0xA0-0xA5=左右個別の Shift/Ctrl/Alt。
+    if matches!(vk, 0x10..=0x12 | 0x14 | 0x5B | 0x5C | 0x90 | 0x91 | 0xA0..=0xA5) {
+        return Some(Tok::Win32Modifier);
+    }
 
     // key-up は無視 (down だけ Tok 化)。
     if kd == 0 {
@@ -734,6 +752,27 @@ mod tests {
     fn win32_key_up_is_ignored() {
         // key-up (Kd=0) は Tok を生まず EscSeq に落ちる (二重入力防止)。
         assert_eq!(decode_all(b"\x1b[65;30;97;0;0;1_"), vec![Tok::EscSeq]);
+    }
+
+    #[test]
+    fn win32_modifier_only_events_are_dropped() {
+        // 修飾キー単体イベントは down/up とも Win32Modifier (passthrough が破棄)。
+        // 実測: Ctrl+/ 押下時に Windows Terminal / conhost が送る Ctrl 単体 down
+        // (Vk=17, uChar=0)。転送すると子シェルが Ctrl 押しっぱなしになる (§ 15.13)。
+        assert_eq!(
+            decode_all(b"\x1b[17;29;0;1;24;1_"),
+            vec![Tok::Win32Modifier]
+        ); // Ctrl down
+        assert_eq!(decode_all(b"\x1b[17;29;0;0;0;1_"), vec![Tok::Win32Modifier]); // Ctrl up
+        assert_eq!(
+            decode_all(b"\x1b[16;42;0;1;16;1_"),
+            vec![Tok::Win32Modifier]
+        ); // Shift down
+        assert_eq!(decode_all(b"\x1b[18;56;0;1;2;1_"), vec![Tok::Win32Modifier]); // Alt down
+        assert_eq!(
+            decode_all(b"\x1b[162;29;0;1;8;1_"),
+            vec![Tok::Win32Modifier]
+        ); // LCtrl down
     }
 
     #[test]

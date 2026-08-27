@@ -94,6 +94,7 @@ impl PtyHandler {
     }
 
     pub fn write(&mut self, data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+        crate::debug_pty_write(data);
         self.writer.write_all(data)?;
         Ok(())
     }
@@ -137,6 +138,14 @@ impl PtyHandler {
     /// 返す (呼び出し側の `let _` / `?` 使い分けを保つため。消去側を `?` にしないこと)。
     pub fn refresh_prompt(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let _ = self.write(Self::KILL_LINE_BYTES);
+        // Windows: ESC と Enter (\r) が子 ConPTY に 1 バーストで届くと、VT 入力
+        // パーサが `ESC \r` を Alt+Enter として解釈し (ESC prefix = Alt modifier)、
+        // PSReadLine が両方を無視する = 打ちかけ消去もプロンプト再表示も起きない
+        // (2026-08 実測。到着タイミング依存で発生したりしなかったりする race)。
+        // 書き込みを時間で分離し、ESC を単独キーとして確定させてから Enter を送る。
+        if cfg!(windows) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
         self.write(&[Self::ENTER_BYTE])
     }
 

@@ -178,6 +178,10 @@ impl AiConversation<'_> {
             }
         }
 
+        // Windows ConPTY 再同期: 対話中に描いた AI 応答等を anchor 行より上へ退避
+        // してから refresh する。しないと refresh のプロンプト再描画 / 打ちかけ消去
+        // (絶対座標) が AI 応答の行に当たって上書きする (SPEC § 15.8 Bug 2)。
+        crate::conpty_sync::resync()?;
         // AI対話終了後、シェルのプロンプトを再表示させる。
         // 提案コマンドを1つも実行しなかった場合 (全拒否 / 提案なし) は
         // 初回実行直前の kill_line を通っていないため、ユーザが Ctrl+/ 前に
@@ -185,7 +189,10 @@ impl AiConversation<'_> {
         // 消去し、打ちかけの勝手な実行を防ぐ (実行済み経路では行が空なので no-op)。
         self.pty.refresh_prompt()?;
         thread::sleep(PROMPT_REFRESH_WAIT);
-        // 先頭の改行を表示からだけ除去してプロンプトだけ見せる (記録は完全)
+        // 先頭の改行を表示からだけ除去してプロンプトだけ見せる (記録は完全)。
+        // Windows では除去しない: resync 後の ConPTY は anchor 行の次からプロンプトを
+        // 描く前提で行を数えており、先頭の \r\n を表示から畳むと実画面だけ 1 行
+        // 上にずれて以降の絶対座標描画が全て 1 行ずれる (off-by-one 再発)。
         pty_drain::drain_pty(
             self.pty_rx,
             self.ring_buffer,
@@ -193,7 +200,7 @@ impl AiConversation<'_> {
             pty_drain::DrainOpts {
                 display: pty_drain::DrainDisplay::Always,
                 flush_each_chunk: true,
-                skip_leading_newline: true,
+                skip_leading_newline: cfg!(unix),
                 ..Default::default()
             },
         )?;
@@ -276,6 +283,13 @@ impl AiConversation<'_> {
                 ConfirmDecision::Run => {}
             }
 
+            // Windows ConPTY 再同期 (SPEC § 15.8): aish が Exec? 確認や AI 応答を
+            // 直接描画した分だけ実画面が ConPTY の内部モデルから行ズレしている。
+            // コマンドを送ると PSReadLine のエコー再描画がモデル基準の絶対座標で
+            // 届き aish の出力を上書きするため、送信前に aish が描いた行を anchor
+            // 行より上へ退避して cursor を合わせ直す (Unix では常に no-op)。
+            let display_scrolled = crate::conpty_sync::resync()?;
+
             // 最初に実行する AI 提案コマンドの直前で、bash の打ちかけ
             // 入力を消去する。後続コマンドは前のコマンドが完了して bash
             // プロンプトに戻った状態で送られるので、追加不要。
@@ -296,8 +310,31 @@ impl AiConversation<'_> {
             // に挟むと ESC は単独キーとして打ち切られ、後続のコマンド文字列は
             // 新しい行から送られるので衝突しない。kill_line で消去済みの空行に
             // 対する `\n` は空 Enter (無害) として処理される。
-            if executed.is_empty() {
+            // resync が実画面をスクロールした場合 (Windows で aish が何か描いた後)、
+            // 表示上のシェルプロンプト行も上へ動いているため、初回以外でも
+            // refresh_prompt で新しいプロンプトを描かせてから送る (エコーが
+            // 「プロンプトの無い行」に浮くのを防ぐ)。Unix では resync が常に
+            // false なので従来どおり初回のみ。
+            if executed.is_empty() || display_scrolled {
                 self.pty.refresh_prompt()?;
+                if cfg!(windows) {
+                    // Windows: refresh (ESC+\r) と直後のコマンド文字列が 1 バーストで
+                    // 届くと、PSReadLine/ConPTY が空 Enter のプロンプト再描画を出さず、
+                    // コマンド echo が旧プロンプト行の続き (プロンプトの無い行) に相対
+                    // 描画される (2026-08 実測)。プロンプト描画を待って表示してから
+                    // コマンドを送る。Unix (bash) は相対 redisplay なので不要。
+                    thread::sleep(KILL_LINE_REDISPLAY_WAIT);
+                    pty_drain::drain_pty(
+                        self.pty_rx,
+                        self.ring_buffer,
+                        &mut io::stdout(),
+                        pty_drain::DrainOpts {
+                            display: pty_drain::DrainDisplay::Always,
+                            flush_each_chunk: true,
+                            ..Default::default()
+                        },
+                    )?;
+                }
             }
 
             // ユーザが承認したコマンドをそのまま PTY に送る。ラップしない。
@@ -470,6 +507,10 @@ fn wait_for_command_completion(
             debug_log(&format!(
                 "exec end: chunks={chunk_count} interrupted={interrupted}"
             ));
+            // PTY 出力を無加工表示し終えてプロンプトに戻った今この瞬間は
+            // 実 cursor == ConPTY の内部 cursor。次の aish 直接描画 (follow-up の
+            // AI 応答や次コマンドの Exec? 確認) 後の再同期に備えて anchor を更新する。
+            crate::conpty_sync::capture_anchor();
             return Ok(if interrupted {
                 CommandWait::Interrupted
             } else {

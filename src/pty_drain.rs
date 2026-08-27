@@ -26,6 +26,10 @@ pub struct DrainOpts<'a> {
     /// 最初のチャンク先頭の連続 \r\n を「表示からだけ」除去する。記録は完全な
     /// data のまま。AI 対話終了後のプロンプト refresh で先頭改行を畳む用。
     pub skip_leading_newline: bool,
+    /// 吸い出した生チャンクをそのまま追記する捕獲バッファ (表示有無と無関係)。
+    /// Windows ローカル起動の初期バースト解析 (`conpty_sync::startup_burst_is_clean`)
+    /// と、クリーンでなかった場合のフォールバック再表示に使う。
+    pub capture: Option<&'a mut Vec<u8>>,
     /// コマンド完了の passive 検出へ流す sniffer。
     pub sniffer: Option<&'a mut PromptSniffer>,
     /// AISH_DEBUG 用の通算チャンク数。最初の 3 チャンクを debug_log する。
@@ -49,6 +53,7 @@ pub fn drain_pty(
         display,
         flush_each_chunk,
         skip_leading_newline,
+        mut capture,
         mut sniffer,
         mut debug_chunk_count,
     } = opts;
@@ -86,6 +91,9 @@ pub fn drain_pty(
             if flush_each_chunk {
                 out.flush()?;
             }
+        }
+        if let Some(cap) = capture.as_deref_mut() {
+            cap.extend_from_slice(&data);
         }
         ring_buffer.append(&data);
         if let Some(s) = sniffer.as_deref_mut() {
@@ -171,6 +179,26 @@ mod tests {
         // 記録は trim 前の data (先頭改行が残る)。\r が消えるのは RingBuffer::append
         // 内部の ANSI strip の既存仕様で、skip_leading_newline の除去とは無関係。
         assert_eq!(recorded(&rb), "\n\nprompt$ \nrest");
+    }
+
+    #[test]
+    fn capture_accumulates_raw_chunks_even_when_hidden() {
+        let rx = channel_with(&[b"\x1b[2J\x1b[H", b"PS C:\\> "]);
+        let mut rb = RingBuffer::new();
+        let mut out: Vec<u8> = Vec::new();
+        let mut cap: Vec<u8> = Vec::new();
+        drain_pty(
+            &rx,
+            &mut rb,
+            &mut out,
+            DrainOpts {
+                capture: Some(&mut cap),
+                ..Default::default() // display: Hidden
+            },
+        )
+        .unwrap();
+        assert!(out.is_empty());
+        assert_eq!(cap, b"\x1b[2J\x1b[HPS C:\\> ");
     }
 
     #[test]

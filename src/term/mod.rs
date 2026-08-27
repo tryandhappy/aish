@@ -21,6 +21,16 @@ mod windows;
 #[cfg(windows)]
 pub use windows::*;
 
+/// 実端末の現在 cursor 位置 (row, col。1 始まり、ビューポート相対) を返す。
+/// Windows: Console API (`GetConsoleScreenBufferInfo`) で stdin を消費せず即時取得
+/// (conpty_sync の再同期用。DSR と違い応答待ちやユーザ入力との混線がない)。
+/// Unix: 常に None (ConPTY の二重画面モデル問題が存在せず再同期不要のため、
+/// conpty_sync を no-op にする意図的なスタブ。unix.rs は純移動維持のため触らない)。
+#[cfg(unix)]
+pub fn cursor_position() -> Option<(u16, u16)> {
+    None
+}
+
 /// 端末リサイズ通知フラグ。
 /// unix: SIGWINCH handler が立てる / windows: 入力ポンプの WINDOW_BUFFER_SIZE_EVENT が立てる。
 static RESIZE_RECEIVED: AtomicBool = AtomicBool::new(false);

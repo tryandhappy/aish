@@ -146,6 +146,24 @@ pub fn terminal_size() -> (u16, u16) {
     (24, 80)
 }
 
+/// 実端末の現在 cursor 位置 (row, col。1 始まり、ビューポート相対) を返す。
+/// conpty_sync の再同期 (anchor 記録 / ずれ量計算) 用。DSR (`\x1b[6n`) と違い
+/// stdin を消費しないため、ユーザのキー入力と混線しない。
+pub fn cursor_position() -> Option<(u16, u16)> {
+    unsafe {
+        let mut info: CONSOLE_SCREEN_BUFFER_INFO = std::mem::zeroed();
+        if GetConsoleScreenBufferInfo(stdout_handle(), &mut info) == 0 {
+            return None;
+        }
+        let row = info.dwCursorPosition.Y - info.srWindow.Top + 1;
+        let col = info.dwCursorPosition.X - info.srWindow.Left + 1;
+        if row < 1 || col < 1 {
+            return None;
+        }
+        Some((row as u16, col as u16))
+    }
+}
+
 /// 入力ポンプの状態。KEY_EVENT を UTF-8 化した未消費バイトを保持する。
 struct Pump {
     queue: VecDeque<u8>,

@@ -1,5 +1,6 @@
 mod ai;
 mod config;
+mod conpty_sync;
 mod conversation;
 mod input;
 mod input_gate;
@@ -23,6 +24,13 @@ use std::time::Duration;
 /// 子プロセス死亡検出後、logout メッセージ等の残り出力が pty_rx に届くのを待つ時間。
 /// (conversation.rs の完了待ちと main loop の終了 drain で共用)
 const FINAL_DRAIN_WAIT: Duration = Duration::from_millis(50);
+
+/// Windows ローカル起動処理: 初期バースト / 空 Enter 注入出力の「出そろった」判定静音時間。
+const STARTUP_BURST_QUIET: Duration = Duration::from_millis(300);
+/// Windows ローカル起動処理: 初期バースト待ちの上限 (シェルが遅くても起動を止めない)。
+const STARTUP_BURST_TIMEOUT: Duration = Duration::from_secs(4);
+/// Windows ローカル起動処理: 空 Enter 注入の出力待ち上限。
+const STARTUP_INJECT_TIMEOUT: Duration = Duration::from_millis(1500);
 
 struct AishArgs {
     config_path: Option<String>,
@@ -256,6 +264,20 @@ pub(crate) fn debug_pty(data: &[u8]) {
     }
 }
 
+/// AISH_DEBUG_PTY=1 のとき、aish が PTY (子シェル) へ **書いた** バイト列を escape して
+/// stderr に出す (`debug_pty` の書き込み側。読み書き両方向を突き合わせて
+/// 「送ったキーが子に届いた形」を実測する用途。win32-input-mode 修飾キー転送の
+/// 調査 (§ 15.13) で使用)。
+pub(crate) fn debug_pty_write(data: &[u8]) {
+    if debug_pty_enabled() {
+        eprintln!(
+            "[aish-pty-w {} bytes] {}",
+            data.len(),
+            debug_bytes(data, 4096)
+        );
+    }
+}
+
 /// `/model` `/effort` の共通処理。
 /// - `value == Some("-")` / `Some("clear")` → クリア。
 /// - `value == Some(other)` → その値を set (検証せずヒントのみ)。
@@ -411,6 +433,134 @@ struct ExitInfo {
     backend_name: String,
 }
 
+/// Windows ローカルシェル起動時の ConPTY 初期バースト処理 (SPEC § 15.8)。
+///
+/// ConPTY は spawn 直後に全画面クリア + 初回プロンプト (`\x1b[?25l\x1b[2J\x1b[m\x1b[H`
+/// に続く `PS C:\...>`) を emit するため (2026-08 実測)、spawn 前に描いたバナーは
+/// 必ず消える。ここでは初期バーストを表示せずに吸収し、クリーンな形 (プロンプト
+/// 1 行だけ) なら:
+///   1. win32-input-mode 等の端末状態シーケンスだけ実端末へ転送し、
+///   2. 実画面を全画面 LF スクロールで scrollback へ退避して原点からバナーを描き、
+///   3. バナー行数ぶんの空 Enter (`\r`) を子シェルへ送って ConPTY frame 側の
+///      プロンプト行をバナーの下の行まで進め (出力は非表示・記録のみ)、
+///   4. 最後にもう 1 回 `\r` を送り、そのプロンプト再表示だけを画面に流す
+///      (main loop の drain が表示する。実測でこの出力は相対 `\r\n` + プロンプト)。
+///
+/// これで ConPTY の絶対座標とバナー入りの実画面が行単位で一致し、以降の
+/// パススルーは無加工でよい (バナーは上書きもスクロールアウトもされない)。
+///
+/// 空 Enter は `refresh_prompt` が常用する `\r` と同じ「入力行が空のときの無害な
+/// 改行」で、履歴にも残らずコマンドも実行しない (ローカルシェル限定。リモートには
+/// 送らないため SSH 経路ではこの処理自体を呼ばない)。
+///
+/// フォールバック: バーストに profile 出力等の複数行テキストが混ざる場合は、
+/// バナー描画 → バースト全体をそのまま表示 (= 従来動作の見え方) に切り替える。
+/// バーストが 4 秒来ない場合もバナーだけ描いて通常フローへ戻る。
+fn windows_local_startup(
+    pty: &mut pty_handler::PtyHandler,
+    pty_rx: &mpsc::Receiver<Vec<u8>>,
+    ring_buffer: &mut ring_buffer::RingBuffer,
+    print_banner: &dyn Fn(),
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::Instant;
+
+    // 初期バーストを表示せず吸収する (記録は ring_buffer へ、生バイトは captured へ)。
+    let mut captured: Vec<u8> = Vec::new();
+    let deadline = Instant::now() + STARTUP_BURST_TIMEOUT;
+    let mut last_output: Option<Instant> = None;
+    loop {
+        let got = pty_drain::drain_pty(
+            pty_rx,
+            ring_buffer,
+            &mut io::stdout(),
+            pty_drain::DrainOpts {
+                capture: Some(&mut captured),
+                ..Default::default() // display: Hidden
+            },
+        )?;
+        if got {
+            last_output = Some(Instant::now());
+        }
+        if let Some(t) = last_output {
+            if t.elapsed() >= STARTUP_BURST_QUIET {
+                break;
+            }
+        }
+        if Instant::now() >= deadline || !pty.is_alive() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    let mut stdout = io::stdout();
+    if captured.is_empty() {
+        // 何も来ないまま timeout / 子プロセス死亡: バナーだけ描いて通常フローへ。
+        print_banner();
+        return Ok(());
+    }
+    if !conpty_sync::startup_burst_is_clean(&captured) {
+        // profile 出力等が混ざる環境: バナー → バーストをそのまま表示 (従来動作)。
+        // この場合バナーはバースト内の全画面クリアで消える (既知の劣化モード)。
+        print_banner();
+        stdout.write_all(&captured)?;
+        stdout.flush()?;
+        return Ok(());
+    }
+
+    // 端末状態シーケンス (win32-input-mode / フォーカス通知 / タイトル OSC) は転送する。
+    stdout.write_all(&conpty_sync::filter_terminal_state(&captured))?;
+    // 実画面の内容 (親シェルの画面) を全画面 LF スクロールで scrollback へ退避し、
+    // 原点からバナーを描く (ConPTY の 2J と違い内容を破壊しない)。
+    let (rows, _) = ui::terminal_size();
+    write!(stdout, "\x1b[{rows};1H")?;
+    for _ in 0..rows {
+        stdout.write_all(b"\n")?;
+    }
+    write!(stdout, "\x1b[H")?;
+    stdout.flush()?;
+    print_banner();
+
+    // バナーの実行数 (折り返し込み) = 現在 cursor 行 - 1。取得できなければ注入なしで
+    // 通常フローへ (バナーは次の絶対座標描画で消え得るが起動は続行する)。
+    let banner_rows = match crate::term::cursor_position() {
+        Some((row, _)) => row.saturating_sub(1),
+        None => {
+            pty.write(b"\r")?;
+            return Ok(());
+        }
+    };
+
+    // ConPTY frame のプロンプト行をバナーの下まで進める空 Enter 注入 (出力は非表示)。
+    if banner_rows > 0 {
+        pty.write("\r".repeat(banner_rows as usize).as_bytes())?;
+        let inject_deadline = Instant::now() + STARTUP_INJECT_TIMEOUT;
+        let mut last_output: Option<Instant> = None;
+        loop {
+            if pty_drain::drain_pty(
+                pty_rx,
+                ring_buffer,
+                &mut io::stdout(),
+                pty_drain::DrainOpts::default(), // Hidden: 記録のみ
+            )? {
+                last_output = Some(Instant::now());
+            }
+            if let Some(t) = last_output {
+                if t.elapsed() >= STARTUP_BURST_QUIET {
+                    break;
+                }
+            }
+            if Instant::now() >= inject_deadline || !pty.is_alive() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    // 最後の 1 回だけプロンプト再表示を画面に流す (main loop の drain が表示する)。
+    pty.write(b"\r")?;
+    Ok(())
+}
+
 fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
     // 二重起動防止 (nested only): aish が起動した子シェルには AISH_PID=<aish_pid> を渡すため、
     // その子シェル (またはその子孫) から aish を再起動すると環境変数を継承してこのチェックに当たる。
@@ -505,17 +655,25 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
     // 起動バナー: 1 度だけ画面上部に表示する (status bar は廃止)。
     // backend ごとに色を変える 2 行 ASCII アート + バージョン・モデル・effort・キーヒント。
     // model / effort 未指定時はその欄を省略する。
-    // **PTY spawn より前に描画する**: Windows の ConPTY は spawn 時点のカーソル位置を基準に
-    // 子シェルの描画をアンカーするため、spawn 後にバナーを出すと子の初回プロンプト(絶対位置
-    // 指定)がバナーを上書きする。先に描いてカーソルをバナー下へ進めてから spawn する。
+    // **Unix / SSH では PTY spawn より前に描画する**: spawn 後に出すと子の初回描画と
+    // 交錯するため。**Windows のローカルシェルでは spawn 後の初期バースト処理
+    // (windows_local_startup) の中で描画する**: ConPTY が spawn 直後に全画面クリア
+    // (\x1b[2J\x1b[H) を emit するため (2026-08 実測)、spawn 前に描いたバナーは
+    // 必ず消える。バーストを吸収してからバナーを再配置する (詳細は関数コメント)。
     let banner_model = ai_session.model();
     let banner_effort = ai_session.effort();
-    ui::print_startup_banner(
-        kind,
-        banner_model.as_deref(),
-        banner_effort.as_deref(),
-        env!("CARGO_PKG_VERSION"),
-    );
+    let print_banner = || {
+        ui::print_startup_banner(
+            kind,
+            banner_model.as_deref(),
+            banner_effort.as_deref(),
+            env!("CARGO_PKG_VERSION"),
+        );
+    };
+    let windows_local = cfg!(windows) && mode == Mode::Local;
+    if !windows_local {
+        print_banner();
+    }
 
     let mut pty = if mode == Mode::Local {
         pty_handler::PtyHandler::spawn_local_shell(pty_rows, term_cols)?
@@ -549,6 +707,12 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
             }
         }
     });
+
+    // Windows ローカルシェル: ConPTY の初期バースト (全画面クリア + 初回プロンプト) を
+    // 処理してバナーを描画する (関数コメント参照)。
+    if windows_local {
+        windows_local_startup(&mut pty, &pty_rx, &mut ring_buffer, &print_banner)?;
+    }
 
     // ターミナル側に "aish 動作中" を示す OSC を送る:
     //   OSC 0/1/2: ウィンドウ/タブ/アイコンタイトル
@@ -621,6 +785,9 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
         if ui::check_and_clear_sigwinch() {
             let (new_rows, new_cols) = ui::terminal_size();
             let _ = pty.resize(new_rows, new_cols);
+            // リサイズ後は ConPTY が全面再描画し行の対応が変わるため、
+            // 古い anchor での再同期を無効化する (次の minibuffer で再記録)。
+            conpty_sync::clear_anchor();
         }
 
         // PTY出力をチェック
@@ -682,6 +849,9 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                 // キャンセル直後に PassthroughEnded も届くが、両方で再 arm するのは
                 // 送信経路 (AiPrompt + PassthroughEnded) と同じ既存パターン。
                 let _rearm = gate.rearm_on_drop();
+                // Windows ConPTY 再同期: minibuffer が実画面をスクロールさせた分の
+                // 行ズレを合わせてから refresh する (Unix では no-op)。
+                let _ = conpty_sync::resync();
                 let _ = pty.refresh_prompt();
                 continue;
             }
@@ -702,6 +872,9 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                     &mut ring_buffer,
                 ) {
                     ui::print_slash_result(&msg);
+                    // Windows ConPTY 再同期: minibuffer + slash 結果表示の行ズレを
+                    // 合わせてから refresh する (Unix では no-op)。
+                    let _ = conpty_sync::resync();
                     // shell プロンプトをリフレッシュする。打ちかけ消去 + 改行の不可分な
                     // 組み合わせは PtyHandler::refresh_prompt に固定されている (信頼の根幹)。
                     let _ = pty.refresh_prompt();
