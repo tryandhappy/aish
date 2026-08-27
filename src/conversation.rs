@@ -367,11 +367,55 @@ impl AiConversation<'_> {
 }
 
 fn format_ai_error(kind: ai::BackendKind, error: &ai::AiError) -> String {
+    let text = error.to_string();
+    if let Some(tag) = claude_error_tag(&text) {
+        // claude CLI headless のマーカー付きエラーは種類名を見出しに出し、
+        // 種類が分かるものだけ具体的なヒントを添える (未知の種類は原文のみ)。
+        let head = format!("[{}] Claude Error: {tag}\n{text}", kind.as_str());
+        return match claude_error_hint(tag) {
+            Some(hint) => format!("{head}\n{hint}"),
+            None => head,
+        };
+    }
     format!(
-        "[{}] {}\nPlease check your login or usage limit.",
-        kind.as_str(),
-        error
+        "[{}] {text}\nPlease check your login or usage limit.",
+        kind.as_str()
     )
+}
+
+/// claude CLI headless が stderr 先頭に出すマーカー `[claude-code:<tag>] ...` から
+/// `<tag>` を抽出する (純関数)。例: `[claude-code:unrecognized_model] {"model":"Opus 5"}`。
+/// tag は snake_case 前提で、英数字と `_` 以外を含む場合はマーカーと見なさない
+/// (AI 応答の引用等での誤検出防止)。
+fn claude_error_tag(text: &str) -> Option<&str> {
+    const MARKER: &str = "[claude-code:";
+    let start = text.find(MARKER)? + MARKER.len();
+    let rest = &text[start..];
+    let tag = &rest[..rest.find(']')?];
+    (!tag.is_empty() && tag.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')).then_some(tag)
+}
+
+/// エラー種類 (tag) ごとのヒント文。部分一致でカテゴリ分けし、
+/// どれにも該当しない未知の種類は None (原文をそのまま見せる)。
+fn claude_error_hint(tag: &str) -> Option<&'static str> {
+    if tag.contains("model") {
+        Some(
+            "The model name was not recognized. Check /model in aish, \
+             or \"model\" in ~/.claude/settings.json.",
+        )
+    } else if ["auth", "login", "oauth", "api_key", "credential", "billing"]
+        .iter()
+        .any(|k| tag.contains(k))
+    {
+        Some("Authentication failed. Run `claude` once interactively to log in again.")
+    } else if ["limit", "quota", "overloaded"]
+        .iter()
+        .any(|k| tag.contains(k))
+    {
+        Some("Usage limit or rate limit reached. Wait for it to reset or check your plan.")
+    } else {
+        None
+    }
 }
 
 /// コマンド実行後に結果を AI へ自動問い合わせ (follow-up) するかの判定 (純関数、テスト対象)。
@@ -664,6 +708,79 @@ mod tests {
         assert_eq!(
             format_ai_error(ai::BackendKind::Claude, &error),
             "[claude] AI CLI failed: rate limit exceeded\nPlease check your login or usage limit."
+        );
+    }
+
+    #[test]
+    fn claude_error_tag_extracts_marker() {
+        assert_eq!(
+            claude_error_tag(r#"[claude-code:unrecognized_model] {"model":"Opus 5"}"#),
+            Some("unrecognized_model")
+        );
+        // 前置きテキストがあっても最初のマーカーを拾う。
+        assert_eq!(
+            claude_error_tag("AI CLI failed: [claude-code:rate_limit_reached] retry later"),
+            Some("rate_limit_reached")
+        );
+        // マーカーなし / 空 tag / 不正文字入り tag は None。
+        assert_eq!(claude_error_tag("plain error text"), None);
+        assert_eq!(claude_error_tag("[claude-code:] {}"), None);
+        assert_eq!(claude_error_tag("[claude-code:foo bar] x"), None);
+        assert_eq!(claude_error_tag("[claude-code:unterminated"), None);
+    }
+
+    #[test]
+    fn claude_error_hint_categorizes_known_tags() {
+        assert!(claude_error_hint("unrecognized_model")
+            .unwrap()
+            .contains("/model"));
+        assert!(claude_error_hint("model_not_found")
+            .unwrap()
+            .contains("/model"));
+        for tag in [
+            "authentication_failed",
+            "login_required",
+            "oauth_token_expired",
+            "invalid_api_key",
+            "billing_error",
+        ] {
+            assert!(claude_error_hint(tag).unwrap().contains("log in"), "{tag}");
+        }
+        for tag in [
+            "rate_limit_reached",
+            "usage_limit_reached",
+            "quota_exceeded",
+            "overloaded",
+        ] {
+            assert!(claude_error_hint(tag).unwrap().contains("limit"), "{tag}");
+        }
+        // 未知の種類はヒントなし (原文のみ表示)。
+        assert_eq!(claude_error_hint("mystery_error"), None);
+    }
+
+    #[test]
+    fn ai_error_message_shows_claude_error_kind_with_hint() {
+        let error = ai::AiError::NonZeroExit {
+            stderr: r#"[claude-code:unrecognized_model] {"model":"Opus 5","query_source":"sdk"}"#
+                .to_string(),
+        };
+        assert_eq!(
+            format_ai_error(ai::BackendKind::Claude, &error),
+            "[claude] Claude Error: unrecognized_model\n\
+             AI CLI failed: [claude-code:unrecognized_model] {\"model\":\"Opus 5\",\"query_source\":\"sdk\"}\n\
+             The model name was not recognized. Check /model in aish, or \"model\" in ~/.claude/settings.json."
+        );
+    }
+
+    #[test]
+    fn ai_error_message_shows_unknown_claude_error_kind_without_hint() {
+        let error = ai::AiError::NonZeroExit {
+            stderr: "[claude-code:mystery_error] details here".to_string(),
+        };
+        assert_eq!(
+            format_ai_error(ai::BackendKind::Claude, &error),
+            "[claude] Claude Error: mystery_error\n\
+             AI CLI failed: [claude-code:mystery_error] details here"
         );
     }
 }
