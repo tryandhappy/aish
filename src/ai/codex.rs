@@ -11,7 +11,15 @@ const EFFORT_DEFAULTS: &[&str] = &["minimal", "low", "medium", "high"];
 
 /// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort。更新はリリース必要。
 /// (codex 公式は ChatGPT ログイン時のモデル pin を非推奨。`/model -` で既定に戻せる。)
-const MODEL_DEFAULTS: &[&str] = &["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.2-codex"];
+/// 2026-08 現況: gpt-5.4/gpt-5.4-mini は 2026-08-31 に Codex から廃止 (→ 5.6-terra/5.6-luna)、
+/// gpt-5.2-codex は ChatGPT ログイン時すでに廃止。gpt-5.3-codex-spark は realtime coding preview。
+const MODEL_DEFAULTS: &[&str] = &[
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "gpt-5.3-codex-spark",
+];
 
 /// codex の自律エージェント挙動を無効化するための feature 一覧。
 /// `codex features list` で stable / experimental の tool 系をすべて落とす。

@@ -8,7 +8,9 @@ use crate::config::{AiConfig, LogConfig, OptionLists};
 const MAX_HISTORY_TURNS: usize = 8;
 
 /// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort。更新はリリース必要。
+/// 2026-08 現況: gemini-3.1-pro-preview がロールアウト中 (公式 docs で slug 確認済み)。
 const MODEL_DEFAULTS: &[&str] = &[
+    "gemini-3.1-pro-preview",
     "gemini-3-pro",
     "gemini-3-flash",
     "gemini-2.5-pro",

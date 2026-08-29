@@ -14,15 +14,19 @@ const ENV_API_TOKEN: &str = "CLOUDFLARE_API_TOKEN";
 /// model を env でも上書きできる (`/model` / `[ai].model` が無いときの既定)。
 const ENV_MODEL: &str = "CLOUDFLARE_MODEL";
 
-/// model 未指定時の既定。広く使える instruct モデル。`{message, commands}` の JSON
+/// model 未指定時の既定。軽量・高速な instruct モデル。`{message, commands}` の JSON
 /// 出力フォーマットに追従させたいなら `@cf/meta/llama-3.3-70b-instruct-fp8-fast` 等の
 /// 大きめモデルを `/model` で選ぶ。
-const DEFAULT_MODEL: &str = "@cf/meta/llama-3.1-8b-instruct";
+/// (旧既定 `@cf/meta/llama-3.1-8b-instruct` は 2026-08 現在 Cloudflare で Deprecated。)
+const DEFAULT_MODEL: &str = "@cf/zai-org/glm-4.7-flash";
 
 /// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort。更新はリリース必要。
+/// 2026-08 現況: llama-3.1-8b は Deprecated のため除去。gpt-oss-120b / glm-4.7-flash は
+/// Cloudflare changelog で追加確認済み。全一覧は developers.cloudflare.com/workers-ai/models/。
 const MODEL_DEFAULTS: &[&str] = &[
     "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-    "@cf/meta/llama-3.1-8b-instruct",
+    "@cf/openai/gpt-oss-120b",
+    "@cf/zai-org/glm-4.7-flash",
     "@cf/qwen/qwen2.5-coder-32b-instruct",
     "@cf/mistralai/mistral-small-3.1-24b-instruct",
 ];

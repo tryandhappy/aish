@@ -12,7 +12,9 @@ const EFFORT_DEFAULTS: &[&str] = &["low", "medium", "high"];
 
 /// `/model` ピッカーの組み込み既定 (config 未設定時)。agy は Gemini CLI の後継で
 /// Gemini 系モデルを使う。値は流動的なので best-effort (`agy models` で最新を確認)。更新はリリース必要。
+/// 2026-08 現況: gemini backend とミラー (slug 自体は未検証 — SPEC § 15.10)。
 const MODEL_DEFAULTS: &[&str] = &[
+    "gemini-3.1-pro-preview",
     "gemini-3-pro",
     "gemini-3-flash",
     "gemini-2.5-pro",

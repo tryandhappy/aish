@@ -342,7 +342,7 @@ backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
 
 候補解決の優先順位（`common::resolve_option_list`）: **static list 非空 > 取得コマンド > backend 組み込み既定**。取得コマンドはピッカーを開く時だけ実行。
 
-**組み込み既定**: effort は claude `low/medium/high`、codex `minimal/low/medium/high`、copilot `none/low/medium/high/xhigh/max`、他は無し（effort 非適用 or recipe 由来のみ）。model は全 native backend に同梱（各 `MODEL_DEFAULTS` const。例: claude `default/opus/sonnet/haiku/fable`（エイリアス先頭）+ `claude-opus-5/sonnet-5/…`（正式名スナップショット）、codex `gpt-5.5/...`、cursor `auto/composer-1/…`、antigravity `gemini-3-pro/gemini-3-flash/…`、grok `grok-4/grok-4-fast/…`）。値は best-effort で更新にはリリースが必要（§15.12）。generic は recipe 由来のみ。
+**組み込み既定**: effort は claude `low/medium/high`、codex `minimal/low/medium/high`、copilot `none/low/medium/high/xhigh/max`、他は無し（effort 非適用 or recipe 由来のみ）。model は全 native backend に同梱（各 `MODEL_DEFAULTS` const。例: claude `default/opus/sonnet/haiku/fable`（エイリアス先頭）+ `claude-opus-5/sonnet-5/…`（正式名スナップショット）、codex `gpt-5.6-sol/terra/luna/…`、cursor `auto/composer-2.5/…`、antigravity `gemini-3.1-pro-preview/gemini-3-pro/…`、grok `grok-4.6/grok-4.5/…`）。値は best-effort で更新にはリリースが必要（§15.12）。generic は recipe 由来のみ。
 
 #### `[ai.claude]`
 | キー | 既定値 | 説明 |
@@ -575,10 +575,10 @@ backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
 - **候補解決**: trait `available_models` / `available_efforts` → `common::resolve_option_list`。優先順位・実行シェル・失敗時挙動は §11.4。取得コマンドは**ピッカーを開く時だけローカル実行**（起動時に走らせない。サーバ書き込み・承認フローと無関係）。
 - **model 組み込み既定（`MODEL_DEFAULTS`、§11.4）**: 動的取得は断念して静的リストを同梱（codex/copilot/cursor/gemini/qwen いずれも「stdout 1 行 1 モデル」の非対話一覧コマンドを持たない。copilot は未解決 Issue #700。**claude も同様で `--list-models` 相当が無い** — `--model` help は `fable`/`opus`/`sonnet` 等のエイリアスか `claude-fable-5` 等の正式名を渡せと言うだけ）。best-effort で**更新にはリリースが必要**。ユーザは `[ai.<backend>].models` で上書き可。**陳腐化対策として、CLI 側に「最新へ解決するエイリアス」がある backend は先頭にそれを並べる**（2026-08 導入）。適用状況:
   - **claude**: 先頭に `default`/`opus`/`sonnet`/`haiku`/`fable`（claude が常に最新世代へ解決）。後半は `claude-opus-5` 等の best-effort スナップショット。
-  - **grok**: 先頭に `grok-4-latest`/`grok-4`（xAI docs 明記のエイリアス: `-latest`=最新版・素の名=最新 stable。4.x 系内は非陳腐化）。後半は tier 名スナップショット。
-  - **cursor**: 先頭の `auto` が「cursor が最新を自動選択」= 実質エイリアスなので既に非陳腐化（追加対応不要）。
+  - **grok**: **エイリアス撤回済み（2026-08）**。xAI の `<name>-latest` は modelname 単位でしか最新へ解決しない仕様で、xAI が `grok-4.5`/`grok-4.6` と modelname を改番したため `grok-4-latest` は 4.5/4.6 に解決されず陳腐化回避に効かなくなった。よって `grok-4-latest`/`grok-4`/`grok-4-fast`/`grok-code-fast-1`（いずれも現行 docs から消滅）を撤回し、`grok-4.6`/`grok-4.5`/`grok-4.3`/`grok-build-0.1` の best-effort スナップショット運用に戻した（更新はリリース対象）。
+  - **cursor**: 先頭の `auto` が「cursor が最新を自動選択」= 実質エイリアスなので既に非陳腐化。**なお 2026-08 版 `cursor-agent` は `cursor-agent models`（一覧取得サブコマンド）を持つが要 auth かつ出力形式未実測**のため組み込みの自動取得（`available_models` の取得コマンド）には採用せず、`config.toml.example` の `models_command` コメント例として提示するに留める（実測後に組み込み化を検討）。slug は dash 形式（`--help` 実例 `claude-opus-4-8`）。composer-2.5 は要実測。
   - **qwen**: `qwen3-coder-plus`/`flash` が Alibaba のローリング tier 名 = 実質エイリアス（追加対応不要）。
-  - **codex / copilot / gemini / antigravity / cloudflare / nvidia**: **最新解決エイリアスが存在しない**（codex は公式推奨が「model 未指定＝CLI の現行 default に任せる」＝ピッカーの `(default)` 疑似エントリで代替。gemini の `-latest` は experimental で本番非推奨のため既定にしない。copilot は Issue #700。REST 2 種はモデル ID をそのまま API へ渡すのでエイリアス概念なし）。よってこれらの `MODEL_DEFAULTS` は従来どおり best-effort スナップショットのままで、陳腐化回避は `(default)` エントリ / `models_command`（REST は `GET /v1/models`）/ リリース更新に委ねる。スナップショットのみリリース更新対象。
+  - **codex / copilot / gemini / antigravity / cloudflare / nvidia**: **最新解決エイリアスが存在しない**（codex は公式推奨が「model 未指定＝CLI の現行 default に任せる」＝ピッカーの `(default)` 疑似エントリで代替。2026-08-31 に `gpt-5.4`/`gpt-5.4-mini` が Codex から廃止されたためスナップショットを 5.6 系へ更新済み。gemini の `-latest` は experimental で本番非推奨のため既定にしない。copilot は 2026-04 以降 CLI に auto model selection があるが headless `--model auto` の可否が未実測でエイリアス採用は見送り。REST 2 種はモデル ID をそのまま API へ渡すのでエイリアス概念なし）。よってこれらの `MODEL_DEFAULTS` は best-effort スナップショットで、陳腐化回避は `(default)` エントリ / `models_command`（REST は `GET /v1/models`）/ リリース更新に委ねる。**cloudflare の `DEFAULT_MODEL` は旧既定 `@cf/meta/llama-3.1-8b-instruct` が Cloudflare で Deprecated になったため `@cf/zai-org/glm-4.7-flash` へ更新**（2026-08）。
 - **`/model` `/effort` ハンドラ（`run_option_picker`）は常に `Some(...)` を返す**（None だと通常 AI プロンプト扱いになる）。引数なし=候補解決 → 空なら hint / 非空ならピッカー（末尾に `(default)` 疑似エントリ = 選べばクリア）、`-`/`clear`=クリア、その他=**検証せず set**（一覧外の値も許可）。取消時は変更しない。
 
 ### 15.13 Windows ネイティブ対応（platform 層 / term）

@@ -8,11 +8,11 @@ use crate::config::{AiConfig, LogConfig, OptionLists};
 const MAX_HISTORY_TURNS: usize = 8;
 
 /// `/model` ピッカーの組み込み既定 (config 未設定時)。xAI の公式 Grok CLI (`grok`, x.ai/cli)。
-/// 値は流動的なので best-effort。xAI docs (docs.x.ai/developers/models) が
-/// 「`<name>-latest`=最新版 / 素の `<name>`=最新 stable 版へ解決するエイリアス」と明記しているため、
-/// claude と同じく先頭に **エイリアス**（`grok-4-latest` / `grok-4`）を並べる = 4.x 系内は陳腐化しない。
-/// 後半の tier 名は best-effort スナップショット (これのみ更新にリリースが要る)。
-const MODEL_DEFAULTS: &[&str] = &["grok-4-latest", "grok-4", "grok-4-fast", "grok-code-fast-1"];
+/// 値は流動的なので best-effort スナップショット (更新にリリースが要る)。
+/// xAI の `<name>-latest` エイリアスは modelname 単位でしか解決しない (grok-4-latest は 4.5/4.6 に
+/// ならない)。xAI が grok-4.5 / grok-4.6 と modelname を改番したためエイリアスは陳腐化回避に効かず、
+/// `grok-4-latest` は撤回してスナップショット運用に戻した (SPEC § 15.12)。
+const MODEL_DEFAULTS: &[&str] = &["grok-4.6", "grok-4.5", "grok-4.3", "grok-build-0.1"];
 
 /// xAI Grok CLI backend (`grok`、https://x.ai/cli、`--ai grok`)。
 ///

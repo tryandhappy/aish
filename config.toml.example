@@ -143,8 +143,8 @@
 # 付けない。`grok` はコミュニティ製 `@vibe-kit/grok-cli` (npm, 別ツール) とバイナリ名が衝突し
 # うるので、公式 CLI を使っているか `which -a grok` で確認すること。
 [ai.grok]
-# extra_args = []                                                # e.g. ["--model", "grok-4-fast"]
-# models = ["grok-4", "grok-4-fast", "grok-code-fast-1"]         # 省略時は組み込み既定
+# extra_args = []                                                # e.g. ["--model", "grok-4.6"]
+# models = ["grok-4.6", "grok-4.5", "grok-4.3"]                  # 省略時は組み込み既定
 
 # Cursor Agent CLI (`cursor-agent`). aish は `-p --output-format json --trust` で都度呼び出す。
 # --trust は headless モードで必須なので aish が常に自動で付与する (config からは指定不可)。
@@ -160,6 +160,7 @@
 # 起動時の `--model auto`) が必須。paid プランなら "sonnet-4" 等の named model を指定できる。
 [ai.cursor]
 # extra_args = []                                                # e.g. ["--model", "auto"] (paid plan なら不要)
+# models_command = "cursor-agent models"                         # 例: 動的取得 (要 auth。出力形式は要実測)
 # mode = "plan"                                                  # default: "plan" — "plan" (read-only) / "ask" (Q&A only) / "" (通常モード = 危険)
 # sandbox = ""                                                   # default: "" — "enabled" / "disabled" を cursor-agent --sandbox にそのまま渡す。defense-in-depth
 
@@ -175,7 +176,7 @@
 # モデル依存: {message, commands} の JSON 出力に追従できる大きめ instruct モデル
 # (例 @cf/meta/llama-3.3-70b-instruct-fp8-fast) を推奨。セクション名はハイフン形 (cloudflare-workers-ai) に注意。
 [ai.cloudflare-workers-ai]
-# models = ["@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/meta/llama-3.1-8b-instruct"]  # 省略時は組み込み既定
+# models = ["@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/zai-org/glm-4.7-flash"]  # 省略時は組み込み既定
 # models_command = ""                                            # 例: 動的取得 (1 行 1 候補)
 
 # NVIDIA NIM (`--ai nvidia`)。build.nvidia.com のホスト API (integrate.api.nvidia.com、

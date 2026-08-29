@@ -21,10 +21,11 @@ const DEFAULT_MODEL: &str = "meta/llama-3.3-70b-instruct";
 
 /// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort。更新はリリース必要。
 /// 全一覧は `GET /v1/models` (config の models_command 例を参照)。
+/// 2026-08 現況: nemotron-3.5-lightning (2026-08-11, slug 確認済み) を追加。
 const MODEL_DEFAULTS: &[&str] = &[
     "meta/llama-3.3-70b-instruct",
+    "nvidia/nemotron-3.5-lightning-30b-a3b",
     "nvidia/llama-3.3-nemotron-super-49b-v1.5",
-    "nvidia/llama-3.1-nemotron-ultra-253b-v1",
     "nvidia/nemotron-3-super-120b-a12b",
 ];
 

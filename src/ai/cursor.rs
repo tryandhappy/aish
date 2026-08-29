@@ -7,12 +7,16 @@ use crate::config::{AiConfig, LogConfig, OptionLists};
 
 /// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort。更新はリリース必要。
 /// (Free プランでは `auto` のみ受理。`/model -` で既定に戻せる。)
+/// 先頭 `auto` は cursor 側で最新へルーティングするエイリアス = 陳腐化しない。
+/// slug は dash 形式 (`cursor-agent --help` の実例 `claude-opus-4-8`)。composer-2.5 は要実測。
+/// `cursor-agent models` (要 auth) で一覧取得可能だが出力形式未実測のため組み込み自動取得はしない
+/// (config の `models_command` で任意設定は可能 — SPEC § 15.12)。
 const MODEL_DEFAULTS: &[&str] = &[
     "auto",
-    "composer-1",
-    "claude-sonnet-4.7",
+    "composer-2.5",
+    "claude-opus-4-8",
     "gpt-5.5",
-    "gemini-2.5-pro",
+    "gemini-3-pro",
 ];
 
 /// Cursor CLI (`cursor-agent`) backend。
