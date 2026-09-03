@@ -991,10 +991,17 @@ OTHER OPTIONS:
 
 KEYS (起動後):
     Ctrl+/                 aish プロンプトを開く (AI に質問)
-    Y / Enter              提案コマンドを実行
-    n                      この提案をスキップ
-    a                      残りの提案をすべて自動承認
-    Ctrl+C                 提案キャンセル / コマンド中断
+    Enter / Alt+Enter      aish プロンプトで送信 / 改行挿入 (ESC / Ctrl+C でキャンセル)
+    Up / Down              aish プロンプトの履歴を呼び出す (~/.aish/history に永続化)
+
+  提案コマンドの確認 (Exec? <cmd> [y/n/e/A/q]):
+    y / Space              このコマンドを実行
+    n / ESC                このコマンドをスキップ
+    e                      コマンドを編集し、再確認してから実行
+    A                      このコマンドを実行し、残りを自動承認
+    q                      残りを中止 (AI に結果を報告)
+    Enter                  残りがあれば A、最後のコマンドなら y
+    Ctrl+C / Ctrl+D        残りを中止 (AI に問わない) / 実行中は Ctrl+C でコマンド中断
 
 SLASH COMMANDS (aish プロンプトに入力):
     /help                  利用可能な slash command を表示
