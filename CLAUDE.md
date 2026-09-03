@@ -113,6 +113,7 @@ AI backends（§ 15.10）:
 - **push は別途ユーザに確認する**。
 - **タグ付け**: `git tag` + `git push --tags` で GitHub Action がリリース。`git push` は自動で行わない。
 - **リリースの既定チャネルは prerelease**。ユーザが「stable / 安定版」と明確に指示しない限り、新バージョンは prerelease（ハイフン付き識別子 or `gh release edit --prerelease --latest=false`）にする。安定版は明示要求時のみ（詳細は `/release` スキル § 1）。
+- **`cargo install --path .`（`~/.cargo/bin/aish` への配置）はしない**（`/release` スキル § 5 の install 提案も常に No）。ユーザ環境の実体は `/usr/local/bin/aish` で、`~/.cargo/bin/aish` と二重になるとデバッグでどちらが動いているか紛れて不便なため（ユーザ指示 2026-09）。ローカルに dev ビルドを入れて検証したい場合は `/usr/local/bin/aish` を上書き（`cargo build --release && sudo install -m 755 target/release/aish /usr/local/bin/aish`）する。
 
 ## 設定ファイル
 - `~/.aish/config.toml` (TOML)。`--config <path>` で変更可能。サンプルは `config.toml.example`。
