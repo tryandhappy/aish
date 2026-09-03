@@ -2,6 +2,7 @@ mod ai;
 mod config;
 mod conpty_sync;
 mod conversation;
+mod history;
 mod input;
 mod input_gate;
 mod mode;
@@ -581,6 +582,10 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
     term::install_resize_watch();
 
     let mut config = config::Config::load(args.config_path.as_deref())?;
+
+    // minibuffer (Ctrl+/) の ↑↓ 履歴を永続ファイルから復元する。入力スレッド
+    // spawn より前に一度だけ行う (§ 15.16)。
+    ui::init_prompt_history(history::init(&config.history));
 
     // `[[ai.providers]]` の registry を leak ベースで初期化。これ以降
     // `BackendKind::parse("generic:<name>")` が解決できるようになる。

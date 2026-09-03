@@ -31,6 +31,7 @@ CLI SSH + AI (Claude Code) ツール。クライアント側の Claude Code か�
 | `prompt_sniffer.rs` | シェルプロンプト復帰の passive 検出（終端文字学習つき） |
 | `vetted_command.rs` | AI 提案コマンドの制御文字検証 newtype (`VettedCommand`) |
 | `update.rs` | セルフアップデート (`--update`) |
+| `history.rs` | minibuffer プロンプト履歴の永続化（`~/.aish/history`。エンコード純関数 + `init`/`append`。§ 15.16） |
 | `ring_buffer.rs` | 1MB リングバッファ。ANSI 除去、backend 別差分送信、AI 注釈記録 (`record_ai_exchange`) |
 | `mode.rs` | `Local` / `Remote` の 2 モード定義 |
 
@@ -117,7 +118,7 @@ CLI SSH + AI (Claude Code) ツール。クライアント側の Claude Code か�
 | `Ctrl+B`/`←` / `Ctrl+F`/`→` | 1 文字左 / 右 |
 | `Ctrl+U` / `Ctrl+K` | カーソルより左 / 右を削除 |
 | `Ctrl+W` | 直前の単語（空白区切り）削除 |
-| `↑`/`↓` | 履歴ナビゲーション（新規入力は退避） |
+| `↑`/`↓` | 履歴ナビゲーション（新規入力は退避）。履歴は `~/.aish/history` に永続化され再起動後も残る（§ 15.16） |
 | `Delete` (`\x1b[3~`) | カーソル位置文字削除 |
 
 ### 5.3 ReadLineモード（確認プロンプト応答）
@@ -303,6 +304,15 @@ TOML 形式。未指定はデフォルト。サンプルは `config.toml.example
 |---|---|
 | `enabled` | `false` |
 | `path` | `~/.aish/logs/claude-code.log`（`~/` 展開） |
+
+### 11.3b `[history]`
+minibuffer（Ctrl+/）の ↑↓ プロンプト履歴の永続化（§ 15.16）。generic provider の `history_turns`（AI 内部会話履歴）とは無関係。
+
+| キー | 既定値 | 説明 |
+|---|---|---|
+| `enabled` | `true` | `false` でメモリ内のみ（従来動作） |
+| `path` | `~/.aish/history`（`~/` 展開） | `--config` に非連動。`[log].path` と同方針 |
+| `max_entries` | `1000` | 起動時に末尾 N 件を読み込む。`0` は無制限 |
 
 ### 11.4 `[ai]`
 | キー | 既定値 | 説明 |
@@ -618,3 +628,16 @@ Windows で「aish が直接 stdout に描いた行が、後続のコマンド�
 - **トレードオフ（許容済み）**: 注入した空 Enter のぶん ConPTY モデル側にはプロンプト行が並ぶ（実画面には出ない）ため、リサイズ等の全面再描画で画面上の aish 出力がそれに置き換わる劣化モードは従来同等。注入のプロンプト再表示は ring_buffer に記録されるので AI コンテキストに空プロンプト行が数行混ざる（無害・起動注入と同じ）。resync に静音待ち（quiet 120ms / 上限 1s）のレイテンシが加わる。リモート fallback は旧挙動どおり resync 時に画面がスクロールする。
 - **Windows ローカル起動バースト（`main::windows_local_startup`）**: ConPTY の初期全画面クリアで spawn 前バナーが必ず消えるため、Windows + ローカルシェルではバナーを後から描く。初期バーストを表示せず吸収（`DrainOpts::capture` で生バイトも捕獲）→ `conpty_sync::startup_burst_is_clean`（全画面クリア + プロンプト 1 行だけか）を判定 → クリーンなら: 端末状態シーケンスだけ転送（`filter_terminal_state`: `\x1b[?...h/l` と OSC を通しテキスト/CUP/ED 等を捨てる。win32-input-mode 要求 `\x1b[?9001h` を捨てると入力経路が変わるため）→ **バナーを現在の cursor 位置へインライン描画**（2026-08 変更。旧実装の「実画面を全画面 LF スクロールで退避して原点から描画」は起動のたびに画面全体がジャンプし scrollback に空白帯が残った — ユーザ要件「スクロール位置を変えない」で廃止）→ **実 cursor 行 − 1 個の空 Enter を子シェルへ注入**して ConPTY frame のプロンプト行（2J 後の 1 行目）を実画面のバナー下端まで進め（出力は非表示・記録のみ。空 Enter は入力行が空のときの無害な入力で、履歴にも残らない。**ローカルシェル限定 — リモートには送らない**）→ 最後にもう 1 回空 Enter を送りそのプロンプト再表示だけを表示する。これで初回プロンプトから ConPTY 座標と実画面が一致する。profile 出力等でバーストがクリーンでない場合はバナー描画 → バーストそのまま表示（従来動作 = バナーはクリアで消える）にフォールバック。バーストが 4 秒来ない場合もバナーだけ描いて通常フローへ。
 - **E2E 検証（2026-08）**: `portable_pty` で aish.exe を ConPTY 配下に起動し、fake generic backend（`cmd /c type fake.json`）で Ctrl+/ → 質問 → Y 承認 → コマンド実行 → 通常コマンドを駆動、出力を VT スクリーンモデルで再構成して修正前後を比較した。修正前: 対話終了後の通常コマンドのエコーが画面上部（ConPTY モデルの旧プロンプト行）に飛ぶ / バナー消失。修正後: 全要素が正しい行に描画され、会話履歴も scrollback に完全保存。**注入方式への変更時（2026-08）も同型のハーネス**（fake backend = stdin を読んで固定 JSON を返す自前 exe、`AISH_DEBUG_PTY` の read/write 両方向ダンプ併用）**で 4 ターン再検証**: 起動バナーはインライン描画で画面ジャンプなし、全ターンでコマンドエコー（絶対座標 CUP）が refresh のプロンプト行に一致、コンテンツが画面下端を超えて自然スクロールする飽和ケース（4 ターン目）でも一致。
+
+### 15.16 minibuffer プロンプト履歴の永続化（`history.rs`）
+
+minibuffer（Ctrl+/ の AI プロンプト入力）の ↑↓ 履歴を `~/.aish/history` に保存し、再起動後も復元する（2026-09）。従来はプロセス内 `PROMPT_HISTORY`（`OnceLock<Mutex<Vec<String>>>`、ui.rs）のみでセッションごとに消えていた。
+
+- **信頼の根幹には非関与**: PTY への書き込みはゼロ、stdout 描画も変更なし、ローカルファイル IO だけ。サーバ側には一切触れない。
+- **フォーマット不変条件**: 1 行 1 エントリのプレーンテキスト（bash HISTFILE 風で人間可読・grep 可）。プロンプトは複数行（Alt+Enter / bracketed paste）を含みうるので `encode_entry` で `\` → `\\` / 改行 → `\n`(2 文字) / `\r` → `\r` にエスケープしてから 1 行に畳む。`decode_entry` は逆変換で**決して失敗しない**（未知のエスケープは裸バックスラッシュごと文字どおり残す）。このエンコード規則は `history.rs` の純関数（`encode_entry`/`decode_entry`/`parse_history`/`serialize_history`/`needs_compaction`）だけが持ち、他所で書き換えない（golden test 対象）。将来メタデータが要れば JSONL 移行余地あり（serde_json は既存依存）だが現状は不要。
+- **書き込み**: 送信成功 & 隣接重複でない（既存の `history.last() != Some(&text)` 判定）ときだけ `append` で追記。行全体（エンコード + `\n`）を **1 回の `write` で書く**ことで複数 aish プロセスの追記が行内で混ざるのを防ぐ（`O_APPEND`）。**mutex を保持したままファイル IO しない**（ui.rs は lock 内で is_new 判定 → lock 外で `history::append`）。
+- **読み込み**: 起動時に一度だけ（`init`）。末尾 `max_entries` 件を返す。ファイル行数 > 2×max なら起動時に一度だけ末尾 max 件へ **同一ディレクトリ tmp + rename の原子置換で圧縮**（`update.rs` と同パターン）。read → rename の窓で他プロセスの追記 1 件が落ちうるが、履歴の best-effort 性質上許容する。セッション中の超過は放置（メモリはセッション寿命で有界）。**他プロセスの追記はライブ反映しない**（bash 同様、起動時読み込みのみ）。
+- **パーミッション**: Unix は**新規作成時のみ** 0600（`OpenOptionsExt::mode`）。プロンプトにパスワード等が入りうるため。既存ファイルの perms は触らない（bash 同様）。Windows はプロファイル ACL 任せ。
+- **失敗は全て silent**（`let _ =`。読めない・書けない・パーミッション）。best-effort 機能なので警告も出さない（`ai::common::write_log` と同方針）。`[history].enabled = false` でメモリ内のみ（従来動作）に戻せる。
+- **`--config <path>` に非連動**: 履歴パスは `[history].path` で独立指定（`[log].path` と同方針）。config ファイルの場所と履歴の場所は別概念のため。
+- **呼び出し点**: `main::run` の `Config::load` 直後、**入力スレッド spawn より前**に `ui::init_prompt_history(history::init(&config.history))` を一度だけ。`HISTORY_PATH`（`OnceLock<Option<PathBuf>>`）が None のとき `append` は no-op。

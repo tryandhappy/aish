@@ -14,6 +14,8 @@ pub struct Config {
     #[serde(default)]
     pub log: LogConfig,
     #[serde(default)]
+    pub history: HistoryConfig,
+    #[serde(default)]
     pub ai: AiConfig,
 }
 
@@ -660,6 +662,36 @@ fn default_log_path() -> String {
     "~/.aish/logs/claude-code.log".to_string()
 }
 
+/// minibuffer (Ctrl+/ の AI プロンプト入力) の ↑↓ 履歴の永続化設定。
+/// generic provider の `history_turns` (AI 内部会話履歴) とは無関係な別物。
+#[derive(Debug, Deserialize, Clone)]
+pub struct HistoryConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_history_path")]
+    pub path: String,
+    #[serde(default = "default_history_max")]
+    pub max_entries: usize,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            path: default_history_path(),
+            max_entries: default_history_max(),
+        }
+    }
+}
+
+fn default_history_path() -> String {
+    "~/.aish/history".to_string()
+}
+
+fn default_history_max() -> usize {
+    1000
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct DisplayConfig {
     #[serde(default = "default_shell_prefix_label")]
@@ -879,6 +911,28 @@ language = "Japanese"
         assert_eq!(config.ai.system_prompt, "top-level prompt");
         assert_eq!(config.ai.language, "Japanese");
         assert_eq!(config.ai.backend, "gemini");
+    }
+
+    #[test]
+    fn history_defaults_when_section_missing() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(config.history.enabled);
+        assert_eq!(config.history.path, "~/.aish/history");
+        assert_eq!(config.history.max_entries, 1000);
+    }
+
+    #[test]
+    fn history_section_overrides_per_field() {
+        let toml_str = r#"
+[history]
+enabled = false
+max_entries = 50
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(!config.history.enabled);
+        // path was omitted so falls back to default
+        assert_eq!(config.history.path, "~/.aish/history");
+        assert_eq!(config.history.max_entries, 50);
     }
 
     #[test]

@@ -18,6 +18,17 @@ fn prompt_history() -> &'static Mutex<Vec<String>> {
     PROMPT_HISTORY.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+/// 起動時に永続化された minibuffer 履歴を読み込む (`crate::history::init` の結果を渡す)。
+/// 入力スレッド spawn より前に一度だけ呼ぶこと。
+pub fn init_prompt_history(entries: Vec<String>) {
+    if entries.is_empty() {
+        return;
+    }
+    if let Ok(mut history) = prompt_history().lock() {
+        history.extend(entries);
+    }
+}
+
 pub enum InputEvent {
     PtyData(Vec<u8>),
     AiPrompt(String),
@@ -1186,11 +1197,20 @@ fn show_minibuffer(
             // 空 Enter → 何もしない。打ちかけがあれば画面に残す (ユーザが手で消す)。
         }
         Some(text) => {
-            // 履歴に追加（重複は追加しない）
-            if let Ok(mut history) = prompt_history().lock() {
+            // 履歴に追加（重複は追加しない）。新規エントリなら永続ファイルにも追記する。
+            // ファイル IO は mutex を保持したまま行わないよう、lock の外へ出す。
+            let is_new = if let Ok(mut history) = prompt_history().lock() {
                 if history.last() != Some(&text) {
                     history.push(text.clone());
+                    true
+                } else {
+                    false
                 }
+            } else {
+                false
+            };
+            if is_new {
+                crate::history::append(&text);
             }
             // スクロールエリアにプロンプト内容をエコー表示
             // 複数行入力は各論理行の先頭に [aish] ラベルを付ける

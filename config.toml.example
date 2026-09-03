@@ -43,6 +43,15 @@
 # enabled = false                                                # default: false
 # path = "~/.aish/logs/claude-code.log"                          # default: "~/.aish/logs/claude-code.log"
 
+# Prompt history settings
+# The minibuffer (Ctrl+/) remembers past prompts and recalls them with ↑ / ↓.
+# When enabled they persist across restarts in a plain-text file (0600 on Unix).
+# Not affected by --config; the path is set here independently.
+[history]
+# enabled = true                                                 # default: true — set false to keep history in memory only
+# path = "~/.aish/history"                                       # default: "~/.aish/history"
+# max_entries = 1000                                             # default: 1000 — most recent N entries are kept
+
 # AI backend settings
 # `backend` selects which CLI to drive. `--ai <kind>` (CLI flag) overrides this.
 # Supported: claude (Claude Code), codex (OpenAI Codex CLI), gemini (Google Gemini CLI),

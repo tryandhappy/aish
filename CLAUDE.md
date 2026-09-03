@@ -52,6 +52,7 @@ minibuffer / 打ちかけ（§ 15.4, 15.5）:
 - **minibuffer は bracketed paste マーカーを honor。aish 自身は `ESC[?2004h` を出さない**（端末状態を変えない原則）。
 - **`0x01,0x0b`(Ctrl+A+Ctrl+K) リテラルは `pty_handler.rs` 以外に書かない**（`kill_line`/`refresh_prompt` にカプセル化）。プロンプトリフレッシュ改行は必ず `refresh_prompt()`、素の `pty.write(b"\n")` を書かない（未承認 submit 防止 = 信頼の根幹）。
 - **AI 対話直前（`run` 冒頭）に打ちかけを消去してから drain**（撤去時は pyte で再検証）。
+- **minibuffer 履歴は `~/.aish/history` に永続化**（`[history]`、既定 on、Unix は新規作成時 0600、`\n`/`\\`/`\r` エスケープの 1 行 1 エントリ、追記は単一 write、失敗は silent、`--config` 非連動）。エンコードは `src/history.rs` の純関数のみが持つ（他所で書き換えない）。追記は lock 外（mutex 保持中に IO しない）。`init` は入力スレッド spawn より前に 1 度（§ 15.16）。
 
 `/model` `/effort` ピッカー（§ 15.12）:
 - **`ui::show_picker` は confirm と同じく main スレッドが fd0 直読みの同期ブロッキング関数**（`InputEvent`/`InputRequest` 経由にしない）。**termios 再設定はしない**。stdout 専用で PTY に書かない。
