@@ -12,11 +12,12 @@ const EFFORT_DEFAULTS: &[&str] = &["low", "medium", "high"];
 
 /// `/model` ピッカーの組み込み既定 (config 未設定時)。agy は Gemini CLI の後継で
 /// Gemini 系モデルを使う。値は流動的なので best-effort (`agy models` で最新を確認)。更新はリリース必要。
-/// 2026-08 現況: gemini backend とミラー (slug 自体は未検証 — SPEC § 15.10)。
+/// 2026-09 現況: gemini backend とミラー (slug 自体は未検証 — SPEC § 15.10)。effort は native
+/// `--effort` で持つため、agy が model slug に effort を焼く形式でも素の gemini slug を使う。
 const MODEL_DEFAULTS: &[&str] = &[
+    "gemini-3.8-flash",
     "gemini-3.1-pro-preview",
-    "gemini-3-pro",
-    "gemini-3-flash",
+    "gemini-3.7-flash",
     "gemini-2.5-pro",
     "gemini-2.5-flash",
 ];

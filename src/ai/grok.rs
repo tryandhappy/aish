@@ -12,7 +12,13 @@ const MAX_HISTORY_TURNS: usize = 8;
 /// xAI の `<name>-latest` エイリアスは modelname 単位でしか解決しない (grok-4-latest は 4.5/4.6 に
 /// ならない)。xAI が grok-4.5 / grok-4.6 と modelname を改番したためエイリアスは陳腐化回避に効かず、
 /// `grok-4-latest` は撤回してスナップショット運用に戻した (SPEC § 15.12)。
-const MODEL_DEFAULTS: &[&str] = &["grok-4.6", "grok-4.5", "grok-4.3", "grok-build-0.1"];
+const MODEL_DEFAULTS: &[&str] = &[
+    "grok-4.6",
+    "grok-4.5",
+    "grok-4.3",
+    "grok-4.20-0309-reasoning",
+    "grok-build-0.1",
+];
 
 /// xAI Grok CLI backend (`grok`、https://x.ai/cli、`--ai grok`)。
 ///

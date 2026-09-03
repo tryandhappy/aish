@@ -21,10 +21,10 @@ const MODEL_DEFAULTS: &[&str] = &[
     "sonnet",
     "haiku",
     "fable",
-    // 現状把握しているフルネーム (2026-08 時点の best-effort スナップショット)
+    // 現状把握しているフルネーム (2026-09 時点の best-effort スナップショット)
     "claude-opus-5",
     "claude-sonnet-5",
-    "claude-fable-5",
+    "claude-fable-5-1",
     "claude-opus-4-8",
     "claude-haiku-4-5",
 ];

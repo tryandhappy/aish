@@ -170,13 +170,13 @@
 # 認証情報は **環境変数のみ** (config.toml は平文なのでトークンを書かせない):
 #   export CLOUDFLARE_ACCOUNT_ID=...    # Cloudflare の Account ID (必須)
 #   export CLOUDFLARE_API_TOKEN=...     # Workers AI 権限のある API Token (必須)
-#   export CLOUDFLARE_MODEL=...         # 既定モデルの上書き (任意。未設定なら @cf/meta/llama-3.1-8b-instruct)
+#   export CLOUDFLARE_MODEL=...         # 既定モデルの上書き (任意。未設定なら @cf/zai-org/glm-5.3-flash)
 #
 # model は [ai].model / `/model` でも指定可 (env CLOUDFLARE_MODEL より優先)。コマンド提案の質は
 # モデル依存: {message, commands} の JSON 出力に追従できる大きめ instruct モデル
 # (例 @cf/meta/llama-3.3-70b-instruct-fp8-fast) を推奨。セクション名はハイフン形 (cloudflare-workers-ai) に注意。
 [ai.cloudflare-workers-ai]
-# models = ["@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/zai-org/glm-4.7-flash"]  # 省略時は組み込み既定
+# models = ["@cf/zai-org/glm-5.3-flash", "@cf/zai-org/glm-5.3"]  # 省略時は組み込み既定
 # models_command = ""                                            # 例: 動的取得 (1 行 1 候補)
 
 # NVIDIA NIM (`--ai nvidia`)。build.nvidia.com のホスト API (integrate.api.nvidia.com、

@@ -17,18 +17,19 @@ const ENV_MODEL: &str = "CLOUDFLARE_MODEL";
 /// model 未指定時の既定。軽量・高速な instruct モデル。`{message, commands}` の JSON
 /// 出力フォーマットに追従させたいなら `@cf/meta/llama-3.3-70b-instruct-fp8-fast` 等の
 /// 大きめモデルを `/model` で選ぶ。
-/// (旧既定 `@cf/meta/llama-3.1-8b-instruct` は 2026-08 現在 Cloudflare で Deprecated。)
-const DEFAULT_MODEL: &str = "@cf/zai-org/glm-4.7-flash";
+/// (旧既定 `@cf/meta/llama-3.1-8b-instruct` は 2026-08 に Cloudflare で Deprecated → glm-4.7-flash、
+///  さらに 2026-09 に GLM-5.3 系へ更新。glm-4.7-flash は Deprecated ではないが上位版に置換された。)
+const DEFAULT_MODEL: &str = "@cf/zai-org/glm-5.3-flash";
 
 /// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort。更新はリリース必要。
-/// 2026-08 現況: llama-3.1-8b は Deprecated のため除去。gpt-oss-120b / glm-4.7-flash は
-/// Cloudflare changelog で追加確認済み。全一覧は developers.cloudflare.com/workers-ai/models/。
+/// 2026-09 現況: Z.ai GLM が 5.3 / 5.3-flash / 5.2 へ更新、deepseek-v4 系が 2026-08-26 changelog で追加。
+/// gpt-oss-120b は現行維持。全一覧は developers.cloudflare.com/workers-ai/models/。
 const MODEL_DEFAULTS: &[&str] = &[
-    "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "@cf/zai-org/glm-5.3-flash",
+    "@cf/zai-org/glm-5.3",
+    "@cf/deepseek-ai/deepseek-v4-pro-0813",
     "@cf/openai/gpt-oss-120b",
-    "@cf/zai-org/glm-4.7-flash",
-    "@cf/qwen/qwen2.5-coder-32b-instruct",
-    "@cf/mistralai/mistral-small-3.1-24b-instruct",
+    "@cf/zai-org/glm-5.2",
 ];
 
 /// Cloudflare Workers AI backend。

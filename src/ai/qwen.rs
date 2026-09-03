@@ -8,7 +8,9 @@ use crate::config::{AiConfig, LogConfig, OptionLists};
 const MAX_HISTORY_TURNS: usize = 8;
 
 /// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort。更新はリリース必要。
-const MODEL_DEFAULTS: &[&str] = &["qwen3-coder-plus", "qwen3-coder-flash"];
+/// plus/flash は date-stamped 実体へ解決するローリング tier エイリアス (陳腐化しにくい)。
+/// 2026-09 現況: 新しめの agentic coding tier `qwen3-coder-next` を追加。
+const MODEL_DEFAULTS: &[&str] = &["qwen3-coder-plus", "qwen3-coder-next", "qwen3-coder-flash"];
 
 /// Qwen Code CLI backend。
 ///

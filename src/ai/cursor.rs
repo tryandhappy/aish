@@ -14,9 +14,9 @@ use crate::config::{AiConfig, LogConfig, OptionLists};
 const MODEL_DEFAULTS: &[&str] = &[
     "auto",
     "composer-2.5",
-    "claude-opus-4-8",
-    "gpt-5.5",
-    "gemini-3-pro",
+    "claude-opus-5",
+    "gpt-5.6-sol",
+    "gemini-3.1-pro",
 ];
 
 /// Cursor CLI (`cursor-agent`) backend。

@@ -7,7 +7,7 @@ use super::types::{AiBackend, AiError, AiRequest, AiResponse};
 use crate::config::{AiConfig, LogConfig, OptionLists};
 
 /// `/effort` ピッカーの組み込み既定 (config 未設定時)。codex の `model_reasoning_effort`。
-const EFFORT_DEFAULTS: &[&str] = &["minimal", "low", "medium", "high"];
+const EFFORT_DEFAULTS: &[&str] = &["minimal", "low", "medium", "high", "xhigh"];
 
 /// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort。更新はリリース必要。
 /// (codex 公式は ChatGPT ログイン時のモデル pin を非推奨。`/model -` で既定に戻せる。)
