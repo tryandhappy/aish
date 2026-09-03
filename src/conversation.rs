@@ -11,6 +11,7 @@ use crate::pty_handler::PtyHandler;
 use crate::ring_buffer::RingBuffer;
 use crate::ui;
 use crate::vetted_command::VettedCommand;
+use std::borrow::Cow;
 use std::io::{self, Write};
 use std::sync::mpsc;
 use std::thread;
@@ -76,6 +77,9 @@ enum ConfirmDecision {
     /// Ctrl+C / Ctrl+D: このコマンドを含む残り全部を中止し、AI に問い合わせない。
     /// (ESC はここではなく Skip = n と同じ「1 回分スキップ」に変更済み)
     AbortNoAi,
+    /// e/E: このコマンドを編集してから再確認する (編集結果を再 vet → confirm prompt
+    /// 再表示。§ 15.15)。実行/スキップ等の最終決定ではないので confirm ループ内で処理する。
+    Edit,
 }
 
 /// 確認ループの承認モード。`RunRest` 確定後は `All` になり以降の確認を省略する。
@@ -247,30 +251,55 @@ impl AiConversation<'_> {
         let mut executed: Vec<String> = Vec::new();
         let mut approval = Approval::AskEach;
         for (i, cmd) in commands.iter().enumerate() {
-            // AI 提案コマンドの制御文字検証 (偽装・密輸の拒否理由は
-            // vetted_command.rs のドキュメント参照)。Approval 分岐より
-            // 前に置くことで Approval::All (= [a]) のまとめ承認経路も
-            // 必ずこのガードを通る。以降この iteration では検証済みの
-            // VettedCommand だけを扱い、表示 (confirm prompt) と送信
-            // (send_approved_command) が同一の検証済み値になる。
-            let cmd = match VettedCommand::vet(cmd) {
-                Ok(vetted) => vetted,
-                Err(raw) => {
-                    ui::print_rejected_command(raw, self.display);
-                    continue;
+            // 編集 (e) でコマンド文字列が置換されうるので所有バッファに載せる。
+            // 未編集なら borrow のまま (コピーしない)。
+            let mut current: Cow<'_, str> = Cow::Borrowed(cmd.as_str());
+
+            // 確認 (+ 編集) ループ。e=編集した場合は編集結果を再 vet → confirm prompt
+            // 再表示して確認を取り直す (承認は必ず confirm prompt で取る = 信頼の根幹。
+            // エディタ画面を承認画面にしない。§ 15.15)。
+            let decision = loop {
+                // AI 提案コマンドの制御文字検証 (偽装・密輸の拒否理由は
+                // vetted_command.rs のドキュメント参照)。Approval 分岐より
+                // 前に置くことで Approval::All (= [a]) のまとめ承認経路も
+                // 必ずこのガードを通る。編集するたびに再 vet し、表示 (confirm
+                // prompt) と送信 (send_approved_command) が同一の検証済み値になる。
+                let vetted = match VettedCommand::vet(&current) {
+                    Ok(v) => v,
+                    Err(raw) => {
+                        ui::print_rejected_command(raw, self.display);
+                        break ConfirmDecision::Skip;
+                    }
+                };
+                if approval == Approval::All {
+                    // [a] で自動承認中は confirm prompt を出さないので e (編集) は
+                    // 存在しない (仕様)。
+                    break ConfirmDecision::Run;
                 }
-            };
-            let decision = match approval {
-                Approval::All => ConfirmDecision::Run,
-                Approval::AskEach => {
-                    ui::print_single_confirm_prompt(&cmd, i + 1, total, self.display);
-                    // 残コマンドがある (最後ではない) とき [a] が出ており Enter=All。
-                    // print_single_confirm_prompt の `index < total` と同じ条件。
-                    let default_all = i + 1 < total;
-                    let _ = self
-                        .prompt_tx
-                        .send(ui::InputRequest::ReadConfirmKey { default_all });
-                    wait_confirm_decision(self.input_rx)
+                ui::print_single_confirm_prompt(&vetted, i + 1, total, self.display);
+                // 残コマンドがある (最後ではない) とき [a] が出ており Enter=All。
+                // print_single_confirm_prompt の `index < total` と同じ条件。
+                let default_all = i + 1 < total;
+                let _ = self
+                    .prompt_tx
+                    .send(ui::InputRequest::ReadConfirmKey { default_all });
+                match wait_confirm_decision(self.input_rx) {
+                    ConfirmDecision::Edit => {
+                        // main スレッド同期のエディタを開く (入力スレッドは Confirm
+                        // 送信後 parked。§ 15.15)。
+                        match ui::show_command_editor(&current, self.display) {
+                            // 取消 (ESC/Ctrl+C 等) → 元コマンドのまま再確認 (abort にしない)。
+                            None => continue,
+                            // 空 / 空白のみ → このコマンドをスキップ (n 相当)。
+                            Some(s) if s.trim().is_empty() => break ConfirmDecision::Skip,
+                            // 編集された → 置換して再 vet → 再確認。
+                            Some(s) => {
+                                current = Cow::Owned(s);
+                                continue;
+                            }
+                        }
+                    }
+                    other => break other,
                 }
             };
             match decision {
@@ -289,7 +318,21 @@ impl AiConversation<'_> {
                 }
                 ConfirmDecision::RunRest => approval = Approval::All,
                 ConfirmDecision::Run => {}
+                // Edit は確認ループ内で処理し切る (continue/break) ので decision には出ない。
+                ConfirmDecision::Edit => unreachable!("Edit is resolved inside the confirm loop"),
             }
+
+            // 送信直前にもう一度 vet して &VettedCommand を得る。decision 確定後は
+            // current は不変 (Edit は必ず continue するため) なので「confirm prompt で
+            // 表示した文字列 == 送信する文字列」。vet は同一スライス恒等なので二重 vet でも
+            // 承認 = 実行は保たれる。Err は起きえないが型保証を保つため防御で残す。
+            let cmd = match VettedCommand::vet(&current) {
+                Ok(v) => v,
+                Err(raw) => {
+                    ui::print_rejected_command(raw, self.display);
+                    continue;
+                }
+            };
 
             // Windows ConPTY 再同期 (SPEC § 15.8): aish が Exec? 確認や AI 応答を
             // 直接描画した分だけ実画面が ConPTY の内部モデルから行ズレしている。
@@ -468,6 +511,7 @@ fn wait_confirm_decision(input_rx: &mpsc::Receiver<ui::InputEvent>) -> ConfirmDe
                 ui::ConfirmChoice::No => return ConfirmDecision::Skip,
                 ui::ConfirmChoice::All => return ConfirmDecision::RunRest,
                 ui::ConfirmChoice::Quit => return ConfirmDecision::QuitRest,
+                ui::ConfirmChoice::Edit => return ConfirmDecision::Edit,
             },
             // Ctrl+C / Ctrl+D: 残りすべてを中止し、AI に問い合わせない
             // (ESC は ConfirmChoice::No 経由で Skip = 1 回スキップに変更済み)
@@ -649,6 +693,13 @@ mod tests {
     fn confirm_quit_is_quit_rest() {
         let rx = rx_with(vec![ui::InputEvent::Confirm(ui::ConfirmChoice::Quit)]);
         assert_eq!(wait_confirm_decision(&rx), ConfirmDecision::QuitRest);
+    }
+
+    #[test]
+    fn confirm_edit_is_edit() {
+        // e=編集は confirm ループ内で処理する ConfirmDecision::Edit を返す (§ 15.15)。
+        let rx = rx_with(vec![ui::InputEvent::Confirm(ui::ConfirmChoice::Edit)]);
+        assert_eq!(wait_confirm_decision(&rx), ConfirmDecision::Edit);
     }
 
     #[test]

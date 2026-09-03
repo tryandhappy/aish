@@ -90,7 +90,7 @@ CLI SSH + AI (Claude Code) ツール。クライアント側の Claude Code か�
 - ステータスバー行に 80ms 周期で `{thinking_color}{frame} {thinking_message}\x1b[0m`。`\x1b7`/`\x1b8` でシェル入力欄保全。`stop()` / Drop でステータスバー再描画。
 
 ### 4.6 確認プロンプト
-- AI 提案 `commands` を番号付き全件表示（プラン提示）後、各コマンドごとに `Exec? {cmd} [y/n/A/q] ` を `confirm_color` で表示し 1 キー即確定（`read_confirm_key`）。最後／単一は `[Y/n]`。キーの意味は §15.2。
+- AI 提案 `commands` を番号付き全件表示（プラン提示）後、各コマンドごとに `Exec? {cmd} [y/n/e/A/q] ` を `confirm_color` で表示し 1 キー即確定（`read_confirm_key`）。最後／単一は `[Y/n/e]`。キーの意味は §15.2。`e` = そのコマンドを編集してから再確認（§15.15）。
 
 ---
 
@@ -482,7 +482,7 @@ backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
 ### 15.2 確認プロンプト y/n/A/q（`read_confirm_key`）
 
 - **1 キー即確定**（`src/ui.rs`、Enter 不要）。byte 解析は `input::next_event` に集約。
-- 受理: `y/Y/n/N/a/A/q/Q` + IME 全角 `ｙＹｎＮａＡｑＱ` + ひらがな `あ`(=a) / `ん`(=n)。Space はデフォルト Yes（文脈に依らず）。**未知キーは無視して再読み取り**（打ち間違いを No にしない）。
+- 受理: `y/Y/n/N/a/A/q/Q/e/E` + IME 全角 `ｙＹｎＮａＡｑＱｅＥ` + ひらがな `あ`(=a) / `ん`(=n) / `え`(=e)。Space はデフォルト Yes（文脈に依らず）。**未知キーは無視して再読み取り**（打ち間違いを No にしない）。`e`=編集は §15.15（`[a]` 自動承認中は confirm prompt が出ないので存在しない）。
 - **Enter は `b < 0x20` 判定より先に `Tok::Enter` に分類**（「Enter が効かない」回帰が過去 2 回。golden test `enter_is_not_swallowed_by_control_filter` 等で固定）。
 - **Enter のデフォルトは文脈依存**（2026-08 変更。ユーザ要望「複数コマンド時は Enter で残り全部承認したい」）。**残コマンドあり = プロンプト `[y/n/A/q]` で Enter=All（残り自動承認）、echo `A`**。**最後／単一コマンド = プロンプト `[Y/n]` で Enter=Yes、echo `Y`**。文脈は `AiConversation::confirm_and_execute` が `i + 1 < total`（= `print_single_confirm_prompt` の `index < total`）を `InputRequest::ReadConfirmKey { default_all }` で入力スレッドへ渡し、`read_confirm_key(default_all)` の `Tok::Enter` 分岐で分ける。`default_all` は Enter のみに効き、Space（常に Yes）・明示キーには影響しない。プロンプト文字列の大文字（`A` / `Y`）と echo される既定文字を一致させて「Enter で何が起きるか」を視覚的に一致させている。
 - **キー semantics**: `y`/Space=実行、Enter=デフォルト（上記）、`n`=1 回スキップ、`a`=残り自動承認、`q`=残り中止（実行済みあれば AI follow-up）、`Ctrl+C`/`Ctrl+D`=残り中止かつ **AI に問わない**。**ESC 単独は `n` と同じ 1 回スキップ**（旧「残り全部キャンセル」から変更。**Ctrl+C 系 abort arm に戻さない**）。Quit と Abort の差は follow-up の有無のみ（`ExecOutcome::{Quit,Abort}`。Abort は executed 非空でも follow-up せず `break`）。
@@ -517,7 +517,7 @@ backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
 
 ### 15.7 trust ガード（承認 = 実行の保証）
 
-- **制御文字ガードは `VettedCommand` 型（`src/vetted_command.rs`）**。実行ループ先頭（`Approval` 分岐前）で `VettedCommand::vet` が検証し、制御文字（LF/CR/ESC/NUL/TAB/他 C0/DEL/C1）入りは確認に載せず `print_rejected_command` → `continue`（PTY に送らない）。検証後は表示（`print_single_confirm_prompt`）も送信（`send_approved_command`）も `&VettedCommand` のみ受理 → **「画面で承認した物 = サーバで実行される物」が型レベルで保たれ、撤去・迂回は型エラー**（vet は検証のみで変形しない。`as_str()` が同一スライスを返すことをテストで固定）。`[a]` 経路も通る。関連型: `ConfirmDecision`（Run/Skip/RunRest/QuitRest/AbortNoAi）/ `Approval`（AskEach/All）/ `ExecOutcome`（Completed/Quit/Abort）。複数行 / heredoc の明示承認は未実装（1 コマンド = 1 行を enforce）。
+- **制御文字ガードは `VettedCommand` 型（`src/vetted_command.rs`）**。実行ループ先頭（`Approval` 分岐前）で `VettedCommand::vet` が検証し、**`\n`/`\t` 以外**の制御文字（CR/ESC/NUL/他 C0/DEL/C1）入りは確認に載せず `print_rejected_command` → `continue`（PTY に送らない）。**`\n`（改行）と `\t`（TAB）は許可** — heredoc / 複数行スクリプトを 1 提案として送るため。`print_single_confirm_prompt` が `\n` を実際の改行 + 字下げで**全行描画**（TAB は字下げ literal、他制御文字は caret 化）するので「画面で見た全行 = 送信する全行」が保たれ隠れ行を作れない（`\r` での行頭復帰偽装だけを弾く）。検証後は表示（`print_single_confirm_prompt`）も送信（`send_approved_command`）も `&VettedCommand` のみ受理 → **「画面で承認した物 = サーバで実行される物」が型レベルで保たれ、撤去・迂回は型エラー**（vet は検証のみで変形しない。`as_str()` が同一スライスを返すことをテストで固定）。`[a]` 経路も通る。関連型: `ConfirmDecision`（Run/Skip/RunRest/QuitRest/AbortNoAi/Edit）/ `Approval`（AskEach/All）/ `ExecOutcome`（Completed/Quit/Abort）。`e`=編集した文字列も送信前に再 vet される（§15.15）。
 - **AI 由来の `message` / `commands` は描画前に制御文字を caret 可視化**（`visualize_control_line`、`print_ai_message` / `print_ai_commands` / `print_single_confirm_prompt` で適用。ESC→`^[`、CR→`^M`、TAB→`^I`、NUL→`^@`）。`\r` 行頭復帰 + `\x1b[2K` 行消去による「見た目 ≠ 送るバイト」偽装を防ぐ。AI 出力はプロンプトインジェクションで未信頼になり得るので**生 `println!` に戻さない**。`message` は複数行が正当なので `.lines()` 分割を維持し行内のみ可視化。
 - **完了判定は `PromptSniffer` の passive 検出**（§6.5）。承認文字列はそのまま PTY へ。
 
@@ -628,6 +628,18 @@ Windows で「aish が直接 stdout に描いた行が、後続のコマンド�
 - **トレードオフ（許容済み）**: 注入した空 Enter のぶん ConPTY モデル側にはプロンプト行が並ぶ（実画面には出ない）ため、リサイズ等の全面再描画で画面上の aish 出力がそれに置き換わる劣化モードは従来同等。注入のプロンプト再表示は ring_buffer に記録されるので AI コンテキストに空プロンプト行が数行混ざる（無害・起動注入と同じ）。resync に静音待ち（quiet 120ms / 上限 1s）のレイテンシが加わる。リモート fallback は旧挙動どおり resync 時に画面がスクロールする。
 - **Windows ローカル起動バースト（`main::windows_local_startup`）**: ConPTY の初期全画面クリアで spawn 前バナーが必ず消えるため、Windows + ローカルシェルではバナーを後から描く。初期バーストを表示せず吸収（`DrainOpts::capture` で生バイトも捕獲）→ `conpty_sync::startup_burst_is_clean`（全画面クリア + プロンプト 1 行だけか）を判定 → クリーンなら: 端末状態シーケンスだけ転送（`filter_terminal_state`: `\x1b[?...h/l` と OSC を通しテキスト/CUP/ED 等を捨てる。win32-input-mode 要求 `\x1b[?9001h` を捨てると入力経路が変わるため）→ **バナーを現在の cursor 位置へインライン描画**（2026-08 変更。旧実装の「実画面を全画面 LF スクロールで退避して原点から描画」は起動のたびに画面全体がジャンプし scrollback に空白帯が残った — ユーザ要件「スクロール位置を変えない」で廃止）→ **実 cursor 行 − 1 個の空 Enter を子シェルへ注入**して ConPTY frame のプロンプト行（2J 後の 1 行目）を実画面のバナー下端まで進め（出力は非表示・記録のみ。空 Enter は入力行が空のときの無害な入力で、履歴にも残らない。**ローカルシェル限定 — リモートには送らない**）→ 最後にもう 1 回空 Enter を送りそのプロンプト再表示だけを表示する。これで初回プロンプトから ConPTY 座標と実画面が一致する。profile 出力等でバーストがクリーンでない場合はバナー描画 → バーストそのまま表示（従来動作 = バナーはクリアで消える）にフォールバック。バーストが 4 秒来ない場合もバナーだけ描いて通常フローへ。
 - **E2E 検証（2026-08）**: `portable_pty` で aish.exe を ConPTY 配下に起動し、fake generic backend（`cmd /c type fake.json`）で Ctrl+/ → 質問 → Y 承認 → コマンド実行 → 通常コマンドを駆動、出力を VT スクリーンモデルで再構成して修正前後を比較した。修正前: 対話終了後の通常コマンドのエコーが画面上部（ConPTY モデルの旧プロンプト行）に飛ぶ / バナー消失。修正後: 全要素が正しい行に描画され、会話履歴も scrollback に完全保存。**注入方式への変更時（2026-08）も同型のハーネス**（fake backend = stdin を読んで固定 JSON を返す自前 exe、`AISH_DEBUG_PTY` の read/write 両方向ダンプ併用）**で 4 ターン再検証**: 起動バナーはインライン描画で画面ジャンプなし、全ターンでコマンドエコー（絶対座標 CUP）が refresh のプロンプト行に一致、コンテンツが画面下端を超えて自然スクロールする飽和ケース（4 ターン目）でも一致。
+
+### 15.15 確認プロンプトの `e`=編集（`show_command_editor`）
+
+AI 提案コマンドを実行前にその場で編集する機能（2026-09）。提案が惜しい（パスやオプションを 1 つ直したい）ときに手打ちし直さず済ませたい、という要望への対応。確認プロンプト `[y/n/e/A/q]` で `e` を押すと提案コマンドをプレフィルした行エディタが開き、編集後に**再確認**して実行する。
+
+- **入力ソースは picker 方式（§15.12 前例）**: `ui::show_command_editor(initial, display) -> Option<String>` は **main スレッドが fd0 を直接読む同期ブロッキング関数**。`InputRequest` は拡張しない。安全な根拠: 確認キー読みは入力スレッドが `read_confirm_key` で行い `InputEvent::Confirm` を返して**直後に `prompt_rx.recv()` へ戻り park する**。`confirm_and_execute`（main スレッド）が `Confirm(Edit)` を受け取った瞬間、入力スレッドは必ず parked（次の `InputRequest` まで fd0 に触らない）＝ `show_picker` が main スレッド直読みを許される条件とまったく同じ。`InputRequest::ReadCommandEdit` 拡張案は edited `String` のスレッド間往復・新 `InputEvent` variant・`wait_confirm_decision` の多段状態機械が要り、§15.12 が確立した前例に反するので却下。
+- **承認は常に confirm prompt 再表示で取る（信頼の根幹）**: 編集結果は必ず再 `VettedCommand::vet` → `print_single_confirm_prompt` 再表示 → 再度 `InputRequest::ReadConfirmKey` で y/n を取り直す。**エディタ画面を承認画面にしない**（エディタは vet 前の下書き UI）。`confirm_and_execute` の per-command 部を内側 `loop` にし、`Cow<str>` で編集置換を保持（未編集は borrow のまま無コピー）。decision 確定後は `current` 不変（Edit は必ず `continue`）なので「confirm prompt で表示した文字列 == 送信直前に再 vet する文字列」が成立。vet は同一スライス恒等なので二重 vet でも承認 = 実行は保たれる。
+- **`show_command_editor` は `show_minibuffer` の cursor 退避 / DSR fallback / 絶対座標復元の骨格を踏襲するが、以下を呼ばない/しない**: ① **`conpty_sync::set_anchor` を呼ばない** — anchor は「実 cursor == ConPTY 内部 cursor」の瞬間にしか記録してはならない（§15.14）が、確認プロンプト時点では aish が AI 応答 + `Exec?` を直接描画済みで既にズレており、ここで記録すると既存 anchor を壊し resync が狂う。② `MINIBUFFER_ACTIVE` を立てない（main スレッドが drain 中でない。ring 記録は pty_reader スレッドで継続）。③ 履歴 push しない。④ `"exit"` キャンセル特例なし（`exit` コマンドへ編集して実行できる）。⑤ 確定テキストの echo なし（再表示は confirm prompt が担う）。stdout 専用・PTY 非書き込み・termios 不可触は picker と同じ。
+- **行エディタの共通化**: `read_minibuffer_line` に `LineEditOpts { initial, use_history, exit_word_cancels }` を追加。minibuffer は `{"", true, true}`、編集モードは `{initial, false, false}`。`"exit"`/空の分類は純関数 `classify_line_submit`（golden test）に切り出し。`redraw_minibuffer` / `compute_visual_layout` / grow-shrink は無変更（既存 golden test が温存）。
+- **semantics**: 空 / 空白のみの編集結果 = Skip（n 相当）。編集キャンセル（ESC/Ctrl+C/Ctrl+//空 Ctrl+D）= **元コマンドの再確認に戻す**（abort にしない。エディタ内の Ctrl+C は minibuffer 準拠でキャンセル＝確認画面での Ctrl+C の abort とは非対称）。複数行編集は vet が `\n` を許可し全行再表示 → 承認。制御文字混入（paste 等）は再 vet が拒否 → Skip。`[a]` 自動承認中は confirm prompt が出ないので e は存在しない（仕様）。
+- **既知の劣化**: 元コマンドに TAB を含む場合、エディタ内 cursor 桁が `char_width('\t')=0` のためズレうる（cosmetic。承認は confirm prompt 再表示なので信頼には無影響）。
+- **手動検証チェックリスト**: 単一/複数コマンドで e→編集→再確認→実行 / 編集→Enter=All / 編集→ESC 取消（元コマンド再確認）/ 空編集 skip / `exit` へ編集して実行 / 複数行（Alt+Enter）編集 / Windows Terminal + PowerShell で編集→実行（set_anchor 非呼出により送信前 resync が編集分の描画も吸収、崩れなし）。
 
 ### 15.16 minibuffer プロンプト履歴の永続化（`history.rs`）
 

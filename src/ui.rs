@@ -414,7 +414,9 @@ pub fn print_single_confirm_prompt(
     // 複数コマンド時はデフォルト = a なので A を大文字にして示す (Enter = All)。
     // 最後のコマンドでは「残り」が無いので a も q も隠して [Y/n] に畳む
     // (q は押せば効くが最後では n とほぼ等価)。デフォルトは Yes なので Y が大文字。
-    let options = if index < total { "y/n/A/q" } else { "Y/n" };
+    // e = このコマンドを編集してから再確認 (§ 15.15)。最後のコマンドでも編集は
+    // 有用なので隠さず [Y/n/e] に出す。
+    let options = if index < total { "y/n/e/A/q" } else { "Y/n/e" };
     // "Exec?" をオレンジ文字+暗い茶色背景 (prompt_color 系) で区別する試行。
     // 終了は再度 confirm_color を適用して元の薄黄/グレーに戻す。
     // 選択肢 [Y/n] / [Y/n/a] は bold + reverse で強調。
@@ -455,6 +457,9 @@ pub enum ConfirmChoice {
     /// q/Q: 残りコマンドを中止する。実行済みがあれば AI に follow-up、
     /// 1 つも実行していなければ通常プロンプトに戻る (中止判断は conversation 側)。
     Quit,
+    /// e/E: このコマンドを `show_command_editor` で編集してから再確認する
+    /// (編集結果を再 vet → confirm prompt 再表示。§ 15.15)。
+    Edit,
 }
 
 /// 文字の表示幅を返す（全角=2, 半角=1, 制御文字=0）
@@ -505,6 +510,8 @@ fn match_confirm_char(c: char) -> Option<ConfirmChoice> {
         'a' | 'A' | 'ａ' | 'Ａ' | 'あ' => Some(ConfirmChoice::All),
         // Quit: ASCII / 全角小文字 / 全角大文字 (「q」に対応する自然なひらがなは無いので付けない)
         'q' | 'Q' | 'ｑ' | 'Ｑ' => Some(ConfirmChoice::Quit),
+        // Edit: ASCII / 全角小文字 / 全角大文字 / ひらがな「え」(romaji "e" 確定の自然結果)
+        'e' | 'E' | 'ｅ' | 'Ｅ' | 'え' => Some(ConfirmChoice::Edit),
         _ => None,
     }
 }
@@ -881,6 +888,30 @@ fn redraw_minibuffer<W: Write>(
 
 /// aishプロンプト用のマルチラインエディタ。
 /// 矢印キー/Home/End/Delete/BSによる編集、履歴ナビゲーション、
+/// 行エディタの用途差を表すオプション。minibuffer (AI プロンプト入力) と
+/// 確認プロンプトの `e`=編集 (`show_command_editor`) で共通の `read_minibuffer_line`
+/// を使い分ける。
+struct LineEditOpts<'a> {
+    /// 初期テキスト (プレフィル)。カーソルは末尾に置く。空文字なら空欄開始。
+    initial: &'a str,
+    /// ↑↓ でプロンプト履歴をナビゲートするか。編集モードでは false。
+    use_history: bool,
+    /// 入力が `exit` のみのときキャンセル扱いにするか。編集モードでは false
+    /// (= `exit` コマンドへ編集して実行できるようにする)。
+    exit_word_cancels: bool,
+}
+
+/// Enter 確定時のテキストを「送信するか (Some) / キャンセルするか (None)」に分類する
+/// 純関数。`exit_word_cancels` が true かつ入力が `exit` のみのときだけ None。
+/// 空文字は Some("") を返す (呼び出し側が「何もしない」と解釈する既存挙動を維持)。
+fn classify_line_submit(text: &str, exit_word_cancels: bool) -> Option<String> {
+    if exit_word_cancels && text.trim() == "exit" {
+        None
+    } else {
+        Some(text.to_string())
+    }
+}
+
 /// Alt+Enter / Shift+Enter (CSI u) による改行挿入をサポートする。
 /// 入力長に応じて縦方向に拡張し、最大 max_rows 行まで表示する。
 /// 戻り値は (入力テキスト, 最終的に占有した行数)。
@@ -894,12 +925,13 @@ fn read_minibuffer_line(
     label_width: usize,
     input_bg: &str,
     total_scrolled: &mut u16,
+    opts: &LineEditOpts,
 ) -> (Option<String>, u16) {
     // 入力の framing は crate::input に集約済み。ここは Tok を編集操作に対応づける薄い層。
     let mut src = StdinSource::new();
 
-    let mut chars: Vec<char> = Vec::new();
-    let mut cursor_pos: usize = 0;
+    let mut chars: Vec<char> = opts.initial.chars().collect();
+    let mut cursor_pos: usize = chars.len();
     let mut rows_used: u16 = 1;
     // scroll で確保済みの行数の高水位マーク。shrink しても減らさず、これを超える
     // grow のときだけ追加 scroll する (grow-shrink-grow で scroll を積み増さない)。
@@ -987,13 +1019,11 @@ fn read_minibuffer_line(
                 };
                 return (text, rows_used);
             }
-            // Enter: 確定 ("exit" はキャンセル扱い)
+            // Enter: 確定 (minibuffer では "exit" のみキャンセル扱い。編集モードでは
+            // exit_word_cancels=false なので "exit" もそのまま確定する)
             Tok::Enter => {
                 let s: String = chars.iter().collect();
-                if s.trim() == "exit" {
-                    return (None, rows_used);
-                }
-                return (Some(s), rows_used);
+                return (classify_line_submit(&s, opts.exit_word_cancels), rows_used);
             }
             // bracketed paste 開始: 以降 PasteEnd まで改行は送信せず挿入扱い (複数行入力)
             Tok::PasteStart => pasting = true,
@@ -1059,8 +1089,9 @@ fn read_minibuffer_line(
                     chars.remove(cursor_pos);
                 }
             }
-            // 履歴ナビゲーション (Up = 過去へ / Down = 新しい方へ)
-            Tok::Up | Tok::Down => {
+            // 履歴ナビゲーション (Up = 過去へ / Down = 新しい方へ)。編集モード
+            // (use_history=false) では ↑↓ を無視する (元コマンドの編集に履歴は無関係)。
+            Tok::Up | Tok::Down if opts.use_history => {
                 let is_up = matches!(ev.tok, Tok::Up);
                 if let Ok(history) = prompt_history().lock() {
                     let new_idx = if is_up {
@@ -1165,6 +1196,11 @@ fn show_minibuffer(
         label_width,
         input_bg,
         &mut total_scrolled,
+        &LineEditOpts {
+            initial: "",
+            use_history: true,
+            exit_word_cancels: true,
+        },
     );
 
     // DECSTBM を防御的にフルリセット (minibuffer 自身は region を設定しないが
@@ -1243,6 +1279,76 @@ fn show_minibuffer(
             let _ = tx.send(InputEvent::MinibufferCancelled);
         }
     }
+}
+
+/// 確認プロンプトの `e`=編集用エディタ。AI 提案コマンド (`initial`) をプレフィルした
+/// 行エディタを画面最下部に開き、編集後の文字列を返す。
+///
+/// `show_picker` (§ 15.12) と同じく **main スレッドが fd0 を直接読む同期ブロッキング
+/// 関数**。`confirm_and_execute` から呼ばれ、その時点で入力スレッドは `Confirm` 送信後に
+/// parked しているため fd0 の同時読みは起きない。stdout 専用で PTY には書かない。
+///
+/// `show_minibuffer` と違い **`conpty_sync::set_anchor` を呼ばない** (確認プロンプト
+/// 描画時点で実 cursor ≠ ConPTY 内部 cursor のため anchor 破壊になる) / `MINIBUFFER_ACTIVE`
+/// を立てない (main スレッドが drain 中でない) / 履歴に push しない / `"exit"` キャンセル
+/// 特例なし。確定テキストの echo もしない (承認は呼び出し側が confirm prompt を再表示して
+/// 取り直すため。§ 15.15)。
+///
+/// 戻り値: `Some(編集後文字列)` = Enter 確定 / `None` = 取消 (ESC/Ctrl+C/Ctrl+//空 Ctrl+D)。
+pub fn show_command_editor(initial: &str, display: &DisplayConfig) -> Option<String> {
+    let mut stdout = io::stdout();
+    let input_bg = &display.input_color;
+    let label = "\x1b[38;5;208medit>\x1b[0m ";
+    let label_width = visible_width(label);
+    let (rows, cols) = terminal_size();
+    let max_rows = (rows / 2).max(1);
+
+    // cursor 位置の取得は show_minibuffer と同一パターン (Windows は Console API 優先、
+    // Unix は DSR、取れなければ安全側 fallback)。ただし anchor は記録しない。
+    let (saved_row, saved_col) = crate::term::cursor_position()
+        .or_else(|| crate::term::query_cursor_position_dsr(&mut stdout))
+        .unwrap_or((rows, 1));
+    let was_at_bottom = saved_row >= rows;
+
+    let mut total_scrolled: u16 = 0;
+    if was_at_bottom {
+        #[allow(clippy::write_with_newline)]
+        let _ = write!(stdout, "\n");
+        let _ = stdout.flush();
+        total_scrolled = 1;
+    }
+
+    let (result, rows_used) = read_minibuffer_line(
+        &mut stdout,
+        rows,
+        cols,
+        max_rows,
+        label,
+        label_width,
+        input_bg,
+        &mut total_scrolled,
+        &LineEditOpts {
+            initial,
+            use_history: false,
+            exit_word_cancels: false,
+        },
+    );
+
+    // エディタ領域を消去して cursor を絶対座標で復元 (show_minibuffer と同一)。
+    let _ = write!(stdout, "\x1b[0m\x1b[r");
+    if rows_used > 1 {
+        let clear_from = rows - rows_used + 1;
+        for r in clear_from..=rows {
+            let _ = write!(stdout, "\x1b[{r};1H\x1b[2K");
+        }
+    } else {
+        let _ = write!(stdout, "\x1b[{rows};1H\x1b[2K");
+    }
+    let restored_row = saved_row.saturating_sub(total_scrolled).max(1);
+    let _ = write!(stdout, "\x1b[{restored_row};{saved_col}H");
+    let _ = stdout.flush();
+
+    result
 }
 
 /// パススルーモードのrawキー入力処理。
@@ -1409,6 +1515,39 @@ mod tests {
         assert_eq!(match_confirm_char('い'), None);
         assert_eq!(match_confirm_char('や'), None); // "ya" は受け付けない
         assert_eq!(match_confirm_char('な'), None); // "na" も受け付けない
+    }
+
+    #[test]
+    fn match_confirm_edit_key() {
+        // e = このコマンドを編集してから再確認 (§ 15.15)。ASCII / 全角 / ひらがな「え」。
+        assert_eq!(match_confirm_char('e'), Some(ConfirmChoice::Edit));
+        assert_eq!(match_confirm_char('E'), Some(ConfirmChoice::Edit));
+        assert_eq!(match_confirm_char('ｅ'), Some(ConfirmChoice::Edit));
+        assert_eq!(match_confirm_char('Ｅ'), Some(ConfirmChoice::Edit));
+        assert_eq!(match_confirm_char('え'), Some(ConfirmChoice::Edit));
+    }
+
+    #[test]
+    fn classify_line_submit_exit_word() {
+        // minibuffer (exit_word_cancels=true): "exit" のみはキャンセル。
+        assert_eq!(classify_line_submit("exit", true), None);
+        assert_eq!(classify_line_submit("  exit  ", true), None);
+        // 編集モード (exit_word_cancels=false): "exit" もそのまま確定できる。
+        assert_eq!(
+            classify_line_submit("exit", false),
+            Some("exit".to_string())
+        );
+        // 通常文字列 / 空文字は両モードとも Some (空は呼び出し側が解釈する既存挙動)。
+        assert_eq!(
+            classify_line_submit("ls -la", true),
+            Some("ls -la".to_string())
+        );
+        assert_eq!(classify_line_submit("", true), Some(String::new()));
+        // "exit" を含むが単独でないコマンドは確定する。
+        assert_eq!(
+            classify_line_submit("exit 0", true),
+            Some("exit 0".to_string())
+        );
     }
 
     // ---- redraw_minibuffer の golden test 群 ----

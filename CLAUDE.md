@@ -37,6 +37,9 @@ SSH でサーバを管理する道具なので、**ユーザが画面で承認�
 - **Enter のデフォルトは文脈依存**。残コマンドあり (`i+1 < total`、[a] 表示) = `default_all` true で **Enter=All**（プロンプトは `[y/n/A/q]`、echo `A`）、最後のコマンド ([Y/n]) = false で **Enter=Yes**（echo `Y`）。**`default_all` は `InputRequest::ReadConfirmKey { default_all }` で入力スレッドへ渡す**（`print_single_confirm_prompt` の `index < total` と同一条件）。Space は文脈に依らず Yes。
 - **Enter は `b < 0x20` 判定より先に `Tok::Enter` に分類**（golden test で固定）。
 - **`echo_confirm` は `match` を持たず `write!("{c}\x1b[0m\n")` だけ。大小区別の分岐を足さない**。キャンセル(Ctrl+C/Ctrl+D)時は抜ける前に stdout へ `\n` を 1 つ出す。
+- **`e`=編集は `ConfirmChoice::Edit` → main スレッド同期の `ui::show_command_editor`（picker 方式 fd0 直読み、§ 15.15）。編集結果は必ず再 `VettedCommand::vet` → `print_single_confirm_prompt` 再表示 → 再度 `ReadConfirmKey`。エディタ画面を承認画面にしない**（承認は常に confirm prompt で取る = 信頼の根幹）。`confirm_and_execute` の per-command は内側 loop + `Cow` で編集を保持。
+- **`show_command_editor` は `conpty_sync::set_anchor` を呼ばない / `MINIBUFFER_ACTIVE` を立てない / 履歴 push しない / `"exit"` キャンセル特例なし**（`exit` へ編集して実行できる）。行編集は `read_minibuffer_line` + `LineEditOpts` を共用（`redraw_minibuffer`/grow-shrink は無変更、`classify_line_submit` は純関数）。
+- **空/空白のみの編集結果は Skip（n 相当）。編集キャンセル（ESC/Ctrl+C 等）は元コマンドの再確認に戻す（abort にしない）。`[a]` 自動承認中は confirm prompt が出ないので e は存在しない**。
 
 AI コマンド実行（§ 15.3, 15.7）:
 - **実行中の Ctrl+C(0x03) は実行中コマンドへ転送して中断 + 残りコマンド中止**（`ExecOutcome::Abort`、follow-up なし、両承認モードで一様）。**Ctrl+D(0x04) は対象外**（転送のみ）。
