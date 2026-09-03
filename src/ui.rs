@@ -307,9 +307,34 @@ pub fn print_rejected_command(cmd: &str, display: &DisplayConfig) {
     io::stdout().flush().ok();
 }
 
-pub fn print_ai_message(message: &str, kind: BackendKind, display: &DisplayConfig) {
+/// AI 応答ラベルの中身 `backend[/model][/effort]` を組み立てる純関数 (golden test 対象)。
+/// model/effort は明示選択済みの欄だけを順に `/` で連結し、None の欄は省略する。
+/// スピナー `Spinner::start` の欄省略方針と一致させること。
+fn format_backend_label(kind: BackendKind, model: Option<&str>, effort: Option<&str>) -> String {
+    let mut out = String::from(kind.as_str());
+    if let Some(m) = model {
+        out.push('/');
+        out.push_str(m);
+    }
+    if let Some(e) = effort {
+        out.push('/');
+        out.push_str(e);
+    }
+    out
+}
+
+pub fn print_ai_message(
+    message: &str,
+    kind: BackendKind,
+    model: Option<&str>,
+    effort: Option<&str>,
+    display: &DisplayConfig,
+) {
     let color = build_color_start(&display.ai_color);
-    let label = format!("[ai/{}]> ", kind.as_str());
+    // ラベルは `[backend/model/effort]> `。model/effort は明示選択済みの欄だけ
+    // `/` で連結し、None の欄は省略する (スピナー `Spinner::start` と同じ省略方針。
+    // CLI 内部デフォルトは aish から取得不能なので表示しない)。
+    let label = format!("[{}]> ", format_backend_label(kind, model, effort));
     let mut first = true;
     for line in message.lines() {
         // AI 出力は未信頼。行内の制御文字を可視化してから描画する。
@@ -1258,6 +1283,25 @@ mod tests {
     #[test]
     fn visualize_control_line_cr() {
         assert_eq!(visualize_control_line("a\rb"), "a^Mb");
+    }
+
+    #[test]
+    fn backend_label_omits_none_fields() {
+        let k = BackendKind::Claude;
+        // 両方あり: backend/model/effort。
+        assert_eq!(
+            format_backend_label(k, Some("fable-5.1"), Some("high")),
+            "claude/fable-5.1/high"
+        );
+        // model のみ。
+        assert_eq!(
+            format_backend_label(k, Some("fable-5.1"), None),
+            "claude/fable-5.1"
+        );
+        // effort のみ (model 未指定でも欄を詰めて連結)。
+        assert_eq!(format_backend_label(k, None, Some("high")), "claude/high");
+        // 両方なし = backend 名のみ。
+        assert_eq!(format_backend_label(k, None, None), "claude");
     }
 
     #[test]

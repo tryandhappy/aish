@@ -142,7 +142,15 @@ impl AiConversation<'_> {
                         &response.commands,
                     );
 
-                    ui::print_ai_message(&response.message, self.kind, self.display);
+                    let msg_model = self.ai_session.model();
+                    let msg_effort = self.ai_session.effort();
+                    ui::print_ai_message(
+                        &response.message,
+                        self.kind,
+                        msg_model.as_deref(),
+                        msg_effort.as_deref(),
+                        self.display,
+                    );
 
                     // コマンド提案がない場合は対話終了
                     if response.commands.is_empty() {

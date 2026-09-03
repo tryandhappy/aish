@@ -73,6 +73,7 @@ drain / 入力スレッド（§ 15.6）:
 - **入力スレッド再開は `InputGate` + `rearm_on_drop()` RAII guard**（idle に戻る arm の入口で取得。手書き arm 呼び出しを増やさない）。
 
 その他 UI（§ 15.8）:
+- **AI 応答ラベルは `[backend/model/effort]> `**（`print_ai_message` → 純関数 `format_backend_label`）。**model/effort は明示選択済みの欄だけ `/` 連結し None 欄は省略**（スピナー `Spinner::start` と同じ省略方針。CLI 内部デフォルトは取得不能なので表示しない）。ring_buffer 注釈の `[ai/<kind>]>`（`record_ai_exchange`）とは別物で書式を変えない。
 - **起動バナーは Unix / SSH では PTY spawn より前、Windows ローカルシェルでは spawn 後の初期バースト処理（`main::windows_local_startup`）内で描画する**（ConPTY は spawn 直後に全画面クリア `\x1b[2J\x1b[H` を必ず emit するため spawn 前のバナーは消える — § 15.14。バーストを非表示で吸収 → クリーンなら**バナーを現在の cursor 位置へインライン描画**（実画面の退避・全画面スクロールはしない = スクロール位置を動かさない）+ 実 cursor 行−1 個の空 Enter 注入で ConPTY 座標を整合、混入ありなら従来動作へフォールバック）。**空 Enter 注入はローカルシェル限定、リモートには送らない**。
 - **PowerShell 系のローカル子シェル（`powershell`/`pwsh`）は `-NoLogo` を付けて spawn する**（`pty_handler::is_powershell_shell` で shell 名を検出）。付けないと子 PowerShell が自分の起動ロゴ（`Windows PowerShell` / Copyright / 更新通知）を再出力し、その行数ぶんビューポートがスクロールして aish 起動バナーが画面外へ押し出される（2026-08 実測。「バナーが消える」の実体は上書きでなくスクロールアウト）。プロンプト形（`PS C:\...> `）は変えないので `PromptSniffer` に影響しない。cmd/他 shell には付けない。
 - **PTY 出力の実測は `AISH_DEBUG_PTY=1`**（`drain_pty` が生チャンクを escape して stderr にダンプ。**aish→PTY の書き込み側も `[aish-pty-w]` で対にダンプ**（`debug_pty_write`）。`AISH_DEBUG_KEYS` と対で既定無効・stderr 出力。ConPTY のカーソル位置指定シーケンス調査用。`/tmp` ログの `AISH_DEBUG` とは別で Windows でも `2> pty.log` で取れる）。
