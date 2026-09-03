@@ -351,15 +351,15 @@ fn try_handle_slash_command(
     let cmd = parts.next().unwrap_or("");
     let value = parts.next().map(str::trim).filter(|s| !s.is_empty());
     match cmd {
-        "help" => Some(
+        "help" => Some(format!(
             "available slash commands:\n\
              /help                    show this help\n\
              /effort [<level>]        set reasoning effort (no value = pick from list, `-`/`clear` = clear)\n\
              /model  [<name>]         set model (no value = pick from list, `-`/`clear` = clear)\n\
              /clear                   clear conversation history / session\n\
-             /ai     <NAME>           switch AI backend (built-in: claude|codex|gemini|qwen|cursor|copilot, or any [[ai.providers]] name)"
-                .to_string(),
-        ),
+             /ai     <NAME>           switch AI backend (built-in: {}, or any [[ai.providers]] name)",
+            native_backend_names()
+        )),
         "effort" => Some(run_option_picker(
             "effort",
             value,
@@ -385,9 +385,10 @@ fn try_handle_slash_command(
         }
         "ai" => {
             let Some(v) = value else {
-                return Some(
-                    "/ai requires a backend name (built-in: claude|codex|gemini|qwen|cursor|copilot, or any [[ai.providers]].name)".to_string(),
-                );
+                return Some(format!(
+                    "/ai requires a backend name (built-in: {}, or any [[ai.providers]] name)",
+                    native_backend_names()
+                ));
             };
             let new_kind = match ai::BackendKind::parse(v) {
                 Ok(k) => k,
