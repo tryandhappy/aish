@@ -34,25 +34,38 @@ https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
 
 #### 必要なコマンド
 
-- AI CLI (いずれか)
-  - [Claude Code](https://code.claude.com/docs/ja/overview)
-  - [ChatGPT Codex](https://openai.com/ja-JP/codex/)
-  - [Gemini CLI](https://cloud.google.com/blog/ja/topics/developers-practitioners/introducing-gemini-cli/)
-  - [Antigravity CLI (`agy`)](https://antigravity.google/docs/cli/install) — Gemini CLI の後継
-  - [Qwen Code](https://qwen.ai/qwencode)
-  - [xAI Grok CLI (`grok`)](https://x.ai/cli)
+- AI CLI — 下記 [対応AI CLI](#対応ai-cli) のいずれか（例: [Claude Code](https://code.claude.com/docs/ja/overview), [ChatGPT Codex](https://openai.com/ja-JP/codex/), [Gemini CLI](https://cloud.google.com/blog/ja/topics/developers-practitioners/introducing-gemini-cli/), [Qwen Code](https://qwen.ai/qwencode)）
 - OpenSSH (リモートSSH)
 - bash または zsh (ローカルシェル)
-- curl (aish --update)
+- curl (aish --update、および REST backend)
 
 
 
 ## 対応AI CLI
 
-- Claude Code (API, Pro, Max, Team, Enterprise) ※FreeはClaude Codeが使えないので未対応 (デフォルト)
-- OpenAI ChatGPT Codex ※テスト不十分
-- Google Gemini ※テスト不十分
-- Qwen Code ※テスト不十分
+`--ai <名前>` で選ぶか、`config.toml` の `backend` に設定します。選んだ CLI が未インストールなら、実在する最初の CLI に自動フォールバックします。
+
+**ネイティブ backend**（組み込み）:
+
+- `claude` — Claude Code (API, Pro, Max, Team, Enterprise)。Free は Claude Code が使えないので未対応（**既定**）
+- `codex` — OpenAI ChatGPT Codex ※テスト不十分
+- `gemini` — Google Gemini CLI ※テスト不十分
+- `antigravity` (`agy`) — Google Antigravity CLI、Gemini CLI の後継
+- `qwen` — Qwen Code ※テスト不十分
+- `cursor` — Cursor Agent (`cursor-agent`)、`--mode plan` 固定
+- `copilot` — GitHub Copilot CLI（shell/write を deny、plan モード）
+- `grok` — xAI Grok CLI (`grok`) ※`which -a grok` で公式 CLI か確認
+- `cloudflare` — Cloudflare Workers AI を REST 経由（認証は環境変数: `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN`）
+- `nvidia` — NVIDIA NIM を REST 経由（認証は環境変数: `NVIDIA_API_KEY`）
+
+**組み込み recipe**（read-only の安全設定を焼き込んで同梱した generic backend）:
+
+- `kimi` — MoonshotAI Kimi CLI（`--plan`）
+- `opencode` — OpenCode（config 注入で read-only agent を強制）
+
+`config.toml` の `[[ai.providers]]` recipe で独自 CLI を追加できます。`aish --list-providers` で解決済みの全 backend を確認できます。ユーザ定義 provider には安全フラグを**自動付与しません**（recipe 著者の責任）。
+
+どの backend でも、aish が勝手に shell/write 権限を与えることはありません。AI はコマンドを*提案*するだけで、画面で承認するまで何も実行されません。
 
 
 ## インストール
@@ -171,12 +184,12 @@ aish --ai claude \
   --effort low|medium|high|xhigh|max|ultracode
 
 # Codex
-aish --ai codex --model gpt-5.5
-aish --ai codex --model gpt-5.5 --effort xhigh
+aish --ai codex --model gpt-5.6-sol
+aish --ai codex --model gpt-5.6-sol --effort xhigh
 
 ## Codex Usage
 aish --ai \
-  codex --model gpt-5.5|gpt-5.4|gpt-g.4-mini \
+  codex --model gpt-5.6-sol|gpt-5.6-terra|gpt-5.5 \
   --effort low|medium|high|xhigh
 ```
 
@@ -236,6 +249,41 @@ backend = "nvidia"
 ```
 
 
+## スラッシュコマンド
+
+`Ctrl+/` プロンプトの先頭で入力します:
+
+| コマンド | 動作 |
+|---|---|
+| `/help` | 使えるコマンド一覧 |
+| `/model [名前]` | AI モデルを設定。引数なしでピッカー、`-` / `clear` でクリア |
+| `/effort [レベル]` | 推論エフォートを設定（claude / codex / copilot / antigravity）。ピッカー / クリアは同様 |
+| `/ai <名前>` | AI backend を切替（例: `/ai codex`） |
+| `/clear` | 現在の backend の会話 / セッションをリセット |
+
+## キー操作
+
+**パススルー（通常のターミナル）:**
+
+- `Ctrl+/` — aish プロンプトを開いて AI に問い合わせ。それ以外はそのままシェルへ。
+
+**aish プロンプト（ミニバッファ）:**
+
+- `Enter` 送信 · `Alt+Enter` 改行挿入（Shift+Enter は非対応）· `ESC` / `Ctrl+C` キャンセル
+- `↑` / `↓` で過去のプロンプトを呼び出し — 履歴は `~/.aish/history` に永続化され再起動後も残る（`[history]` 設定）
+- Emacs 風編集: `Ctrl+A`/`Ctrl+E` 行頭/行末、`Ctrl+B`/`Ctrl+F` 左/右、`Ctrl+U`/`Ctrl+K` 行頭/行末まで削除、`Ctrl+W` 単語削除
+
+**コマンド確認**（`Exec? <cmd> [y/n/e/A/q]`）:
+
+- `y` / `Enter` / `Space` — このコマンドを実行
+- `n` / `ESC` — このコマンドをスキップ
+- `e` — コマンドを**編集**し、実行前にもう一度確認
+- `A` — これを実行し、残りは自動承認
+- `q` — 残りを中止
+- `Ctrl+C` / `Ctrl+D` — 残りを中止（AI に follow-up しない）
+
+複数コマンドがある場合、`Enter` の既定は **All**、最後 / 単一コマンドでは **Yes**。
+
 ## 対話シェルを常に aish にする
 
 極めて便利です。
@@ -266,6 +314,17 @@ if [[ -o interactive && -z "$AISH_PID" ]]; then
     #command -v aish >/dev/null && exec aish
 fi
 ```
+
+## 既知の制約
+
+aish は「**画面で承認した物 = サーバで実行される物**」という原則を厳守し、サーバ側に勝手な書き込みをしません（shell 統合フックや履歴書き換えをしない）。この設計の代償として、いくつか制約があります:
+
+- **完了判定は passive**（シェルプロンプトが戻るのを観察）。exit code は取得せず、AI は出力から成否を推測します。`tail -f` 等の連続出力は自動検出できないので `Ctrl+C` で抜けてください。
+- **カスタムプロンプトテーマ**は初回だけ見逃すことがあります（以降は学習）。
+- **改行挿入の Shift+Enter は非対応**です（`Alt+Enter` を使用）。
+- **zsh の vi モード**（`bindkey -v`）ではキャンセル時に `^A^K` が残ることがあります（未承認コマンドの実行には至りません）。
+- **IME の未確定文字（preedit）**は取得できません。
+- **Windows ネイティブはベータ版**: `--update` 非対応（インストーラを再実行）。リサイズや `cls` で画面上の aish 出力が上書きされることがあります。
 
 ## コミュニティ
 

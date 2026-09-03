@@ -34,25 +34,38 @@ https://github.com/tryandhappy/aish/raw/main/docs/movies/sample-local1.mp4
 
 #### Required Commands
 
-- AI CLI (one of)
-  - [Claude Code](https://code.claude.com/docs/en/overview)
-  - [ChatGPT Codex](https://openai.com/codex/)
-  - [Gemini CLI](https://cloud.google.com/blog/topics/developers-practitioners/introducing-gemini-cli/)
-  - [Antigravity CLI (`agy`)](https://antigravity.google/docs/cli/install) — successor to the Gemini CLI
-  - [Qwen Code](https://qwen.ai/qwencode)
-  - [xAI Grok CLI (`grok`)](https://x.ai/cli)
+- An AI CLI — one of the [Supported AI CLIs](#supported-ai-clis) below (e.g. [Claude Code](https://code.claude.com/docs/en/overview), [ChatGPT Codex](https://openai.com/codex/), [Gemini CLI](https://cloud.google.com/blog/topics/developers-practitioners/introducing-gemini-cli/), [Qwen Code](https://qwen.ai/qwencode))
 - OpenSSH (for remote SSH)
 - bash or zsh (for the local shell)
-- curl (for aish --update)
+- curl (for aish --update, and for the REST backends)
 
 
 
 ## Supported AI CLIs
 
-- Claude Code (API, Pro, Max, Team, Enterprise) — Free is not supported since it can't use Claude Code (default)
-- OpenAI ChatGPT Codex — not thoroughly tested
-- Google Gemini — not thoroughly tested
-- Qwen Code — not thoroughly tested
+Pick one with `--ai <name>` or set `backend` in `config.toml`. If the selected CLI is missing, aish falls back to the first installed one it finds.
+
+**Native backends** (built in):
+
+- `claude` — Claude Code (API, Pro, Max, Team, Enterprise); Free can't use Claude Code (**default**)
+- `codex` — OpenAI ChatGPT Codex — not thoroughly tested
+- `gemini` — Google Gemini CLI — not thoroughly tested
+- `antigravity` (`agy`) — Google Antigravity CLI, successor to the Gemini CLI
+- `qwen` — Qwen Code — not thoroughly tested
+- `cursor` — Cursor Agent (`cursor-agent`), forced to `--mode plan`
+- `copilot` — GitHub Copilot CLI (shell/write denied, plan mode)
+- `grok` — xAI Grok CLI (`grok`) — run `which -a grok` to confirm the official CLI
+- `cloudflare` — Cloudflare Workers AI over REST (auth via env: `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN`)
+- `nvidia` — NVIDIA NIM over REST (auth via env: `NVIDIA_API_KEY`)
+
+**Built-in recipes** (generic backends shipped with read-only safety baked in):
+
+- `kimi` — MoonshotAI Kimi CLI (`--plan`)
+- `opencode` — OpenCode (read-only agent injected via config)
+
+You can add your own CLI as a `[[ai.providers]]` recipe in `config.toml`; run `aish --list-providers` to see all resolved backends. Safety flags are **not** auto-applied to user-defined providers — the recipe author is responsible for them.
+
+Whichever backend you use, aish never grants it shell/write access on its own: the AI only *proposes* commands, and nothing runs until you approve it on screen.
 
 
 ## Installation
@@ -171,12 +184,12 @@ aish --ai claude \
   --effort low|medium|high|xhigh|max|ultracode
 
 # Codex
-aish --ai codex --model gpt-5.5
-aish --ai codex --model gpt-5.5 --effort xhigh
+aish --ai codex --model gpt-5.6-sol
+aish --ai codex --model gpt-5.6-sol --effort xhigh
 
 ## Codex Usage
 aish --ai \
-  codex --model gpt-5.5|gpt-5.4|gpt-g.4-mini \
+  codex --model gpt-5.6-sol|gpt-5.6-terra|gpt-5.5 \
   --effort low|medium|high|xhigh
 ```
 
@@ -236,6 +249,41 @@ backend = "nvidia"
 ```
 
 
+## Slash Commands
+
+Type these at the start of the `Ctrl+/` prompt:
+
+| Command | What it does |
+|---|---|
+| `/help` | List available commands |
+| `/model [name]` | Set the AI model. No argument opens a picker; `-` or `clear` clears it |
+| `/effort [level]` | Set the reasoning effort (claude / codex / copilot / antigravity). Same picker / clear rules |
+| `/ai <name>` | Switch AI backend (e.g. `/ai codex`) |
+| `/clear` | Reset the current backend's conversation/session |
+
+## Key Operations
+
+**Passthrough (normal terminal):**
+
+- `Ctrl+/` — open the aish prompt to ask the AI. Everything else goes straight to the shell.
+
+**aish prompt (minibuffer):**
+
+- `Enter` submit · `Alt+Enter` insert a newline (Shift+Enter is not supported) · `ESC` / `Ctrl+C` cancel
+- `↑` / `↓` recall previous prompts — history persists across restarts in `~/.aish/history` (see the `[history]` config)
+- Emacs-style editing: `Ctrl+A`/`Ctrl+E` line start/end, `Ctrl+B`/`Ctrl+F` left/right, `Ctrl+U`/`Ctrl+K` delete to start/end, `Ctrl+W` delete word
+
+**Command confirmation** (`Exec? <cmd> [y/n/e/A/q]`):
+
+- `y` / `Enter` / `Space` — run this command
+- `n` / `ESC` — skip this command
+- `e` — **edit** the command, then confirm again before it runs
+- `A` — run this and auto-approve the rest
+- `q` — cancel the rest
+- `Ctrl+C` / `Ctrl+D` — cancel the rest without asking the AI to follow up
+
+When several commands are queued, `Enter` defaults to **All**; on the last/only command it defaults to **Yes**.
+
 ## Make aish Your Default Interactive Shell
 
 Extremely convenient.
@@ -266,6 +314,17 @@ if [[ -o interactive && -z "$AISH_PID" ]]; then
     #command -v aish >/dev/null && exec aish
 fi
 ```
+
+## Known Limitations
+
+aish keeps a strict rule — *what you approve on screen is what runs on the server* — and never writes to the server on its own (no shell-integration hooks, no history rewriting). That design has a few consequences:
+
+- **Command completion is detected passively** (by watching for the shell prompt to return). Exit codes are not captured, so the AI infers success/failure from the output. Long-running/streaming commands (`tail -f`) aren't auto-detected — exit them with `Ctrl+C`.
+- **A custom shell prompt theme** may be missed on its first use, then learned.
+- **Shift+Enter is not supported** for inserting newlines — use `Alt+Enter`.
+- **zsh vi mode** (`bindkey -v`) can leave a stray `^A^K` on cancel (never runs an unapproved command).
+- **IME preedit (unconfirmed) text** can't be read.
+- **Windows native is Beta**: `--update` is unsupported (re-run the installer); a terminal resize or `cls` can overwrite aish's on-screen output.
 
 ## Community
 
