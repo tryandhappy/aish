@@ -325,7 +325,6 @@ mod tests {
         // system prompt の出力例 JSON (object 形式) が抽出される。
         assert_eq!(resp.commands.len(), 1);
         assert_eq!(resp.commands[0].command, "提案コマンド");
-        assert_eq!(resp.commands[0].explanation, "説明");
         assert_eq!(resp.commands[0].risk, crate::ai::Risk::Green);
     }
 

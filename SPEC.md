@@ -90,7 +90,7 @@ CLI SSH + AI (Claude Code) ツール。クライアント側の Claude Code か�
 - ステータスバー行に 80ms 周期で `{thinking_color}{frame} {thinking_message}\x1b[0m`。`\x1b7`/`\x1b8` でシェル入力欄保全。`stop()` / Drop でステータスバー再描画。
 
 ### 4.6 確認プロンプト
-- AI 提案 `commands` を番号付き全件表示（プラン提示、各コマンドを危険度色）後、各コマンドごとに確認。**説明があれば `Exec?` の下に「説明<改行>コマンド」を危険度色で 2 行表示、無ければ従来の `Exec? {cmd} [...]` 1 行**（`build_confirm_prompt`。色は `ui::risk_color`、危険度は AI 由来の `risk` = Green/Yellow/Orange/Red、§6.3）。1 キー即確定（`read_confirm_key`）。最後／単一は `[Y/n/e]`。キーの意味は §15.2。`e` = そのコマンドを編集してから再確認（§15.15。編集後も元の説明/色を維持）。
+- AI 提案 `commands` を番号付き全件表示（プラン提示、各コマンドを危険度色）後、各コマンドごとに `Exec? {cmd} [...]` を表示（`build_confirm_prompt`。**コマンド本文のみ危険度色** = `ui::risk_color`、危険度は AI 由来の `risk` = Green/Yellow/Orange/Red、§6.3。`Exec?` ラベルとブラケットは confirm_color）。1 キー即確定（`read_confirm_key`）。最後／単一は `[Y/n/e]`。キーの意味は §15.2。`e` = そのコマンドを編集してから再確認（§15.15。編集後も元の色を維持）。
 
 ---
 
@@ -194,14 +194,14 @@ trait `AiBackend` で対応:
   "properties": {
     "message": {"type":"string"},
     "commands": {"type":"array","items":{"type":"object",
-      "properties": {"command":{"type":"string"},"explanation":{"type":"string"},
+      "properties": {"command":{"type":"string"},
         "risk":{"type":"string","enum":["Green","Yellow","Orange","Red"]}},
-      "required":["command","explanation","risk"]}},
+      "required":["command","risk"]}},
     "command_result_followup": {"type":"boolean"} },
   "required": ["message", "commands", "command_result_followup"] }
 ```
-- **各コマンドは `command`(本体) + `explanation`(短い説明) + `risk`(危険度) のオブジェクト**（2026-09〜）。risk 4 分類は **Green**=サーバ影響なし ReadOnly（軽負荷ログ表示・ファイル検索）/ **Yellow**=再起動等の一時的サービス停止の可能性・大量ログ/ファイル検索等の高負荷 / **Orange**=サーバ設定変更（設定ファイル書き換え・config 変更）/ **Red**=不可逆（ファイル削除・DB レコード削除・設定削除）。判定基準は `AI_RESPONSE_SCHEMA` の risk description と `build_system_prompt` の応答ルールに**同一文言**（片方だけ直さない = §15.10。`schema_and_prompt_share_risk_taxonomy` で drift 検知）。
-- **後方互換**: `ProposedCommand` の custom `Deserialize` が**裸文字列も受理**（旧 `"commands":["ls"]`）→ `{command:"ls", explanation:"", risk:Yellow}`。**risk 欠落 / 不明値 / null / 裸文字列は `Risk::Yellow` 既定（安全側）**。claude/grok 以外の全 backend は `parse_ai_response_lossy` 経由なのでこの寛容 deserialize が唯一の互換点。
+- **各コマンドは `command`(本体) + `risk`(危険度) のオブジェクト**（2026-09〜）。**コマンドごとの説明文 (`explanation`) は付けない**（当初 explanation も持たせたが確認画面が煩雑になるためユーザ指示で撤去。schema/prompt/型/表示すべてから削除）。risk 4 分類は **Green**=サーバ影響なし ReadOnly（軽負荷ログ表示・ファイル検索）/ **Yellow**=再起動等の一時的サービス停止の可能性・大量ログ/ファイル検索等の高負荷 / **Orange**=サーバ設定変更（設定ファイル書き換え・config 変更）/ **Red**=不可逆（ファイル削除・DB レコード削除・設定削除）。判定基準は `AI_RESPONSE_SCHEMA` の risk description と `build_system_prompt` の応答ルールに**同一文言**（片方だけ直さない = §15.10。`schema_and_prompt_share_risk_taxonomy` で drift 検知）。
+- **後方互換**: `ProposedCommand` の custom `Deserialize` が**裸文字列も受理**（旧 `"commands":["ls"]`）→ `{command:"ls", risk:Yellow}`。object の**未知キー (旧 `explanation` 等) は無視**。**risk 欠落 / 不明値 / null / 裸文字列は `Risk::Yellow` 既定（安全側）**。claude/grok 以外の全 backend は `parse_ai_response_lossy` 経由なのでこの寛容 deserialize が唯一の互換点。
 
 ### 6.4 プロンプト組み立て
 - ` ```terminal\n{リングバッファのマーク以降（ANSI 除去済み）}\n``` ` + ユーザ入力。リングバッファが空なら `terminal` フェンスなし。
@@ -528,7 +528,7 @@ backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
 - **制御文字ガードは `VettedCommand` 型（`src/vetted_command.rs`）**。実行ループ先頭（`Approval` 分岐前）で `VettedCommand::vet` が検証し、**`\n`/`\t` 以外**の制御文字（CR/ESC/NUL/他 C0/DEL/C1）入りは確認に載せず `print_rejected_command` → `continue`（PTY に送らない）。**`\n`（改行）と `\t`（TAB）は許可** — heredoc / 複数行スクリプトを 1 提案として送るため。`print_single_confirm_prompt` が `\n` を実際の改行 + 字下げで**全行描画**（TAB は字下げ literal、他制御文字は caret 化）するので「画面で見た全行 = 送信する全行」が保たれ隠れ行を作れない（`\r` での行頭復帰偽装だけを弾く）。検証後は表示（`print_single_confirm_prompt`）も送信（`send_approved_command`）も `&VettedCommand` のみ受理 → **「画面で承認した物 = サーバで実行される物」が型レベルで保たれ、撤去・迂回は型エラー**（vet は検証のみで変形しない。`as_str()` が同一スライスを返すことをテストで固定）。`[a]` 経路も通る。関連型: `ConfirmDecision`（Run/Skip/RunRest/QuitRest/AbortNoAi/Edit）/ `Approval`（AskEach/All）/ `ExecOutcome`（Completed/Quit/Abort）。`e`=編集した文字列も送信前に再 vet される（§15.15）。
 - **AI 由来の `message` / `commands` は描画前に制御文字を caret 可視化**（`visualize_control_line`、`print_ai_message` / `print_ai_commands` / `print_single_confirm_prompt` で適用。ESC→`^[`、CR→`^M`、TAB→`^I`、NUL→`^@`）。`\r` 行頭復帰 + `\x1b[2K` 行消去による「見た目 ≠ 送るバイト」偽装を防ぐ。AI 出力はプロンプトインジェクションで未信頼になり得るので**生 `println!` に戻さない**。`message` は複数行が正当なので `.lines()` 分割を維持し行内のみ可視化。
 - **完了判定は `PromptSniffer` の passive 検出**（§6.5）。承認文字列はそのまま PTY へ。
-- **危険度分類の metadata は信頼境界の外**（2026-09〜）。`ProposedCommand.explanation`/`risk` は**表示専用**で、`VettedCommand` にも `send_approved_command` の送信バイトにも一切入れない。`confirm_and_execute` は loop index で `&ProposedCommand` を並走参照し、`command` だけを `Cow`→`VettedCommand` に載せる。`e=編集`しても metadata は index 固定の元コマンド由来をそのまま維持（編集後のバイトに対する分類ではない点は許容 = ユーザ合意）。確認プロンプトは `build_confirm_prompt`（純関数・golden test）が危険度色（`ui::risk_color`: Green=`38;5;40` / Yellow=`38;5;226` / Orange=`38;5;208` / Red=`38;5;196`、ハードコード）で「説明<改行>コマンド」を描画（説明が空なら従来の 1 行表示、コマンドのみ危険度色）。`Exec?` ラベルと `[y/n/e/A/q]` は不変。`print_ai_commands` の事前一覧も各コマンドを危険度色に。説明も未信頼 AI テキストなので `visualize_control_line` で caret 化。
+- **危険度分類の metadata は信頼境界の外**（2026-09〜）。`ProposedCommand.risk` は**表示専用**で、`VettedCommand` にも `send_approved_command` の送信バイトにも一切入れない。`confirm_and_execute` は loop index で `&ProposedCommand` を並走参照し、`command` だけを `Cow`→`VettedCommand` に載せる。`e=編集`しても risk は index 固定の元コマンド由来をそのまま維持（編集後のバイトに対する分類ではない点は許容 = ユーザ合意）。確認プロンプトは `build_confirm_prompt`（純関数・golden test）が**コマンド本文だけ**を危険度色（`ui::risk_color`: Green=`38;5;40` / Yellow=`38;5;226` / Orange=`38;5;208` / Red=`38;5;196`、ハードコード）で描画。`Exec?` ラベルと `[y/n/e/A/q]` ブラケットは confirm_color を維持（ブラケットは bold+reverse なので危険度色を当てると派手すぎる = ユーザ指摘）。`print_ai_commands` の事前一覧も各コマンドを危険度色に。**コマンドごとの説明文は当初持たせたが表示が煩雑になるため撤去**（explanation を schema/prompt/型/表示から削除。2026-09）。
 
 ### 15.8 その他の UI ルール
 

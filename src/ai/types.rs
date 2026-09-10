@@ -52,18 +52,17 @@ impl<'de> Deserialize<'de> for Risk {
     }
 }
 
-/// AI が提案する 1 コマンド + その説明 + 危険度。
+/// AI が提案する 1 コマンド + その危険度。
 ///
 /// **後方互換**: JSON では「裸文字列」と「object」の両方を受理する (`Deserialize` 参照)。
-/// - 裸文字列 `"ls"` → `{ command: "ls", explanation: "", risk: Yellow }`
-/// - object `{ "command": "...", "explanation": "...", "risk": "Green" }`
+/// - 裸文字列 `"ls"` → `{ command: "ls", risk: Yellow }`
+/// - object `{ "command": "...", "risk": "Green" }`（未知キー = 旧 `explanation` 等は無視）
 ///
-/// **信頼の根幹**: `command` は実行対象の文字列。`explanation`/`risk` は表示専用の metadata で、
-/// `VettedCommand` や PTY 送信バイトには一切含めない (`conversation::confirm_and_execute`)。
+/// **信頼の根幹**: `command` は実行対象の文字列。`risk` は表示専用の metadata (確認画面の
+/// 文字色) で、`VettedCommand` や PTY 送信バイトには一切含めない (`conversation::confirm_and_execute`)。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProposedCommand {
     pub command: String,
-    pub explanation: String,
     pub risk: Risk,
 }
 
@@ -78,14 +77,13 @@ impl<'de> Deserialize<'de> for ProposedCommand {
             type Value = ProposedCommand;
 
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.write_str("a command string or a {command, explanation, risk} object")
+                f.write_str("a command string or a {command, risk} object")
             }
 
-            // 旧形式: 裸文字列 → 説明なし・Yellow。
+            // 旧形式: 裸文字列 → Yellow。
             fn visit_str<E: de::Error>(self, v: &str) -> Result<ProposedCommand, E> {
                 Ok(ProposedCommand {
                     command: v.to_string(),
-                    explanation: String::new(),
                     risk: Risk::default(),
                 })
             }
@@ -93,20 +91,17 @@ impl<'de> Deserialize<'de> for ProposedCommand {
             fn visit_string<E: de::Error>(self, v: String) -> Result<ProposedCommand, E> {
                 Ok(ProposedCommand {
                     command: v,
-                    explanation: String::new(),
                     risk: Risk::default(),
                 })
             }
 
-            // 新形式: object。command のみ必須、explanation/risk は欠落可。
+            // 新形式: object。command のみ必須、risk は欠落可。未知キー (旧 explanation 等) は無視。
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<ProposedCommand, A::Error> {
                 let mut command: Option<String> = None;
-                let mut explanation: Option<String> = None;
                 let mut risk: Option<Risk> = None;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "command" => command = Some(map.next_value()?),
-                        "explanation" => explanation = Some(map.next_value()?),
                         // null も許容 (None → 既定 Yellow)。文字列は寛容変換。
                         "risk" => {
                             let s: Option<String> = map.next_value()?;
@@ -119,7 +114,6 @@ impl<'de> Deserialize<'de> for ProposedCommand {
                 }
                 Ok(ProposedCommand {
                     command: command.ok_or_else(|| de::Error::missing_field("command"))?,
-                    explanation: explanation.unwrap_or_default(),
                     risk: risk.unwrap_or_default(),
                 })
             }
@@ -463,24 +457,23 @@ mod tests {
 
     #[test]
     fn proposed_command_deserializes_bare_string_backward_compat() {
-        // 旧形式: commands が裸文字列配列 → 説明なし・Yellow で受理 (silent 消失しない)。
+        // 旧形式: commands が裸文字列配列 → Yellow で受理 (silent 消失しない)。
         let r: AiResponse =
             serde_json::from_str(r#"{"message":"m","commands":["ls -la","df -h"]}"#).unwrap();
         assert_eq!(r.commands.len(), 2);
         assert_eq!(r.commands[0].command, "ls -la");
-        assert_eq!(r.commands[0].explanation, "");
         assert_eq!(r.commands[0].risk, Risk::Yellow);
         assert!(r.command_result_followup); // 欠落時 true
     }
 
     #[test]
     fn proposed_command_deserializes_object_form() {
+        // 旧 explanation キーが混ざっていても無視して command/risk を取る (前方互換)。
         let r: AiResponse = serde_json::from_str(
             r#"{"message":"m","commands":[{"command":"rm -rf /tmp/x","explanation":"一時ファイル削除","risk":"Red"}],"command_result_followup":false}"#,
         )
         .unwrap();
         assert_eq!(r.commands[0].command, "rm -rf /tmp/x");
-        assert_eq!(r.commands[0].explanation, "一時ファイル削除");
         assert_eq!(r.commands[0].risk, Risk::Red);
         assert!(!r.command_result_followup);
     }

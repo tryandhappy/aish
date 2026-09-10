@@ -140,7 +140,6 @@ mod tests {
     fn pc(cmd: &str) -> ProposedCommand {
         ProposedCommand {
             command: cmd.to_string(),
-            explanation: String::new(),
             risk: crate::ai::Risk::Yellow,
         }
     }

@@ -252,8 +252,8 @@ impl AiConversation<'_> {
         let mut approval = Approval::AskEach;
         for (i, cmd) in commands.iter().enumerate() {
             // 編集 (e) でコマンド文字列が置換されうるので所有バッファに載せる。
-            // 未編集なら borrow のまま (コピーしない)。説明/危険度 (cmd.explanation/cmd.risk)
-            // は index 固定の元コマンド由来で、編集後も維持する (信頼境界には入れない)。
+            // 未編集なら borrow のまま (コピーしない)。危険度 (cmd.risk) は index 固定の元コマンド
+            // 由来で、編集後も維持する (信頼境界には入れない = 確認画面の文字色だけ)。
             let mut current: Cow<'_, str> = Cow::Borrowed(cmd.command.as_str());
 
             // 確認 (+ 編集) ループ。e=編集した場合は編集結果を再 vet → confirm prompt
@@ -281,7 +281,7 @@ impl AiConversation<'_> {
                     &vetted,
                     i + 1,
                     total,
-                    Some((&cmd.explanation, cmd.risk)),
+                    Some(cmd.risk),
                     self.display,
                 );
                 // 残コマンドがある (最後ではない) とき [a] が出ており Enter=All。

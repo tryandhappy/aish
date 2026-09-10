@@ -420,24 +420,24 @@ pub fn print_single_confirm_prompt(
     cmd: &VettedCommand<'_>,
     index: usize,
     total: usize,
-    meta: Option<(&str, Risk)>,
+    risk: Option<Risk>,
     display: &DisplayConfig,
 ) {
     print!(
         "{}",
-        build_confirm_prompt(cmd, index, total, meta, &display.confirm_color)
+        build_confirm_prompt(cmd, index, total, risk, &display.confirm_color)
     );
     io::stdout().flush().ok();
 }
 
 /// 確認プロンプト文字列を組み立てる純関数 (golden test 対象)。
 /// トラスト隣接: 表示する `raw` (= `cmd.as_str()`) はそのまま結果に含まれ、可視化した各行が
-/// 送信バイトと 1:1 対応する。説明/危険度色は装飾で、コマンドバイトを一切変えない。
+/// 送信バイトと 1:1 対応する。危険度色は装飾で、コマンドバイトを一切変えない。
 fn build_confirm_prompt(
     cmd: &VettedCommand<'_>,
     index: usize,
     total: usize,
-    meta: Option<(&str, Risk)>,
+    risk: Option<Risk>,
     confirm_color: &str,
 ) -> String {
     // 残コマンドがある (= 最後ではない) ときだけ [y/n/A/q] を出す。
@@ -448,18 +448,13 @@ fn build_confirm_prompt(
     // e = このコマンドを編集してから再確認 (§ 15.15)。最後のコマンドでも編集は
     // 有用なので隠さず [Y/n/e] に出す。
     let options = if index < total { "y/n/e/A/q" } else { "Y/n/e" };
-    // 本文 (説明 + コマンド) だけを危険度色にする。`Exec?` ラベルと `[options]` ブラケットは
-    // 従来の confirm_color を保つ (ブラケットは bold+reverse なので危険度色を当てると reverse と
+    // コマンド本文だけを危険度色にする。`Exec?` ラベルと `[options]` ブラケットは従来の
+    // confirm_color を保つ (ブラケットは bold+reverse なので危険度色を当てると reverse と
     // 相まって派手になり視認性が落ちる — ユーザ指摘 2026-09。SPEC §15.7「ラベル/ブラケットは不変」)。
-    let body_color: &str = match meta {
-        Some((_, risk)) => risk_color(risk),
+    let body_color: &str = match risk {
+        Some(r) => risk_color(r),
         None => confirm_color,
     };
-    // 説明は未信頼 AI テキストなので message と同じく全制御文字を caret 化 (visualize_control_line)。
-    let explanation = meta
-        .map(|(e, _)| e)
-        .filter(|e| !e.is_empty())
-        .map(visualize_control_line);
     // "Exec?" をオレンジ文字+暗い茶色背景 (prompt_color 系) で区別する試行。
     // 選択肢 [Y/n] / [Y/n/a] は bold + reverse で強調。
     let label_on = "\x1b[38;5;208;48;2;50;35;20m";
@@ -472,24 +467,19 @@ fn build_confirm_prompt(
     // VettedCommand は `\n`/`\t` 以外の制御文字フリーだが、可視化は防御的に残す
     // (vet と可視化の対象集合が将来ズレても「見た目 ≠ 送信バイト」の偽装だけは成立しないように)。
     let raw = cmd.as_str();
-    let multiline = raw.contains('\n');
     let mut out = String::new();
-    if multiline || explanation.is_some() {
-        // ブロック表示: "Exec?" を独立行、続けて (あれば) 説明行、コマンド全行を 2 空白字下げで
-        // 描画してから [options] を独立行に出す。「説明<改行>コマンド」を危険度色で見せる。
-        // コマンド各行は `\n` で分割し、TAB は字下げ literal・他の制御文字は caret 化する。
-        // 送信される全行を承認前に漏れなく見せるのが目的 (隠れた行を作らせない)。
+    if raw.contains('\n') {
+        // 複数行コマンド: "Exec?" を独立行に出し、コマンド全行を 2 空白字下げで描画してから
+        // [options] を独立行に出す。コマンド各行は `\n` で分割し、TAB は字下げ literal・他の
+        // 制御文字は caret 化する。送信される全行を承認前に漏れなく見せる (隠れ行を作らせない)。
         out.push_str(&format!("\n{confirm_color}{label_on}Exec?\x1b[0m"));
-        if let Some(expl) = &explanation {
-            out.push_str(&format!("\n{body_color}  {expl}\x1b[0m"));
-        }
         for line in raw.split('\n') {
             let line = visualize_command_segment(line);
             out.push_str(&format!("\n{body_color}  {line}\x1b[0m"));
         }
         out.push_str(&format!("\n{confirm_color}{hl_on}[{options}]\x1b[0m "));
     } else {
-        // 説明なし・単一行: 従来どおり 1 行に畳む (コマンドのみ危険度色、ラベル/ブラケットは confirm_color)。
+        // 単一行: 従来どおり 1 行 (コマンドのみ危険度色、ラベル/ブラケットは confirm_color)。
         let cmd = visualize_command_segment(raw);
         out.push_str(&format!(
             "\n{confirm_color}{label_on}Exec?\x1b[0m {body_color}{cmd}\x1b[0m {confirm_color}{hl_on}[{options}]\x1b[0m "
@@ -1443,35 +1433,28 @@ mod tests {
     }
 
     #[test]
-    fn confirm_prompt_shows_explanation_and_risk_color() {
-        // 説明あり → ブロック表示で「説明行 → コマンド行」、危険度色 (Red=196) を含む。
+    fn confirm_prompt_colors_command_by_risk() {
+        // 単一行: コマンドは危険度色 (Red=196)、ラベル/ブラケットは confirm_color を維持。
         let v = VettedCommand::vet("rm -rf /var/log/app").unwrap();
-        let s = build_confirm_prompt(&v, 1, 1, Some(("ログを完全削除します", Risk::Red)), "CONF");
-        assert!(s.contains("ログを完全削除します"));
+        let s = build_confirm_prompt(&v, 1, 1, Some(Risk::Red), "CONF");
         assert!(s.contains("rm -rf /var/log/app")); // コマンドバイトはそのまま
-        assert!(s.contains("38;5;196")); // 説明+コマンドは Red 色
+        assert!(s.contains("38;5;196")); // コマンドは Red 色
         assert!(s.contains("CONF")); // Exec? ラベルと [options] ブラケットは confirm_color を維持
-                                     // 説明行がコマンド行より前に来る (説明<改行>コマンド)。
-        let expl_pos = s.find("ログを完全削除します").unwrap();
-        let cmd_pos = s.find("rm -rf /var/log/app").unwrap();
-        assert!(expl_pos < cmd_pos);
         assert!(s.contains("[Y/n/e]")); // 最後のコマンド (index==total)
     }
 
     #[test]
-    fn confirm_prompt_empty_explanation_single_line_uses_risk_color() {
-        // 説明が空 → 1 行に畳むが、コマンドは危険度色 (Green=40)。
+    fn confirm_prompt_green_and_options_bracket() {
         let v = VettedCommand::vet("ls -la").unwrap();
-        let s = build_confirm_prompt(&v, 1, 3, Some(("", Risk::Green)), "CONF");
+        let s = build_confirm_prompt(&v, 1, 3, Some(Risk::Green), "CONF");
         assert!(s.contains("ls -la"));
         assert!(s.contains("38;5;40")); // Green
         assert!(s.contains("[y/n/e/A/q]")); // 残コマンドあり
-        assert!(!s.contains("\n  ")); // 説明行なし = ブロック字下げなし
     }
 
     #[test]
-    fn confirm_prompt_none_meta_falls_back_to_confirm_color() {
-        // meta なし → 従来の confirm_color を使う (後方安全)。
+    fn confirm_prompt_none_risk_falls_back_to_confirm_color() {
+        // risk なし → 従来の confirm_color を使う (後方安全)。
         let v = VettedCommand::vet("uptime").unwrap();
         let s = build_confirm_prompt(&v, 1, 1, None, "CONFCOLOR");
         assert!(s.contains("CONFCOLOR"));
@@ -1482,11 +1465,11 @@ mod tests {
     fn confirm_prompt_command_bytes_verbatim_multiline() {
         // 複数行コマンドの全行が結果に含まれる (隠れ行なし = 信頼境界)。
         let v = VettedCommand::vet("cat <<'EOF'\nhello\nEOF").unwrap();
-        let s = build_confirm_prompt(&v, 1, 1, Some(("heredoc", Risk::Yellow)), "CONF");
+        let s = build_confirm_prompt(&v, 1, 1, Some(Risk::Yellow), "CONF");
         assert!(s.contains("cat <<'EOF'"));
         assert!(s.contains("hello"));
         assert!(s.contains("EOF"));
-        assert!(s.contains("heredoc"));
+        assert!(s.contains("38;5;226")); // Yellow でコマンド行が色付く
     }
 
     #[test]

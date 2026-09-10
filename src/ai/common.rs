@@ -139,12 +139,11 @@ pub(crate) const AI_RESPONSE_SCHEMA: &str = r#"{
         "type": "object",
         "properties": {
           "command": { "type": "string", "description": "実行を提案するコマンド本体" },
-          "explanation": { "type": "string", "description": "そのコマンドが何をするかの短い説明(1文程度)" },
           "risk": { "type": "string", "enum": ["Green", "Yellow", "Orange", "Red"], "description": "危険度: Green=サーバに影響を与えないReadOnly(軽負荷なログ表示・ファイル検索)、Yellow=再起動等の一時的なサービス停止の可能性、または大量のログ/ファイル検索等の高負荷、Orange=サーバ設定の変更(設定ファイルの書き換え・config変更)、Red=不可逆(ファイル削除・DBレコード削除・設定削除)。迷う場合は安全側(より高いリスク)を選ぶ。" }
         },
-        "required": ["command", "explanation", "risk"]
+        "required": ["command", "risk"]
       },
-      "description": "ユーザに実行を提案するコマンドのリスト。各要素は command(コマンド本体)・explanation(短い説明)・risk(危険度)を持つオブジェクト。message 本文で実行コマンドを提示したら同じものを必ずここにも入れる(本文だけに書かない)。独立した複数のコマンドは ; で1つに連結せず配列の別要素に分割する(ただし &&・|| や for/while/case 等の制御構文内の ; は1コマンドとして維持)。1つのコマンドが複数行になる場合(heredoc やスクリプト等)は無理に1行へ詰めず改行を保持して1要素にする。提案すべきコマンドが無ければ空配列。"
+      "description": "ユーザに実行を提案するコマンドのリスト。各要素は command(コマンド本体)・risk(危険度)を持つオブジェクト。message 本文で実行コマンドを提示したら同じものを必ずここにも入れる(本文だけに書かない)。独立した複数のコマンドは ; で1つに連結せず配列の別要素に分割する(ただし &&・|| や for/while/case 等の制御構文内の ; は1コマンドとして維持)。1つのコマンドが複数行になる場合(heredoc やスクリプト等)は無理に1行へ詰めず改行を保持して1要素にする。提案すべきコマンドが無ければ空配列。"
     },
     "command_result_followup": {
       "type": "boolean",
@@ -178,7 +177,7 @@ pub(crate) fn build_system_prompt(base: &str, language: &str) -> String {
          - ターミナルの内容は既に下記 ```terminal``` ブロックに含まれています。\n\
          - コマンドは「提案のみ」行ってください。\n\n\
          応答ルール:\n\
-         - commands の各要素は command(コマンド本体)・explanation(そのコマンドが何をするかの短い説明、1文程度)・risk(危険度) を持つオブジェクトにしてください。\n\
+         - commands の各要素は command(コマンド本体)・risk(危険度) を持つオブジェクトにしてください。\n\
          - risk は次の4段階から選びます: Green=サーバに影響を与えないReadOnly(軽負荷なログ表示・ファイル検索)、Yellow=再起動等の一時的なサービス停止の可能性、または大量のログ/ファイル検索等の高負荷、Orange=サーバ設定の変更(設定ファイルの書き換え・config変更)、Red=不可逆(ファイル削除・DBレコード削除・設定削除)。迷う場合は安全側(より高いリスク)を選んでください。\n\
          - 独立した複数のコマンドを ; で1つに連結せず、commands 配列の別々の要素に分割してください。\n\
          - ただし &&・|| による条件付き実行や、for/while/until/case/if 等の制御構文に含まれる ; は1つのコマンドとして維持してください。\n\
@@ -187,7 +186,7 @@ pub(crate) fn build_system_prompt(base: &str, language: &str) -> String {
          ユーザにコマンドを教える・提示するだけで出力の確認が不要なら false。省略時は true として扱われます。\n\n\
          出力フォーマット: 必ず以下の JSON だけを 1 つ出力してください。\
          前後に説明文・コードフェンス・追加テキストを付けないでください。\n\
-         {{\"message\": \"ユーザへの説明\", \"commands\": [{{\"command\": \"提案コマンド\", \"explanation\": \"説明\", \"risk\": \"Green\"}}], \"command_result_followup\": true}}\n\
+         {{\"message\": \"ユーザへの説明\", \"commands\": [{{\"command\": \"提案コマンド\", \"risk\": \"Green\"}}], \"command_result_followup\": true}}\n\
          追加のコマンド提案が不要な場合は commands を [] にしてください。\n\
          実行したいコマンドがあれば必ず commands 配列に入れてください。\
          message 中にコマンドの説明やコードブロックが出てきても構いませんが、\
@@ -584,7 +583,6 @@ mod tests {
         assert_eq!(r.commands[0].command, "df -h");
         assert_eq!(r.commands[0].risk, crate::ai::Risk::Yellow); // 裸文字列→既定
         assert_eq!(r.commands[1].command, "rm -rf /tmp/x");
-        assert_eq!(r.commands[1].explanation, "一時削除");
         assert_eq!(r.commands[1].risk, crate::ai::Risk::Red);
     }
 

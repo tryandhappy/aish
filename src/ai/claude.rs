@@ -377,7 +377,7 @@ mod tests {
             .iter()
             .map(|x| x.as_str().unwrap())
             .collect();
-        assert_eq!(item_required, ["command", "explanation", "risk"]);
+        assert_eq!(item_required, ["command", "risk"]);
         let risk_enum: Vec<&str> = items["properties"]["risk"]["enum"]
             .as_array()
             .unwrap()
