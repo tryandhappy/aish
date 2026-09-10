@@ -1,6 +1,7 @@
 use super::common::{
-    build_full_prompt, build_system_prompt, expand_tilde, extract_model_from_args,
+    build_full_prompt, build_system_prompt, expand_tilde, extract_json, extract_model_from_args,
     parse_ai_response_lossy, resolve_option_list, run_cli_capture_stdout, trim_history,
+    AI_RESPONSE_SCHEMA,
 };
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
 use crate::config::{AiConfig, LogConfig, OptionLists};
@@ -51,6 +52,34 @@ fn parse_grok_models(stdout: &str) -> Vec<String> {
     out
 }
 
+/// grok の `--json-schema`(= `--output-format json`) 出力から `AiResponse` を取り出す純関数。
+///
+/// 封筒形式 (grok 1.0.25 実測):
+/// ```json
+/// { "text": "{\"message\":\"…\",\"commands\":[…],\"command_result_followup\":true}",
+///   "stopReason": "end_turn", "sessionId": "…", "usage": {…}, … }
+/// ```
+/// `text` に schema 準拠 JSON 文字列が入る。段階フォールバックで頑健さを保つ (grok は従来 lossy
+/// backend なので、schema が効かない/出力が崩れても hard error にせず lossy 解釈に落とす):
+/// 1. 封筒の `text` を `AiResponse` としてパース → 2. `text` を lossy 解釈 →
+/// 3. 封筒直下を `AiResponse` として試行 → 4. stdout 全体を lossy 解釈。
+fn parse_grok_response(stdout: &str) -> AiResponse {
+    if let Some(json_str) = extract_json(stdout.trim()) {
+        if let Ok(envelope) = serde_json::from_str::<serde_json::Value>(json_str) {
+            if let Some(text) = envelope["text"].as_str() {
+                if let Ok(resp) = serde_json::from_str::<AiResponse>(text.trim()) {
+                    return resp;
+                }
+                return parse_ai_response_lossy(text);
+            }
+            if let Ok(resp) = serde_json::from_value::<AiResponse>(envelope) {
+                return resp;
+            }
+        }
+    }
+    parse_ai_response_lossy(stdout)
+}
+
 /// xAI Grok CLI backend (公式 `grok`、https://x.ai/cli、`--ai grok`)。
 ///
 /// 戦略 (gemini/qwen と同じ system-prompt-only 方式):
@@ -63,6 +92,9 @@ fn parse_grok_models(stdout: &str) -> Vec<String> {
 ///   bypassPermissions` 等の auto-approve 系は絶対に付けない。
 /// - reasoning effort は `--reasoning-effort <low|medium|high|xhigh>` を send() で付与 (実測対応)。
 ///   model 指定は `-m`。
+/// - 出力は `--json-schema`(= `--output-format json`) で `AiResponse` 形を強制し、封筒の `text` を
+///   構造化パース (claude と同格の信頼性)。schema が効かない場合は lossy 解釈へ段階フォールバック
+///   (`parse_grok_response`)。
 /// - 非対話 session resume (`-r`/`--continue`) は使わず、内部で履歴 (user_prompt, ai_message) を
 ///   保持して毎回プロンプトに含める (backend 横断の統一方針)。
 ///
@@ -100,11 +132,19 @@ impl GrokBackend {
         }
     }
 
-    /// prompt 配送フラグ以外の共通引数 (model / effort / extra_args) を組み立てる純関数。
+    /// prompt 配送フラグ以外の共通引数 (構造化出力 + model / effort / extra_args) を組み立てる純関数。
     /// prompt の渡し方 (`--prompt-file /dev/stdin` or `-p <prompt>`) は send() が
     /// プラットフォーム別に前置する。golden test 対象。
     fn build_args(&self) -> Vec<String> {
-        let mut args: Vec<String> = Vec::new();
+        // `--json-schema`(= `--output-format json` を含意) で AiResponse 形を強制し、
+        // 従来の lossy 抽出でなく構造化パースを可能にする (claude と同じ姿勢)。明示的に
+        // `--output-format json` も併記 (claude に合わせる)。
+        let mut args: Vec<String> = vec![
+            "--output-format".to_string(),
+            "json".to_string(),
+            "--json-schema".to_string(),
+            AI_RESPONSE_SCHEMA.to_string(),
+        ];
         args.extend(self.base_extra_args.iter().cloned());
         if let Some(m) = &self.model {
             args.push("-m".to_string());
@@ -200,7 +240,7 @@ impl AiBackend for GrokBackend {
             args.extend(common);
             run_cli_capture_stdout("grok", &args, "", &self.log_path)?
         };
-        let response = parse_ai_response_lossy(&stdout);
+        let response = parse_grok_response(&stdout);
         self.history
             .push((req.user_prompt.to_string(), response.message.clone()));
         trim_history(&mut self.history, MAX_HISTORY_TURNS);
@@ -230,6 +270,11 @@ mod tests {
         };
         let backend = GrokBackend::new(&cfg, &LogConfig::default());
         let args = backend.build_args();
+        // 構造化出力を強制 (lossy でなく schema パス)。
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--output-format" && w[1] == "json"));
+        assert!(args.iter().any(|a| a == "--json-schema"));
         assert!(args.windows(2).any(|w| w[0] == "-m" && w[1] == "grok-4.6"));
         assert!(args
             .windows(2)
@@ -237,6 +282,23 @@ mod tests {
         assert!(!args
             .iter()
             .any(|a| a == "--always-approve" || a == "--yolo" || a == "--permission-mode"));
+    }
+
+    #[test]
+    fn parse_grok_response_extracts_from_json_envelope() {
+        // 封筒の text(schema 準拠 JSON 文字列) から message/commands/followup を取り出す。
+        let envelope = r#"{"text":"{\"message\":\"disk と memory を確認\",\"commands\":[\"df -h\",\"free -h\"],\"command_result_followup\":true}","stopReason":"end_turn","sessionId":"x"}"#;
+        let resp = parse_grok_response(envelope);
+        assert_eq!(resp.message, "disk と memory を確認");
+        assert_eq!(resp.commands, vec!["df -h", "free -h"]);
+        assert!(resp.command_result_followup);
+    }
+
+    #[test]
+    fn parse_grok_response_falls_back_to_lossy_on_plain_text() {
+        // 封筒でない素テキストでも hard error にせず lossy 解釈へ落ちる (頑健さ維持)。
+        let resp = parse_grok_response("ここに JSON は無い、ただの説明文");
+        assert!(!resp.message.is_empty());
     }
 
     #[test]

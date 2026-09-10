@@ -1,6 +1,6 @@
 use super::common::{
     build_system_prompt_claude, expand_tilde, extract_json, extract_model_from_args,
-    resolve_option_list, run_cli_capture_stdout,
+    resolve_option_list, run_cli_capture_stdout, AI_RESPONSE_SCHEMA,
 };
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
 use crate::config::{AiConfig, LogConfig, OptionLists};
@@ -28,23 +28,6 @@ const MODEL_DEFAULTS: &[&str] = &[
     "claude-opus-4-8",
     "claude-haiku-4-5",
 ];
-
-const AI_RESPONSE_SCHEMA: &str = r#"{
-  "type": "object",
-  "properties": {
-    "message": { "type": "string", "description": "ユーザへの説明" },
-    "commands": {
-      "type": "array",
-      "items": { "type": "string" },
-      "description": "ユーザに実行を提案するコマンドのリスト。message 本文で実行コマンドを提示したら同じものを必ずここにも入れる(本文だけに書かない)。独立した複数のコマンドは ; で1つに連結せず配列の別要素に分割する(ただし &&・|| や for/while/case 等の制御構文内の ; は1コマンドとして維持)。1つのコマンドが複数行になる場合(heredoc やスクリプト等)は無理に1行へ詰めず改行を保持して1要素にする。提案すべきコマンドが無ければ空配列。"
-    },
-    "command_result_followup": {
-      "type": "boolean",
-      "description": "提案コマンドの実行後、その出力を見て分析・調査・操作を続行する必要があるなら true。ユーザにコマンドを教える・提示するだけで出力の確認が不要なら false。"
-    }
-  },
-  "required": ["message", "commands", "command_result_followup"]
-}"#;
 
 pub struct ClaudeBackend {
     session_id: Option<String>,
