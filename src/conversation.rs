@@ -423,10 +423,16 @@ fn format_ai_error(kind: ai::BackendKind, error: &ai::AiError) -> String {
         // claude CLI headless のマーカー付きエラーは種類名を見出しに出し、
         // 種類が分かるものだけ具体的なヒントを添える (未知の種類は原文のみ)。
         let head = format!("[{}] Claude Error: {tag}\n{text}", kind.as_str());
-        return match claude_error_hint(tag) {
+        let mut out = match claude_error_hint(tag) {
             Some(hint) => format!("{head}\n{hint}"),
             None => head,
         };
+        // `--model grok` のように backend 名を `--model` に渡した取り違えを検出して案内。
+        if let Some(extra) = backend_name_confusion_hint(&text) {
+            out.push('\n');
+            out.push_str(&extra);
+        }
+        return out;
     }
     format!(
         "[{}] {text}\nPlease check your login or usage limit.",
@@ -444,6 +450,25 @@ fn claude_error_tag(text: &str) -> Option<&str> {
     let rest = &text[start..];
     let tag = &rest[..rest.find(']')?];
     (!tag.is_empty() && tag.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')).then_some(tag)
+}
+
+/// `--model <名前>` に AI backend 名 (grok/codex 等) を渡した取り違えを検出するヒント (純関数)。
+/// backend が別 (既定 claude 等) のままモデル名だけ backend 名にすると
+/// `unrecognized_model` になるので、エラー本文の `{"model":"<v>"}` が native backend 名と
+/// 一致したら `--ai <v>` を提案する。generic backend 名 (opencode 等) は init 前で列挙できないため
+/// 対象外 (native 名のみ)。一致しなければ None。
+fn backend_name_confusion_hint(text: &str) -> Option<String> {
+    let brace = text.find('{')?;
+    let json: serde_json::Value = serde_json::from_str(text[brace..].trim()).ok()?;
+    let model = json.get("model")?.as_str()?;
+    let canonical = ai::BackendKind::all_native()
+        .into_iter()
+        .find(|k| k.as_str().eq_ignore_ascii_case(model))?;
+    Some(format!(
+        "Hint: \"{model}\" is an AI backend name, not a model. \
+         Use `aish --ai {}` instead of `--model {model}`.",
+        canonical.as_str()
+    ))
 }
 
 /// エラー種類 (tag) ごとのヒント文。部分一致でカテゴリ分けし、
@@ -815,6 +840,25 @@ mod tests {
         }
         // 未知の種類はヒントなし (原文のみ表示)。
         assert_eq!(claude_error_hint("mystery_error"), None);
+    }
+
+    #[test]
+    fn backend_name_confusion_hint_detects_model_as_backend() {
+        // `--model grok` の取り違え: model 名が backend 名 → --ai grok を提案。
+        let text = r#"[claude-code:unrecognized_model] {"model":"grok","query_source":"sdk"}"#;
+        let hint = backend_name_confusion_hint(text).expect("grok は native backend 名");
+        assert!(hint.contains("--ai grok"));
+        assert!(hint.contains("not a model"));
+        // 大小無視 (canonical 名で提案)。
+        let text_up = r#"[claude-code:unrecognized_model] {"model":"Codex"}"#;
+        assert!(backend_name_confusion_hint(text_up)
+            .unwrap()
+            .contains("--ai codex"));
+        // 実在モデル名 (backend 名でない) は None。
+        let real = r#"[claude-code:unrecognized_model] {"model":"opus-9000"}"#;
+        assert_eq!(backend_name_confusion_hint(real), None);
+        // JSON が無いエラーは None。
+        assert_eq!(backend_name_confusion_hint("plain error, no json"), None);
     }
 
     #[test]
