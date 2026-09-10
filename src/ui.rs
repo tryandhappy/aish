@@ -1,4 +1,4 @@
-use crate::ai::BackendKind;
+use crate::ai::{BackendKind, ProposedCommand, Risk};
 use crate::config::DisplayConfig;
 use crate::vetted_command::VettedCommand;
 use std::io::{self, Write};
@@ -113,6 +113,18 @@ pub fn build_color_start(color: &str) -> String {
         return String::new();
     }
     format!("{color}\x1b[K")
+}
+
+/// AI 提案コマンドの危険度 (`Risk`) を確認画面の文字色 (256-color) にマップする。
+/// ユーザ指定の色分け: Green=緑 / Yellow=黄 / Orange=橙 / Red=赤。
+/// 橙は既存ブランド色 208 に合わせる。ハードコード既定 (config 化はしない)。
+pub fn risk_color(risk: Risk) -> &'static str {
+    match risk {
+        Risk::Green => "\x1b[38;5;40m",
+        Risk::Yellow => "\x1b[38;5;226m",
+        Risk::Orange => "\x1b[38;5;208m",
+        Risk::Red => "\x1b[38;5;196m",
+    }
 }
 
 /// AI バックエンド種別ごとの識別色 (256-color)。未知名は orange にフォールバック。
@@ -373,20 +385,22 @@ pub fn print_slash_result(message: &str) {
     io::stdout().flush().ok();
 }
 
-pub fn print_ai_commands(commands: &[String], display: &DisplayConfig) {
+pub fn print_ai_commands(commands: &[ProposedCommand], display: &DisplayConfig) {
     if commands.is_empty() {
         return;
     }
-    let color = build_color_start(&display.ai_color);
-    println!("{color}Proposed commands:\x1b[K\x1b[0m");
-    for (i, cmd) in commands.iter().enumerate() {
+    let header_color = build_color_start(&display.ai_color);
+    println!("{header_color}Proposed commands:\x1b[K\x1b[0m");
+    for (i, pc) in commands.iter().enumerate() {
+        // 各エントリを危険度の色で描画 (説明はここでは出さず、確認プロンプトで出す)。
         // 複数行コマンド (heredoc / スクリプト) は各行を 1 行として描画し、2 行目以降は
         // 番号プレフィクス幅ぶん字下げして揃える (= ユーザが送信される全行を漏れなく見る)。
         // `\n` で分割し、CR/ESC 等の偽装用制御文字は caret 化、TAB は字下げ literal で残す。
+        let color = risk_color(pc.risk);
         let prefix = format!("  {}: ", i + 1);
         let indent = " ".repeat(prefix.len());
         let mut first = true;
-        for line in cmd.split('\n') {
+        for line in pc.command.split('\n') {
             let line = visualize_command_segment(line);
             if first {
                 println!("{color}{prefix}{line}\x1b[K\x1b[0m");
@@ -406,9 +420,26 @@ pub fn print_single_confirm_prompt(
     cmd: &VettedCommand<'_>,
     index: usize,
     total: usize,
+    meta: Option<(&str, Risk)>,
     display: &DisplayConfig,
 ) {
-    let color = &display.confirm_color;
+    print!(
+        "{}",
+        build_confirm_prompt(cmd, index, total, meta, &display.confirm_color)
+    );
+    io::stdout().flush().ok();
+}
+
+/// 確認プロンプト文字列を組み立てる純関数 (golden test 対象)。
+/// トラスト隣接: 表示する `raw` (= `cmd.as_str()`) はそのまま結果に含まれ、可視化した各行が
+/// 送信バイトと 1:1 対応する。説明/危険度色は装飾で、コマンドバイトを一切変えない。
+fn build_confirm_prompt(
+    cmd: &VettedCommand<'_>,
+    index: usize,
+    total: usize,
+    meta: Option<(&str, Risk)>,
+    confirm_color: &str,
+) -> String {
     // 残コマンドがある (= 最後ではない) ときだけ [y/n/A/q] を出す。
     // a = 残り全部を自動承認 (apt / sudo の慣習)、q = 残りを中止。
     // 複数コマンド時はデフォルト = a なので A を大文字にして示す (Enter = All)。
@@ -417,8 +448,17 @@ pub fn print_single_confirm_prompt(
     // e = このコマンドを編集してから再確認 (§ 15.15)。最後のコマンドでも編集は
     // 有用なので隠さず [Y/n/e] に出す。
     let options = if index < total { "y/n/e/A/q" } else { "Y/n/e" };
+    // 本文 (説明 + コマンド) の色: risk があれば危険度色、無ければ従来の confirm_color。
+    let color: &str = match meta {
+        Some((_, risk)) => risk_color(risk),
+        None => confirm_color,
+    };
+    // 説明は未信頼 AI テキストなので message と同じく全制御文字を caret 化 (visualize_control_line)。
+    let explanation = meta
+        .map(|(e, _)| e)
+        .filter(|e| !e.is_empty())
+        .map(visualize_control_line);
     // "Exec?" をオレンジ文字+暗い茶色背景 (prompt_color 系) で区別する試行。
-    // 終了は再度 confirm_color を適用して元の薄黄/グレーに戻す。
     // 選択肢 [Y/n] / [Y/n/a] は bold + reverse で強調。
     let label_on = "\x1b[38;5;208;48;2;50;35;20m";
     let hl_on = "\x1b[1;7m";
@@ -430,23 +470,30 @@ pub fn print_single_confirm_prompt(
     // VettedCommand は `\n`/`\t` 以外の制御文字フリーだが、可視化は防御的に残す
     // (vet と可視化の対象集合が将来ズレても「見た目 ≠ 送信バイト」の偽装だけは成立しないように)。
     let raw = cmd.as_str();
-    if raw.contains('\n') {
-        // 複数行コマンド: "Exec?" を独立行に出し、本文を 2 空白字下げで全行描画してから
-        // [Y/n/a] を独立行に出す。各行は `\n` で分割し、TAB は字下げ literal・他の制御文字は
-        // caret 化する。送信される全行を承認前に漏れなく見せるのが目的 (隠れた行を作らせない)。
-        print!("\n{color}{label_on}Exec?\x1b[0m");
+    let multiline = raw.contains('\n');
+    let mut out = String::new();
+    if multiline || explanation.is_some() {
+        // ブロック表示: "Exec?" を独立行、続けて (あれば) 説明行、コマンド全行を 2 空白字下げで
+        // 描画してから [options] を独立行に出す。「説明<改行>コマンド」を危険度色で見せる。
+        // コマンド各行は `\n` で分割し、TAB は字下げ literal・他の制御文字は caret 化する。
+        // 送信される全行を承認前に漏れなく見せるのが目的 (隠れた行を作らせない)。
+        out.push_str(&format!("\n{color}{label_on}Exec?\x1b[0m"));
+        if let Some(expl) = &explanation {
+            out.push_str(&format!("\n{color}  {expl}\x1b[0m"));
+        }
         for line in raw.split('\n') {
             let line = visualize_command_segment(line);
-            print!("\n{color}  {line}\x1b[0m");
+            out.push_str(&format!("\n{color}  {line}\x1b[0m"));
         }
-        print!("\n{color}{hl_on}[{options}]\x1b[0m ");
+        out.push_str(&format!("\n{color}{hl_on}[{options}]\x1b[0m "));
     } else {
+        // 説明なし・単一行: 従来どおり 1 行に畳む (コマンドは危険度色)。
         let cmd = visualize_command_segment(raw);
-        print!(
+        out.push_str(&format!(
             "\n{color}{label_on}Exec?\x1b[0m {color}{cmd}\x1b[0m {color}{hl_on}[{options}]\x1b[0m "
-        );
+        ));
     }
-    io::stdout().flush().ok();
+    out
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1384,6 +1431,61 @@ fn passthrough_read_raw(tx: &Sender<InputEvent>, input_bg: &str, aish_label: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn risk_color_maps_all_variants() {
+        assert!(risk_color(Risk::Green).contains("38;5;40"));
+        assert!(risk_color(Risk::Yellow).contains("38;5;226"));
+        assert!(risk_color(Risk::Orange).contains("38;5;208"));
+        assert!(risk_color(Risk::Red).contains("38;5;196"));
+    }
+
+    #[test]
+    fn confirm_prompt_shows_explanation_and_risk_color() {
+        // 説明あり → ブロック表示で「説明行 → コマンド行」、危険度色 (Red=196) を含む。
+        let v = VettedCommand::vet("rm -rf /var/log/app").unwrap();
+        let s = build_confirm_prompt(&v, 1, 1, Some(("ログを完全削除します", Risk::Red)), "CONF");
+        assert!(s.contains("ログを完全削除します"));
+        assert!(s.contains("rm -rf /var/log/app")); // コマンドバイトはそのまま
+        assert!(s.contains("38;5;196")); // Red 色
+        assert!(!s.contains("CONF")); // risk 指定時は confirm_color を使わない
+                                      // 説明行がコマンド行より前に来る (説明<改行>コマンド)。
+        let expl_pos = s.find("ログを完全削除します").unwrap();
+        let cmd_pos = s.find("rm -rf /var/log/app").unwrap();
+        assert!(expl_pos < cmd_pos);
+        assert!(s.contains("[Y/n/e]")); // 最後のコマンド (index==total)
+    }
+
+    #[test]
+    fn confirm_prompt_empty_explanation_single_line_uses_risk_color() {
+        // 説明が空 → 1 行に畳むが、コマンドは危険度色 (Green=40)。
+        let v = VettedCommand::vet("ls -la").unwrap();
+        let s = build_confirm_prompt(&v, 1, 3, Some(("", Risk::Green)), "CONF");
+        assert!(s.contains("ls -la"));
+        assert!(s.contains("38;5;40")); // Green
+        assert!(s.contains("[y/n/e/A/q]")); // 残コマンドあり
+        assert!(!s.contains("\n  ")); // 説明行なし = ブロック字下げなし
+    }
+
+    #[test]
+    fn confirm_prompt_none_meta_falls_back_to_confirm_color() {
+        // meta なし → 従来の confirm_color を使う (後方安全)。
+        let v = VettedCommand::vet("uptime").unwrap();
+        let s = build_confirm_prompt(&v, 1, 1, None, "CONFCOLOR");
+        assert!(s.contains("CONFCOLOR"));
+        assert!(s.contains("uptime"));
+    }
+
+    #[test]
+    fn confirm_prompt_command_bytes_verbatim_multiline() {
+        // 複数行コマンドの全行が結果に含まれる (隠れ行なし = 信頼境界)。
+        let v = VettedCommand::vet("cat <<'EOF'\nhello\nEOF").unwrap();
+        let s = build_confirm_prompt(&v, 1, 1, Some(("heredoc", Risk::Yellow)), "CONF");
+        assert!(s.contains("cat <<'EOF'"));
+        assert!(s.contains("hello"));
+        assert!(s.contains("EOF"));
+        assert!(s.contains("heredoc"));
+    }
 
     #[test]
     fn picker_step_navigation() {

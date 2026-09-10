@@ -290,7 +290,10 @@ mod tests {
         let envelope = r#"{"text":"{\"message\":\"disk と memory を確認\",\"commands\":[\"df -h\",\"free -h\"],\"command_result_followup\":true}","stopReason":"end_turn","sessionId":"x"}"#;
         let resp = parse_grok_response(envelope);
         assert_eq!(resp.message, "disk と memory を確認");
-        assert_eq!(resp.commands, vec!["df -h", "free -h"]);
+        // 裸文字列 commands は後方互換で ProposedCommand(説明なし・Yellow 既定) になる。
+        let cmds: Vec<&str> = resp.commands.iter().map(|c| c.command.as_str()).collect();
+        assert_eq!(cmds, vec!["df -h", "free -h"]);
+        assert_eq!(resp.commands[0].risk, crate::ai::Risk::Yellow);
         assert!(resp.command_result_followup);
     }
 

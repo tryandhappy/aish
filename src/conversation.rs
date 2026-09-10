@@ -245,15 +245,16 @@ impl AiConversation<'_> {
     /// 提案コマンドを 1 つずつ Y/n/a 確認して実行する。
     fn confirm_and_execute(
         &mut self,
-        commands: &[String],
+        commands: &[ai::ProposedCommand],
     ) -> Result<ExecReport, Box<dyn std::error::Error>> {
         let total = commands.len();
         let mut executed: Vec<String> = Vec::new();
         let mut approval = Approval::AskEach;
         for (i, cmd) in commands.iter().enumerate() {
             // 編集 (e) でコマンド文字列が置換されうるので所有バッファに載せる。
-            // 未編集なら borrow のまま (コピーしない)。
-            let mut current: Cow<'_, str> = Cow::Borrowed(cmd.as_str());
+            // 未編集なら borrow のまま (コピーしない)。説明/危険度 (cmd.explanation/cmd.risk)
+            // は index 固定の元コマンド由来で、編集後も維持する (信頼境界には入れない)。
+            let mut current: Cow<'_, str> = Cow::Borrowed(cmd.command.as_str());
 
             // 確認 (+ 編集) ループ。e=編集した場合は編集結果を再 vet → confirm prompt
             // 再表示して確認を取り直す (承認は必ず confirm prompt で取る = 信頼の根幹。
@@ -276,7 +277,13 @@ impl AiConversation<'_> {
                     // 存在しない (仕様)。
                     break ConfirmDecision::Run;
                 }
-                ui::print_single_confirm_prompt(&vetted, i + 1, total, self.display);
+                ui::print_single_confirm_prompt(
+                    &vetted,
+                    i + 1,
+                    total,
+                    Some((&cmd.explanation, cmd.risk)),
+                    self.display,
+                );
                 // 残コマンドがある (最後ではない) とき [a] が出ており Enter=All。
                 // print_single_confirm_prompt の `index < total` と同じ条件。
                 let default_all = i + 1 < total;

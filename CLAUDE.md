@@ -45,7 +45,8 @@ AI コマンド実行（§ 15.3, 15.7）:
 - **実行中の Ctrl+C(0x03) は実行中コマンドへ転送して中断 + 残りコマンド中止**（`ExecOutcome::Abort`、follow-up なし、両承認モードで一様）。**Ctrl+D(0x04) は対象外**（転送のみ）。
 - **AI 応答の `command_result_followup: false` は実行後の AI 自動問い合わせを抑制**（`q` でも抑制、欠落時 true = 従来動作）。判定基準は Claude schema description と `build_system_prompt` の**両方に同一文言**で記述（片方だけ直さない）。
 - **制御文字ガードは `VettedCommand` 型**。表示・送信が `&VettedCommand` のみ受理し「**承認した物 = 実行する物**」を型で保証（撤去・迂回は型エラー）。
-- **AI 由来 `message`/`commands` は描画前に制御文字を caret 可視化**（`visualize_control_line`）。**生 `println!` に戻さない**。
+- **AI 応答の `commands` は `ProposedCommand{command,explanation,risk}` の配列**（`ai::types`）。**後方互換で裸文字列も受理**（custom `Deserialize`。裸文字列/risk 欠落/不明値は `Risk::Yellow` 既定 = 安全側）。**`explanation`/`risk` は表示専用 metadata で `VettedCommand`・PTY 送信バイトには一切入れない**（信頼境界。loop index で並走、`e=編集`後も元の説明/色を維持）。risk 4 分類（Green/Yellow/Orange/Red）は AI 由来で、**判定基準を `AI_RESPONSE_SCHEMA` の risk description と `build_system_prompt` の応答ルールに同一文言で記述**（片方だけ直さない = §15.10。drift ガードテスト `schema_and_prompt_share_risk_taxonomy` あり）。確認プロンプトは危険度色（`ui::risk_color`=green40/yellow226/orange208/red196、ハードコード）で「説明<改行>コマンド」を描画（`build_confirm_prompt` 純関数、golden test）。`print_ai_commands` の一覧も危険度色。
+- **AI 由来 `message`/`commands`（説明含む）は描画前に制御文字を caret 可視化**（`visualize_control_line`）。**生 `println!` に戻さない**。
 - **完了判定は `PromptSniffer` の passive 検出**（プロンプト形 + 200ms 静音）。
 
 minibuffer / 打ちかけ（§ 15.4, 15.5）:

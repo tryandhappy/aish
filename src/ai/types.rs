@@ -1,5 +1,6 @@
 use crate::config::ProviderRecipe;
-use serde::Deserialize;
+use serde::de::{self, MapAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 use std::fmt;
 use std::sync::OnceLock;
 
@@ -8,10 +9,131 @@ pub struct AiRequest<'a> {
     pub user_prompt: &'a str,
 }
 
+/// AI が提案コマンドに付ける危険度分類。表示時に文字色へマップされる (`ui::risk_color`)。
+/// 判定基準は `common::AI_RESPONSE_SCHEMA` の `risk` description と `build_system_prompt`
+/// の応答ルールに **同一文言**で記述する (CLAUDE.md §15.10)。
+///
+/// - `Green`: サーバに影響を与えない ReadOnly。軽負荷なログ表示・ファイル検索。
+/// - `Yellow`: 再起動等の一時的なサービス停止の可能性、または大量ログ/ファイル検索等の高負荷。
+/// - `Orange`: サーバ設定の変更 (設定ファイル書き換え・config 変更)。
+/// - `Red`: 不可逆 (ファイル削除・DB レコード削除・設定削除)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Risk {
+    Green,
+    /// 既定 (安全側)。risk 欠落 / 不明値 / 旧形式の裸文字列コマンドはここへ倒す。
+    #[default]
+    Yellow,
+    Orange,
+    Red,
+}
+
+impl Risk {
+    /// 大小無視・前後空白無視で解釈。`green`/`orange`/`red` 以外 (yellow・未知・空) は
+    /// 安全側の `Yellow`。**未知値で要素全体の deserialize を失敗させない** ための寛容変換。
+    fn from_str_lenient(s: &str) -> Risk {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "green" => Risk::Green,
+            "orange" => Risk::Orange,
+            "red" => Risk::Red,
+            _ => Risk::Yellow,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Risk {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // null / 欠落は呼び出し側 (ProposedCommand) が default で吸収するので、
+        // ここへ来るのは文字列のみ。未知文字列は Yellow。
+        let s = String::deserialize(deserializer)?;
+        Ok(Risk::from_str_lenient(&s))
+    }
+}
+
+/// AI が提案する 1 コマンド + その説明 + 危険度。
+///
+/// **後方互換**: JSON では「裸文字列」と「object」の両方を受理する (`Deserialize` 参照)。
+/// - 裸文字列 `"ls"` → `{ command: "ls", explanation: "", risk: Yellow }`
+/// - object `{ "command": "...", "explanation": "...", "risk": "Green" }`
+///
+/// **信頼の根幹**: `command` は実行対象の文字列。`explanation`/`risk` は表示専用の metadata で、
+/// `VettedCommand` や PTY 送信バイトには一切含めない (`conversation::confirm_and_execute`)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProposedCommand {
+    pub command: String,
+    pub explanation: String,
+    pub risk: Risk,
+}
+
+impl<'de> Deserialize<'de> for ProposedCommand {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct PcVisitor;
+
+        impl<'de> Visitor<'de> for PcVisitor {
+            type Value = ProposedCommand;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a command string or a {command, explanation, risk} object")
+            }
+
+            // 旧形式: 裸文字列 → 説明なし・Yellow。
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<ProposedCommand, E> {
+                Ok(ProposedCommand {
+                    command: v.to_string(),
+                    explanation: String::new(),
+                    risk: Risk::default(),
+                })
+            }
+
+            fn visit_string<E: de::Error>(self, v: String) -> Result<ProposedCommand, E> {
+                Ok(ProposedCommand {
+                    command: v,
+                    explanation: String::new(),
+                    risk: Risk::default(),
+                })
+            }
+
+            // 新形式: object。command のみ必須、explanation/risk は欠落可。
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<ProposedCommand, A::Error> {
+                let mut command: Option<String> = None;
+                let mut explanation: Option<String> = None;
+                let mut risk: Option<Risk> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "command" => command = Some(map.next_value()?),
+                        "explanation" => explanation = Some(map.next_value()?),
+                        // null も許容 (None → 既定 Yellow)。文字列は寛容変換。
+                        "risk" => {
+                            let s: Option<String> = map.next_value()?;
+                            risk = Some(s.map(|v| Risk::from_str_lenient(&v)).unwrap_or_default());
+                        }
+                        _ => {
+                            let _: de::IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+                Ok(ProposedCommand {
+                    command: command.ok_or_else(|| de::Error::missing_field("command"))?,
+                    explanation: explanation.unwrap_or_default(),
+                    risk: risk.unwrap_or_default(),
+                })
+            }
+        }
+
+        deserializer.deserialize_any(PcVisitor)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AiResponse {
     pub message: String,
-    pub commands: Vec<String>,
+    /// 提案コマンド一覧。各要素は `ProposedCommand` (裸文字列も後方互換で受理)。
+    pub commands: Vec<ProposedCommand>,
     /// コマンド実行後、その結果を AI へ自動問い合わせ (follow-up) するか。
     /// AI が「コマンドを教えるだけで出力確認は不要」と判断したら false。
     /// 欠落時は true (従来動作) — フラグを出さないモデル / lossy フォールバックでも
@@ -338,6 +460,58 @@ impl From<std::io::Error> for AiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proposed_command_deserializes_bare_string_backward_compat() {
+        // 旧形式: commands が裸文字列配列 → 説明なし・Yellow で受理 (silent 消失しない)。
+        let r: AiResponse =
+            serde_json::from_str(r#"{"message":"m","commands":["ls -la","df -h"]}"#).unwrap();
+        assert_eq!(r.commands.len(), 2);
+        assert_eq!(r.commands[0].command, "ls -la");
+        assert_eq!(r.commands[0].explanation, "");
+        assert_eq!(r.commands[0].risk, Risk::Yellow);
+        assert!(r.command_result_followup); // 欠落時 true
+    }
+
+    #[test]
+    fn proposed_command_deserializes_object_form() {
+        let r: AiResponse = serde_json::from_str(
+            r#"{"message":"m","commands":[{"command":"rm -rf /tmp/x","explanation":"一時ファイル削除","risk":"Red"}],"command_result_followup":false}"#,
+        )
+        .unwrap();
+        assert_eq!(r.commands[0].command, "rm -rf /tmp/x");
+        assert_eq!(r.commands[0].explanation, "一時ファイル削除");
+        assert_eq!(r.commands[0].risk, Risk::Red);
+        assert!(!r.command_result_followup);
+    }
+
+    #[test]
+    fn proposed_command_mixed_array_and_lenient_risk() {
+        // 裸文字列と object の混在、大小無視・未知 risk→Yellow・risk 欠落→Yellow・null→Yellow。
+        let r: AiResponse = serde_json::from_str(
+            r#"{"message":"m","commands":[
+                "uptime",
+                {"command":"cat /etc/hosts","explanation":"閲覧","risk":"green"},
+                {"command":"vi /etc/nginx.conf","explanation":"編集","risk":"ORANGE"},
+                {"command":"foo","explanation":"e","risk":"weird"},
+                {"command":"bar","explanation":"e"},
+                {"command":"baz","explanation":"e","risk":null}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(r.commands[0].command, "uptime");
+        assert_eq!(r.commands[0].risk, Risk::Yellow); // 裸文字列
+        assert_eq!(r.commands[1].risk, Risk::Green); // "green"
+        assert_eq!(r.commands[2].risk, Risk::Orange); // "ORANGE"
+        assert_eq!(r.commands[3].risk, Risk::Yellow); // 未知→安全側
+        assert_eq!(r.commands[4].risk, Risk::Yellow); // 欠落→既定
+        assert_eq!(r.commands[5].risk, Risk::Yellow); // null→既定
+    }
+
+    #[test]
+    fn risk_default_is_yellow() {
+        assert_eq!(Risk::default(), Risk::Yellow);
+    }
 
     #[test]
     fn parse_known() {

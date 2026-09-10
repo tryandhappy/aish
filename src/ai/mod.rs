@@ -15,4 +15,4 @@ mod types;
 
 pub(crate) use common::expand_tilde;
 pub use factory::{auto_detect_backend, check_installed, create_backend, install_guide};
-pub use types::{AiBackend, AiError, AiRequest, AiResponse, BackendKind};
+pub use types::{AiBackend, AiError, AiRequest, AiResponse, BackendKind, ProposedCommand, Risk};

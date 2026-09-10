@@ -1,4 +1,4 @@
-use crate::ai::BackendKind;
+use crate::ai::{BackendKind, ProposedCommand};
 use std::collections::HashMap;
 
 const DEFAULT_CAPACITY: usize = 1024 * 1024; // 1MB
@@ -74,16 +74,20 @@ impl RingBuffer {
         kind: BackendKind,
         sent_prompt: &str,
         message: &str,
-        commands: &[String],
+        commands: &[ProposedCommand],
     ) {
         let kind_label = kind.as_str();
         self.append_text(&format!("\n[aish→{kind_label}]> {sent_prompt}\n"));
         self.append_text(&format!("[ai/{kind_label}]> {message}\n"));
         if !commands.is_empty() {
-            self.append_text(&format!(
-                "[ai/{kind_label} suggests] {}\n",
-                commands.join(" ; ")
-            ));
+            // AI コンテキストへ戻すのはコマンド文字列のみ (risk/説明は表示専用)。
+            // フォーマットは従来どおりバイト一致 (`; ` 連結)。
+            let joined = commands
+                .iter()
+                .map(|c| c.command.as_str())
+                .collect::<Vec<_>>()
+                .join(" ; ");
+            self.append_text(&format!("[ai/{kind_label} suggests] {joined}\n"));
         }
         self.mark_sent_for(kind);
     }
@@ -131,6 +135,15 @@ mod tests {
     use super::*;
 
     const ANY: BackendKind = BackendKind::Claude;
+
+    /// テスト用: コマンド文字列から ProposedCommand を作る (記録はコマンド文字列のみ使う)。
+    fn pc(cmd: &str) -> ProposedCommand {
+        ProposedCommand {
+            command: cmd.to_string(),
+            explanation: String::new(),
+            risk: crate::ai::Risk::Yellow,
+        }
+    }
 
     #[test]
     fn test_append_and_get() {
@@ -267,7 +280,7 @@ mod tests {
             BackendKind::Claude,
             "disk full?",
             "df を見ます",
-            &["df -h".to_string()],
+            &[pc("df -h")],
         );
         // current は自分の発話を catch-up で再受信しない。
         assert_eq!(buf.get_unsent_for(BackendKind::Claude), "");
@@ -283,12 +296,7 @@ mod tests {
         // 注釈フォーマットの golden 固定。変更すると他 backend の catch-up 文脈や
         // SPEC.md の注釈仕様とズレるので、意図的な変更時のみテストごと更新する。
         let mut buf = RingBuffer::new();
-        buf.record_ai_exchange(
-            BackendKind::Claude,
-            "p",
-            "m",
-            &["a".to_string(), "b".to_string()],
-        );
+        buf.record_ai_exchange(BackendKind::Claude, "p", "m", &[pc("a"), pc("b")]);
         assert_eq!(
             buf.get_unsent_for(BackendKind::Codex),
             "\n[aish→claude]> p\n[ai/claude]> m\n[ai/claude suggests] a ; b\n"

@@ -368,6 +368,23 @@ mod tests {
             .map(|x| x.as_str().unwrap())
             .collect();
         assert_eq!(required, ["message", "commands", "command_result_followup"]);
+        // commands の各要素は command/explanation/risk を持つ object で risk は enum。
+        let items = &v["properties"]["commands"]["items"];
+        assert_eq!(items["type"], "object");
+        let item_required: Vec<&str> = items["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap())
+            .collect();
+        assert_eq!(item_required, ["command", "explanation", "risk"]);
+        let risk_enum: Vec<&str> = items["properties"]["risk"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap())
+            .collect();
+        assert_eq!(risk_enum, ["Green", "Yellow", "Orange", "Red"]);
     }
 
     #[test]
