@@ -448,8 +448,10 @@ fn build_confirm_prompt(
     // e = このコマンドを編集してから再確認 (§ 15.15)。最後のコマンドでも編集は
     // 有用なので隠さず [Y/n/e] に出す。
     let options = if index < total { "y/n/e/A/q" } else { "Y/n/e" };
-    // 本文 (説明 + コマンド) の色: risk があれば危険度色、無ければ従来の confirm_color。
-    let color: &str = match meta {
+    // 本文 (説明 + コマンド) だけを危険度色にする。`Exec?` ラベルと `[options]` ブラケットは
+    // 従来の confirm_color を保つ (ブラケットは bold+reverse なので危険度色を当てると reverse と
+    // 相まって派手になり視認性が落ちる — ユーザ指摘 2026-09。SPEC §15.7「ラベル/ブラケットは不変」)。
+    let body_color: &str = match meta {
         Some((_, risk)) => risk_color(risk),
         None => confirm_color,
     };
@@ -477,20 +479,20 @@ fn build_confirm_prompt(
         // 描画してから [options] を独立行に出す。「説明<改行>コマンド」を危険度色で見せる。
         // コマンド各行は `\n` で分割し、TAB は字下げ literal・他の制御文字は caret 化する。
         // 送信される全行を承認前に漏れなく見せるのが目的 (隠れた行を作らせない)。
-        out.push_str(&format!("\n{color}{label_on}Exec?\x1b[0m"));
+        out.push_str(&format!("\n{confirm_color}{label_on}Exec?\x1b[0m"));
         if let Some(expl) = &explanation {
-            out.push_str(&format!("\n{color}  {expl}\x1b[0m"));
+            out.push_str(&format!("\n{body_color}  {expl}\x1b[0m"));
         }
         for line in raw.split('\n') {
             let line = visualize_command_segment(line);
-            out.push_str(&format!("\n{color}  {line}\x1b[0m"));
+            out.push_str(&format!("\n{body_color}  {line}\x1b[0m"));
         }
-        out.push_str(&format!("\n{color}{hl_on}[{options}]\x1b[0m "));
+        out.push_str(&format!("\n{confirm_color}{hl_on}[{options}]\x1b[0m "));
     } else {
-        // 説明なし・単一行: 従来どおり 1 行に畳む (コマンドは危険度色)。
+        // 説明なし・単一行: 従来どおり 1 行に畳む (コマンドのみ危険度色、ラベル/ブラケットは confirm_color)。
         let cmd = visualize_command_segment(raw);
         out.push_str(&format!(
-            "\n{color}{label_on}Exec?\x1b[0m {color}{cmd}\x1b[0m {color}{hl_on}[{options}]\x1b[0m "
+            "\n{confirm_color}{label_on}Exec?\x1b[0m {body_color}{cmd}\x1b[0m {confirm_color}{hl_on}[{options}]\x1b[0m "
         ));
     }
     out
@@ -1447,9 +1449,9 @@ mod tests {
         let s = build_confirm_prompt(&v, 1, 1, Some(("ログを完全削除します", Risk::Red)), "CONF");
         assert!(s.contains("ログを完全削除します"));
         assert!(s.contains("rm -rf /var/log/app")); // コマンドバイトはそのまま
-        assert!(s.contains("38;5;196")); // Red 色
-        assert!(!s.contains("CONF")); // risk 指定時は confirm_color を使わない
-                                      // 説明行がコマンド行より前に来る (説明<改行>コマンド)。
+        assert!(s.contains("38;5;196")); // 説明+コマンドは Red 色
+        assert!(s.contains("CONF")); // Exec? ラベルと [options] ブラケットは confirm_color を維持
+                                     // 説明行がコマンド行より前に来る (説明<改行>コマンド)。
         let expl_pos = s.find("ログを完全削除します").unwrap();
         let cmd_pos = s.find("rm -rf /var/log/app").unwrap();
         assert!(expl_pos < cmd_pos);
