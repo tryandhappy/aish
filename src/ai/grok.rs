@@ -7,31 +7,66 @@ use crate::config::{AiConfig, LogConfig, OptionLists};
 
 const MAX_HISTORY_TURNS: usize = 8;
 
-/// `/model` ピッカーの組み込み既定 (config 未設定時)。xAI の公式 Grok CLI (`grok`, x.ai/cli)。
-/// 値は流動的なので best-effort スナップショット (更新にリリースが要る)。
-/// xAI の `<name>-latest` エイリアスは modelname 単位でしか解決しない (grok-4-latest は 4.5/4.6 に
-/// ならない)。xAI が grok-4.5 / grok-4.6 と modelname を改番したためエイリアスは陳腐化回避に効かず、
-/// `grok-4-latest` は撤回してスナップショット運用に戻した (SPEC § 15.12)。
-const MODEL_DEFAULTS: &[&str] = &[
-    "grok-4.6",
-    "grok-4.5",
-    "grok-4.3",
-    "grok-4.20-0309-reasoning",
-    "grok-build-0.1",
-];
+/// `/effort` ピッカーの組み込み既定 (config 未設定時)。公式 grok CLI の
+/// `--reasoning-effort`(別名 `--effort`) が受理する値 (grok 1.0.25 実測、無効値はエラー)。
+const EFFORT_DEFAULTS: &[&str] = &["low", "medium", "high", "xhigh"];
 
-/// xAI Grok CLI backend (`grok`、https://x.ai/cli、`--ai grok`)。
+/// `/model` ピッカーの組み込み既定。通常は `grok models` の実測パース
+/// (`available_models`) を使い、未ログイン/取得失敗時のみこの best-effort スナップショットに
+/// fallback する (更新にリリースが要る)。grok 1.0.25 / grok.com アカウントで実在確認 (2026-09)。
+/// xAI の `<name>-latest` エイリアスは modelname 単位でしか解決せず (grok-4-latest は 4.5/4.6 に
+/// ならない)、改番で陳腐化回避に効かないため撤回済み (SPEC § 15.12)。
+const MODEL_DEFAULTS: &[&str] = &["grok-4.6", "grok-4.5"];
+
+/// `grok models` の出力から model slug だけを取り出す (純関数、golden test 対象)。
+///
+/// 出力例:
+/// ```text
+/// You are logged in with grok.com.
+///
+/// Default model: grok-4.6
+///
+/// Available models:
+///   * grok-4.6 (default)
+///   - grok-4.5
+/// ```
+/// 候補行は `*`/`-` マーカー始まりの行のみ。マーカーと `(default)` 等の注記を落として
+/// 先頭トークン (= slug) を採る。ヘッダ行 (`You are…` / `Default model:` / `Available models:`)
+/// はマーカーが無いので自然に除外される。
+fn parse_grok_models(stdout: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        let rest = trimmed
+            .strip_prefix("* ")
+            .or_else(|| trimmed.strip_prefix("- "));
+        if let Some(rest) = rest {
+            if let Some(slug) = rest.split_whitespace().next() {
+                if !slug.is_empty() {
+                    out.push(slug.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// xAI Grok CLI backend (公式 `grok`、https://x.ai/cli、`--ai grok`)。
 ///
 /// 戦略 (gemini/qwen と同じ system-prompt-only 方式):
-/// - `grok -p`: headless (非対話) モード。prompt は stdin に流す (ARG_MAX 回避)。
-/// - read-only / plan の permission-layer 強制は headless で保証できないため、claude の
-///   ようなツール deny フラグは使わず、system prompt で「ツール非使用・提案のみ」を強く指示する
-///   (gemini/qwen と同型の安全posture)。`--always-approve` (auto-approve) は絶対に付けない。
-/// - reasoning effort フラグは持たないので保存のみ (実リクエストには反映しない)。model 指定は `-m`。
-/// - 非対話 session resume が安定しないため、内部で履歴 (user_prompt, ai_message) を保持して
-///   毎回プロンプトに含める。
+/// - headless (非対話) は `grok --prompt-file <PATH>`。stdin をそのまま読ませたいので Unix は
+///   `--prompt-file /dev/stdin` (複数行 OK・ARG_MAX 安全)。Windows は /dev/stdin が無いので
+///   send() 側で `-p <prompt>` 引数にフォールバックする。**`-p` 単独 + stdin は不可**
+///   (公式 CLI の `-p/--single` は PROMPT を引数値として要求し stdin を読まない — grok 1.0.25 実測)。
+/// - read-only / plan の permission-layer 強制は使わず、system prompt で「ツール非使用・提案のみ」を
+///   強く指示する (gemini/qwen と同型の安全 posture)。`--always-approve` / `--permission-mode
+///   bypassPermissions` 等の auto-approve 系は絶対に付けない。
+/// - reasoning effort は `--reasoning-effort <low|medium|high|xhigh>` を send() で付与 (実測対応)。
+///   model 指定は `-m`。
+/// - 非対話 session resume (`-r`/`--continue`) は使わず、内部で履歴 (user_prompt, ai_message) を
+///   保持して毎回プロンプトに含める (backend 横断の統一方針)。
 ///
-/// 注意: `grok` はコミュニティ製 `@vibe-kit/grok-cli` (npm) ともバイナリ名が衝突しうる。
+/// 注意: `grok` はコミュニティ製 `@vibe-kit/grok-cli` (npm、別ツール) ともバイナリ名が衝突しうる。
 /// 公式 CLI を使っているか `which -a grok` で確認すること。
 pub struct GrokBackend {
     system_prompt: String,
@@ -39,7 +74,7 @@ pub struct GrokBackend {
     base_extra_args: Vec<String>,
     /// runtime モデル指定 (`/model`)。`Some` のとき send() 時に `-m <m>` を追加。
     model: Option<String>,
-    /// runtime effort 指定 (`/effort`)。Grok CLI には該当フラグが無いので保存のみで適用しない。
+    /// runtime effort 指定 (`/effort`)。`Some` のとき send() 時に `--reasoning-effort <e>` を追加。
     effort: Option<String>,
     /// `/model` `/effort` ピッカーの候補リスト設定 (effort は組み込み既定なし)。
     options: OptionLists,
@@ -65,14 +100,19 @@ impl GrokBackend {
         }
     }
 
-    /// grok CLI の引数を組み立てる (send から抽出した純関数。golden test 対象)。
-    /// `-p` (headless) を先頭に固定し、model を後置きする。
+    /// prompt 配送フラグ以外の共通引数 (model / effort / extra_args) を組み立てる純関数。
+    /// prompt の渡し方 (`--prompt-file /dev/stdin` or `-p <prompt>`) は send() が
+    /// プラットフォーム別に前置する。golden test 対象。
     fn build_args(&self) -> Vec<String> {
-        let mut args: Vec<String> = vec!["-p".to_string()];
+        let mut args: Vec<String> = Vec::new();
         args.extend(self.base_extra_args.iter().cloned());
         if let Some(m) = &self.model {
             args.push("-m".to_string());
             args.push(m.clone());
+        }
+        if let Some(e) = &self.effort {
+            args.push("--reasoning-effort".to_string());
+            args.push(e.clone());
         }
         args
     }
@@ -98,24 +138,37 @@ impl AiBackend for GrokBackend {
     }
 
     fn set_effort(&mut self, effort: Option<&str>) {
-        // grok CLI には reasoning effort フラグが無いので保存のみ (実リクエストには反映されない)。
+        // send() で `--reasoning-effort <e>` として実リクエストに反映する。
         self.effort = effort.map(str::to_string);
     }
 
     fn available_models(&self) -> Vec<String> {
-        resolve_option_list(
-            &self.options.models,
-            &self.options.models_command,
-            MODEL_DEFAULTS,
-            &self.log_path,
-        )
+        // config 明示 (static list / ユーザ models_command) があれば従来通り最優先。
+        if !self.options.models.is_empty() || !self.options.models_command.is_empty() {
+            return resolve_option_list(
+                &self.options.models,
+                &self.options.models_command,
+                MODEL_DEFAULTS,
+                &self.log_path,
+            );
+        }
+        // 既定: `grok models` を実行して実在モデルをパース (ピッカーを開く時だけローカル実行)。
+        // 未ログイン/取得失敗/空は best-effort スナップショットへ fallback。
+        let parsed = run_cli_capture_stdout("grok", &["models".to_string()], "", &self.log_path)
+            .map(|out| parse_grok_models(&out))
+            .unwrap_or_default();
+        if parsed.is_empty() {
+            MODEL_DEFAULTS.iter().map(|s| s.to_string()).collect()
+        } else {
+            parsed
+        }
     }
 
     fn available_efforts(&self) -> Vec<String> {
         resolve_option_list(
             &self.options.efforts,
             &self.options.efforts_command,
-            &[],
+            EFFORT_DEFAULTS,
             &self.log_path,
         )
     }
@@ -132,9 +185,21 @@ impl AiBackend for GrokBackend {
             req.user_prompt,
         );
 
-        let args = self.build_args();
-        // prompt は引数ではなく stdin で渡す (ARG_MAX 回避)。
-        let stdout = run_cli_capture_stdout("grok", &args, &prompt, &self.log_path)?;
+        let common = self.build_args();
+        // Unix: prompt を stdin (`--prompt-file /dev/stdin`) で渡す (複数行 OK・ARG_MAX 安全)。
+        #[cfg(unix)]
+        let stdout = {
+            let mut args = vec!["--prompt-file".to_string(), "/dev/stdin".to_string()];
+            args.extend(common);
+            run_cli_capture_stdout("grok", &args, &prompt, &self.log_path)?
+        };
+        // Windows: /dev/stdin が無いので prompt を `-p <prompt>` 引数で渡す (stdin 未使用)。
+        #[cfg(not(unix))]
+        let stdout = {
+            let mut args = vec!["-p".to_string(), prompt.clone()];
+            args.extend(common);
+            run_cli_capture_stdout("grok", &args, "", &self.log_path)?
+        };
         let response = parse_ai_response_lossy(&stdout);
         self.history
             .push((req.user_prompt.to_string(), response.message.clone()));
@@ -148,25 +213,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn model_defaults_present_without_config() {
-        // config 空でも組み込み既定で `/model` ピッカーの候補が出る (既定消失の回帰防止)。
-        let backend = GrokBackend::new(&AiConfig::default(), &LogConfig::default());
-        assert!(!backend.available_models().is_empty());
+    fn model_defaults_present() {
+        // `grok models` 取得失敗時の fallback スナップショットが空にならない (既定消失の回帰防止)。
+        assert!(!MODEL_DEFAULTS.is_empty());
+        assert!(!EFFORT_DEFAULTS.is_empty());
     }
 
     #[test]
-    fn args_use_headless_flag_and_never_auto_approve() {
-        // 信頼の根幹: headless は `-p`、auto-approve 系フラグは絶対に付けない。
+    fn build_args_carry_model_effort_and_never_auto_approve() {
+        // 信頼の根幹: auto-approve / permission-bypass 系フラグは絶対に付けない。
+        // model は `-m`、effort は `--reasoning-effort` を後置する。
         let cfg = AiConfig {
-            model: "grok-4".to_string(),
+            model: "grok-4.6".to_string(),
+            effort: "high".to_string(),
             ..AiConfig::default()
         };
         let backend = GrokBackend::new(&cfg, &LogConfig::default());
         let args = backend.build_args();
-        assert_eq!(args.first().map(String::as_str), Some("-p"));
-        assert!(args.iter().any(|a| a == "-m"));
+        assert!(args.windows(2).any(|w| w[0] == "-m" && w[1] == "grok-4.6"));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--reasoning-effort" && w[1] == "high"));
         assert!(!args
             .iter()
-            .any(|a| a == "--always-approve" || a == "--yolo"));
+            .any(|a| a == "--always-approve" || a == "--yolo" || a == "--permission-mode"));
+    }
+
+    #[test]
+    fn parse_grok_models_extracts_slugs_only() {
+        // `grok models` のヘッダ行/マーカー/(default) 注記を落として slug だけ採る。
+        let out = "You are logged in with grok.com.\n\nDefault model: grok-4.6\n\nAvailable models:\n  * grok-4.6 (default)\n  - grok-4.5\n";
+        assert_eq!(parse_grok_models(out), vec!["grok-4.6", "grok-4.5"]);
+        // マーカー無し (ヘッダのみ) は空。
+        assert!(parse_grok_models("Available models:\nDefault model: grok-4.6\n").is_empty());
     }
 }

@@ -145,15 +145,18 @@
 [ai.qwen]
 # extra_args = []
 
-# xAI Grok CLI (`grok`, https://x.ai/cli)。aish は `grok -p`（headless）を stdin プロンプトで
-# 都度呼び出す。model は `-m`、reasoning effort フラグは無し。
+# xAI Grok CLI (公式 `grok`, https://x.ai/cli)。aish は headless で都度呼び出す
+# （Unix: `grok --prompt-file /dev/stdin` に stdin プロンプト / Windows: `grok -p <prompt>`）。
+# model は `-m`、reasoning effort は `--reasoning-effort`（low/medium/high/xhigh）を適用。
+# model 一覧は既定で `grok models`（要ログイン）を実行して動的取得する。
 # 注意: antigravity と同様、headless での read-only / plan 強制は保証できず、AI CLI 自身の
 # ローカル書き込みは system prompt の「提案のみ」指示のみで抑える。`--always-approve` は絶対に
 # 付けない。`grok` はコミュニティ製 `@vibe-kit/grok-cli` (npm, 別ツール) とバイナリ名が衝突し
 # うるので、公式 CLI を使っているか `which -a grok` で確認すること。
 [ai.grok]
 # extra_args = []                                                # e.g. ["--model", "grok-4.6"]
-# models = ["grok-4.6", "grok-4.5", "grok-4.3"]                  # 省略時は組み込み既定
+# models = ["grok-4.6", "grok-4.5"]                             # 省略時は `grok models` 動的取得
+# efforts = ["low", "medium", "high", "xhigh"]                  # 省略時は組み込み既定
 
 # Cursor Agent CLI (`cursor-agent`). aish は `-p --output-format json --trust` で都度呼び出す。
 # --trust は headless モードで必須なので aish が常に自動で付与する (config からは指定不可)。

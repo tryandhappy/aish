@@ -58,7 +58,7 @@ CLI SSH + AI (Claude Code) ツール。クライアント側の Claude Code か�
 | `--config <path>` | 設定ファイルパス（既定 `~/.aish/config.toml`） |
 | `--ai <name>` | backend 選択。built-in または `[[ai.providers]]` の `name`。`[ai].backend` を上書き。built-in 名は予約語 |
 | `--model <name>` | モデル名。`[ai].model` と `extra_args` の `-m` より優先 |
-| `--effort <level>` | reasoning effort。claude → `--effort`、codex → `-c model_reasoning_effort=`、copilot → `--effort`、antigravity → `--effort`。gemini/qwen/cursor/grok は CLI 非対応で無視 |
+| `--effort <level>` | reasoning effort。claude → `--effort`、codex → `-c model_reasoning_effort=`、copilot → `--effort`、antigravity → `--effort`、grok → `--reasoning-effort`。gemini/qwen/cursor は CLI 非対応で無視 |
 | `--list-providers` | native + 組み込み + config の全 backend を出所タグ付き一覧表示 |
 | それ以外 | SSH 引数として `ssh` に渡す |
 
@@ -131,7 +131,7 @@ CLI SSH + AI (Claude Code) ツール。クライアント側の Claude Code か�
 | コマンド | 動作 |
 |---|---|
 | `/help` | 一覧表示 |
-| `/effort [LEVEL]` | reasoning effort を runtime 変更（次回 send 以降）。引数なし=候補ピッカー（§15.12）、`-`/`clear`=クリア、その他=検証せず set。gemini/qwen/cursor/grok は保存のみ（antigravity は native 適用） |
+| `/effort [LEVEL]` | reasoning effort を runtime 変更（次回 send 以降）。引数なし=候補ピッカー（§15.12）、`-`/`clear`=クリア、その他=検証せず set。gemini/qwen/cursor は保存のみ（antigravity/grok は native 適用） |
 | `/model [NAME]` | モデルを runtime 変更（session/history 維持）。引数の扱いは `/effort` と同じ |
 | `/clear` | 会話履歴/セッションをクリア。claude/codex/cursor/copilot/generic(native resume) は session_id を None、gemini/qwen/cloudflare/nvidia/antigravity/grok/generic(非 native) は内部 history を空に |
 | `/ai <NAME>` | backend 切替。`create_backend` で新規構築し現セッション破棄 |
@@ -165,7 +165,7 @@ trait `AiBackend` で対応:
 | reasoning effort | `--effort` | `-c model_reasoning_effort=` | なし | なし | なし | `--effort`（`none/low/medium/high/xhigh/max`） |
 
 - プロンプト渡しは全 backend stdin。cloudflare/nvidia は表外（curl 経由 REST、§15.10）。
-- **Antigravity（`agy`）/ Grok（`grok`）も表外**（Gemini 行と同型の system-prompt-only backend、§15.10）。Antigravity=`agy -p`（stdin）/ 実行ファイル `agy` / JSON 強制なし / 危険ツール無効化は system prompt のみ / resume `agy --continue`（best-effort）/ **reasoning effort `--effort low|medium|high` は native 対応**。Grok=`grok -p`（stdin）/ 実行ファイル `grok` / JSON 強制なし / 危険ツール無効化は system prompt のみ / resume なし / effort フラグなし / model は `-m`。両者とも headless で read-only/plan の permission-layer 強制を持たないため `--dangerously-skip-permissions` / `--always-approve` は絶対に付けない。
+- **Antigravity（`agy`）/ Grok（`grok`）も表外**（Gemini 行と同型の system-prompt-only backend、§15.10）。Antigravity=`agy -p`（stdin）/ 実行ファイル `agy` / JSON 強制なし / 危険ツール無効化は system prompt のみ / resume `agy --continue`（best-effort）/ **reasoning effort `--effort low|medium|high` は native 対応**。Grok=`grok --prompt-file /dev/stdin`（Unix、stdin）/ `grok -p <prompt>`（Windows）/ 実行ファイル `grok` / JSON 強制なし / 危険ツール無効化は system prompt のみ / resume なし（内部 history）/ **effort `--reasoning-effort low|medium|high|xhigh` は native 対応** / model は `-m`（一覧は `grok models` 動的取得）。両者とも headless で read-only/plan の permission-layer 強制を持たないため `--dangerously-skip-permissions` / `--always-approve` は絶対に付けない（§15.10）。
 - JSON Schema 強制が無い backend は system prompt で `{"message":..., "commands":[...]}` 単独出力を指示し `extract_json` で抽出。失敗時は出力全体を `message` / `commands: []` でフォールバック。
 
 **セッション履歴の持ち方**:
@@ -352,7 +352,7 @@ backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
 
 候補解決の優先順位（`common::resolve_option_list`）: **static list 非空 > 取得コマンド > backend 組み込み既定**。取得コマンドはピッカーを開く時だけ実行。
 
-**組み込み既定**: effort は claude `low/medium/high`、codex `minimal/low/medium/high/xhigh`、copilot `none/low/medium/high/xhigh/max`、他は無し（effort 非適用 or recipe 由来のみ）。model は全 native backend に同梱（各 `MODEL_DEFAULTS` const。例: claude `default/opus/sonnet/haiku/fable`（エイリアス先頭）+ `claude-opus-5/sonnet-5/…`（正式名スナップショット）、codex `gpt-5.6-sol/terra/luna/…`、cursor `auto/composer-2.5/…`、antigravity `gemini-3.8-flash/gemini-3.1-pro-preview/…`、grok `grok-4.6/grok-4.5/…`）。値は best-effort で更新にはリリースが必要（§15.12）。generic は recipe 由来のみ。
+**組み込み既定**: effort は claude `low/medium/high`、codex `minimal/low/medium/high/xhigh`、copilot `none/low/medium/high/xhigh/max`、grok `low/medium/high/xhigh`（`--reasoning-effort`、§15.10）、他は無し（effort 非適用 or recipe 由来のみ）。model は全 native backend に同梱（各 `MODEL_DEFAULTS` const。例: claude `default/opus/sonnet/haiku/fable`（エイリアス先頭）+ `claude-opus-5/sonnet-5/…`（正式名スナップショット）、codex `gpt-5.6-sol/terra/luna/…`、cursor `auto/composer-2.5/…`、antigravity `gemini-3.8-flash/gemini-3.1-pro-preview/…`、grok `grok-4.6/grok-4.5`（ただし通常は `grok models` の動的取得を優先、§15.10））。値は best-effort で更新にはリリースが必要（§15.12）。generic は recipe 由来のみ。
 
 #### `[ai.claude]`
 | キー | 既定値 | 説明 |
@@ -363,7 +363,7 @@ backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
 
 #### `[ai.codex]` / `[ai.gemini]` / `[ai.qwen]` / `[ai.antigravity]` / `[ai.grok]`
 - `extra_args` (`[]`): 各 CLI への追加引数（例 `["-m", "gpt-5.5"]`）。
-- `[ai.antigravity]` は `models` / `efforts`、`[ai.grok]` は `models` のピッカー候補も持つ（`OptionLists`）。
+- `[ai.antigravity]` / `[ai.grok]` は `models` / `efforts` のピッカー候補も持つ（`OptionLists`。grok は effort も native 適用、§15.10）。
 
 #### `[ai.cursor]`
 | キー | 既定値 | 説明 |
@@ -568,7 +568,11 @@ backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
   - **model は `--model`、reasoning effort は `--effort low|medium|high` を native 対応**（gemini/qwen と違い effort が効く。EFFORT_DEFAULTS=low/medium/high）。MODEL_DEFAULTS は Gemini 系 4 種の best-effort（`agy models` で最新確認）。resume は `agy --continue`（best-effort、履歴があるときだけ提示）。
   - **read-only / plan の permission-layer 強制は headless では未提供**（Antigravity Issue #45。`-p` は非対話ユーザが居ないため write/exec を自動承認しうる。`--sandbox` は shell のみ制限で `write_file` は通り、`--mode plan` は `/plan` prompt 接頭辞で permission 層の deny ではない）。よって**同梱 generic recipe の「read-only 強制必須」ルールは適用せず**、gemini/qwen と同じ system-prompt-only 姿勢で native 化した。**判断根拠（ユーザ合意、2026-08）**: aish の信頼の根幹（サーバ保護）はコマンド承認 UI（Y/n/a/q）で担保され、AI backend の read-only 有無に依存しない。read-only 強制はローカルの AI CLI が承認 UI を迂回してクライアント側で write/exec する余地を塞ぐ defense-in-depth に過ぎず、リモート実行時のサーバ安全性は損なわれない。**`--dangerously-skip-permissions`（auto-approve）は絶対に付けない**（`args_use_headless_flag_and_never_bypass_permissions` で固定）。
   - **未検証点（実機確認が取れ次第調整）**: `agy -p` が prompt を stdin から読むか（claude の `-p` と同じ boolean フラグ想定。値必須なら要調整）、非対話出力のフォーマット（現状は素のテキスト＝system prompt で bare JSON 指示 → lossy 抽出）、正確な model slug。config は `[ai.antigravity]`（extra_args + models/efforts）。
-- **xAI Grok CLI（`grok` / `src/ai/grok.rs`）は Antigravity と同型の system-prompt-only native backend**（2026-08 追加。呼び出し名 = 実行ファイル名 `grok`）。`grok -p`（headless）stdin 渡し、lossy 抽出、内部 history 8 ターン。model は `-m`、reasoning effort フラグは無し（保存のみ）。resume なし（None）。MODEL_DEFAULTS は grok 系 4 種の best-effort。
+- **xAI Grok CLI（`grok` / `src/ai/grok.rs`）は Antigravity と同型の system-prompt-only native backend**（2026-08 追加。呼び出し名 = 実行ファイル名 `grok`）。lossy 抽出、内部 history 8 ターン。model は `-m`。
+  - **公式 xAI CLI `grok` v1.0.25（"Grok Build TUI"、grok.com ログイン）で実測し実装を修正（2026-09）**。当初は未検証で `grok -p` に prompt を stdin で流す実装だったが、**公式 `-p/--single <PROMPT>` は PROMPT を引数値として要求し stdin を読まない**ため全リクエストが `error: a value is required for '--single'` で失敗していた。修正: **Unix は `grok --prompt-file /dev/stdin`（stdin をファイル経由で読ませる＝複数行/ARG_MAX 安全）、Windows は `/dev/stdin` が無いので `grok -p <prompt>` 引数**（send() で cfg 分岐、`build_args` は model/effort/extra のみの純関数に分離）。
+  - **reasoning effort は実在する**（当初「フラグ無し・保存のみ」は誤り）。`--reasoning-effort`（別名 `--effort`、値 `low/medium/high/xhigh`。無効値はエラー）を send で付与。`EFFORT_DEFAULTS` を追加。
+  - **model 一覧は `grok models` サブコマンドをパースして動的取得**（`parse_grok_models` 純関数＝`*`/`-` マーカー行の先頭トークンだけ採り、`You are logged in…`/`Default model:`/`Available models:` ヘッダや `(default)` 注記を落とす。ピッカーを開く時だけローカル実行、要 auth）。未ログイン/取得失敗/空は `MODEL_DEFAULTS`（`grok-4.6`/`grok-4.5`、grok.com で実在確認した best-effort スナップショット）に fallback。config の static list / ユーザ `models_command` は従来通り最優先。
+  - resume は CLI に `-r/--resume`・`-c/--continue` が存在するが**使わず内部 history で代替**（backend 横断の統一方針。`resume_command` は None のまま）。**この CLI は `--permission-mode plan`/`--sandbox`/`--deny` で read-only 強制も可能だが、native は system-prompt-only 許容の既存合意（下記）に従い採用しない**。
   - read-only 非強制の姿勢・`--always-approve` 禁止は Antigravity と同じ理由（上記）。**`grok` はコミュニティ製 `@vibe-kit/grok-cli`（npm、別ツール、read-only モード無し）とバイナリ名が衝突しうる**ため `auto_detect_order` からは除外し（誤検出防止）、明示 `--ai grok` 指定に限定。ユーザには `which -a grok` で公式 CLI か確認を促す。config は `[ai.grok]`（extra_args + models）。以前は `config.toml.example` のコメントアウト generic recipe 例だったが native 化に伴い削除（`[ai.grok]` を参照）。
 - **claude headless の失敗 stderr は `[claude-code:<tag>] {json}` マーカーを含む**（例: `[claude-code:unrecognized_model] {"model":"Opus 5","query_source":"sdk"}`）。aish が `--model` を渡していなくても `~/.claude/settings.json` の `"model"` に表示名（"Opus 5" 等）が保存されていると headless (query_source=sdk) は slug 解決できず失敗する — 対話 UI とは解決経路が違う（2026-08 実障害。「limit では」と誤解された）。`conversation::format_ai_error` が `claude_error_tag`（純関数。tag は英数字+`_` のみ受理し引用文での誤検出を防ぐ）で抽出し、`Claude Error: <tag>` 見出し + stderr 原文 + `claude_error_hint` の種類別ヒント（`model` 系 → `/model`・settings.json 確認 / `auth`・`login`・`oauth`・`api_key`・`credential`・`billing` 系 → 再ログイン / `limit`・`quota`・`overloaded` 系 → limit 待ち）で表示。**未知 tag はヒント無しで原文のみ**（的外れな誘導をしない）。マーカー無しのエラーは従来の汎用文言（login or usage limit）を維持。いずれも golden test 対象。
 
@@ -586,7 +590,7 @@ backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
 - **候補解決**: trait `available_models` / `available_efforts` → `common::resolve_option_list`。優先順位・実行シェル・失敗時挙動は §11.4。取得コマンドは**ピッカーを開く時だけローカル実行**（起動時に走らせない。サーバ書き込み・承認フローと無関係）。
 - **model 組み込み既定（`MODEL_DEFAULTS`、§11.4）**: 動的取得は断念して静的リストを同梱（codex/copilot/cursor/gemini/qwen いずれも「stdout 1 行 1 モデル」の非対話一覧コマンドを持たない。copilot は未解決 Issue #700。**claude も同様で `--list-models` 相当が無い** — `--model` help は `fable`/`opus`/`sonnet` 等のエイリアスか `claude-fable-5` 等の正式名を渡せと言うだけ）。best-effort で**更新にはリリースが必要**。ユーザは `[ai.<backend>].models` で上書き可。**陳腐化対策として、CLI 側に「最新へ解決するエイリアス」がある backend は先頭にそれを並べる**（2026-08 導入）。適用状況:
   - **claude**: 先頭に `default`/`opus`/`sonnet`/`haiku`/`fable`（claude が常に最新世代へ解決）。後半は `claude-opus-5` 等の best-effort スナップショット。
-  - **grok**: **エイリアス撤回済み（2026-08）**。xAI の `<name>-latest` は modelname 単位でしか最新へ解決しない仕様で、xAI が `grok-4.5`/`grok-4.6` と modelname を改番したため `grok-4-latest` は 4.5/4.6 に解決されず陳腐化回避に効かなくなった。よって `grok-4-latest`/`grok-4`/`grok-4-fast`/`grok-code-fast-1`（いずれも現行 docs から消滅）を撤回し、`grok-4.6`/`grok-4.5`/`grok-4.3`/`grok-build-0.1` の best-effort スナップショット運用に戻した（更新はリリース対象）。
+  - **grok**: **`grok models` の動的取得を既定にしたのでスナップショット陳腐化の影響は最小（2026-09）**。`available_models` は要 auth の `grok models` を実行して実在モデルをパースし、未ログイン/失敗時のみ `MODEL_DEFAULTS` に fallback（§15.10）。**エイリアスは撤回済み（2026-08）**: xAI の `<name>-latest` は modelname 単位でしか解決せず、`grok-4.5`/`grok-4.6` への改番で `grok-4-latest` が陳腐化回避に効かなくなったため。`MODEL_DEFAULTS` は fallback 専用に絞り、実在確認できた `grok-4.6`/`grok-4.5` の 2 種のみに縮小（旧 `grok-4.3`/`grok-4.20-0309-reasoning`/`grok-build-0.1` は当該アカウントの `grok models` に出ないため除去。更新はリリース対象だが動的取得が主）。
   - **cursor**: 先頭の `auto` が「cursor が最新を自動選択」= 実質エイリアスなので既に非陳腐化。**なお 2026-08 版 `cursor-agent` は `cursor-agent models`（一覧取得サブコマンド）を持つが要 auth かつ出力形式未実測**のため組み込みの自動取得（`available_models` の取得コマンド）には採用せず、`config.toml.example` の `models_command` コメント例として提示するに留める（実測後に組み込み化を検討）。slug は dash 形式（`--help` 実例 `claude-opus-4-8`）。composer-2.5 は要実測。
   - **qwen**: `qwen3-coder-plus`/`flash` が Alibaba のローリング tier 名 = 実質エイリアス（追加対応不要）。
   - **codex / copilot / gemini / antigravity / cloudflare / nvidia**: **最新解決エイリアスが存在しない**（codex は公式推奨が「model 未指定＝CLI の現行 default に任せる」＝ピッカーの `(default)` 疑似エントリで代替。2026-08-31 に `gpt-5.4`/`gpt-5.4-mini` が Codex から廃止されたためスナップショットを 5.6 系へ更新済み。gemini の `-latest` は experimental で本番非推奨のため既定にしない。copilot は 2026-04 以降 CLI に auto model selection があるが headless `--model auto` の可否が未実測でエイリアス採用は見送り。REST 2 種はモデル ID をそのまま API へ渡すのでエイリアス概念なし）。よってこれらの `MODEL_DEFAULTS` は best-effort スナップショットで、陳腐化回避は `(default)` エントリ / `models_command`（REST は `GET /v1/models`）/ リリース更新に委ねる。**cloudflare の `DEFAULT_MODEL` は旧既定 `@cf/meta/llama-3.1-8b-instruct` が Cloudflare で Deprecated になったため `@cf/zai-org/glm-4.7-flash` へ更新**（2026-08）、**さらに 2026-09 に GLM-5.3 系へ更新し `DEFAULT_MODEL` を `@cf/zai-org/glm-5.3-flash` へ（glm-4.7-flash は Deprecated ではないが上位版に置換）**。**codex の reasoning effort は 2026-09 に `xhigh` を追加**（`minimal/low/medium/high/xhigh`。非レイテンシ重視の高品質タスク向け）。**copilot の `MODEL_DEFAULTS` は changelog 未確認だった `gpt-5.6-terra`/`gpt-5.5` を確認済みの `gpt-5.6` に統一**（2026-09）。**gemini/antigravity は `gemini-3.8-flash`（2026-09-02 GA）を先頭に更新**。**nvidia は 2026-09 時点も nemotron slug 据え置き**（第三者最新モデル（deepseek-v4/kimi 等）は "Public API Endpoints" 権限が無いアカウントで 404/hang しうるため既定に採用しない）。
