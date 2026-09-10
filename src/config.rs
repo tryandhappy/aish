@@ -512,9 +512,9 @@ pub fn builtin_providers() -> Vec<ProviderRecipe> {
         // read-only 強制は CLI フラグでは不可のため、`OPENCODE_CONFIG_CONTENT`
         // (ユーザ config より後にマージされるインライン config) で edit/bash を deny した
         // 専用 agent `aish` を定義して `--agent aish` で使う。deny されたツールは
-        // ツールセット自体から除去される (実機検証済み、v1.17.13)。
-        // `task`/`todowrite` も無効化 (プロジェクト側 config の緩い agent への迂回防止)。
-        // read / webfetch / websearch は許可 (非 Claude 系は web 調査を許す既存方針)。
+        // ツールセット自体から除去される (実機検証済み、v1.17.13 / v1.18.30)。
+        // `task`/`todowrite`/`skill` も無効化 (プロジェクト側 config の緩い agent や skill 経由の
+        // 迂回防止)。read / webfetch / websearch は許可 (非 Claude 系は web 調査を許す既存方針)。
         // built-in `plan` agent は ask ベースで headless ハングするため使わない。
         // `--auto` (auto-approve) は絶対に付けない。
         ProviderRecipe {
@@ -525,7 +525,7 @@ pub fn builtin_providers() -> Vec<ProviderRecipe> {
             ],
             env: BTreeMap::from([(
                 "OPENCODE_CONFIG_CONTENT".to_string(),
-                r#"{"permission":{"edit":"deny","bash":"deny"},"agent":{"aish":{"mode":"primary","permission":{"edit":"deny","bash":"deny"},"tools":{"task":false,"todowrite":false}}}}"#
+                r#"{"permission":{"edit":"deny","bash":"deny"},"agent":{"aish":{"mode":"primary","permission":{"edit":"deny","bash":"deny"},"tools":{"task":false,"todowrite":false,"skill":false}}}}"#
                     .to_string(),
             )]),
             prompt_delivery: "arg".to_string(), // `opencode run [message..]` の positional
@@ -989,6 +989,7 @@ max_entries = 50
         assert_eq!(v["agent"]["aish"]["permission"]["bash"], "deny");
         assert_eq!(v["agent"]["aish"]["tools"]["task"], false);
         assert_eq!(v["agent"]["aish"]["tools"]["todowrite"], false);
+        assert_eq!(v["agent"]["aish"]["tools"]["skill"], false);
     }
 
     #[test]
