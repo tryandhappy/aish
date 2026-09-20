@@ -114,11 +114,12 @@ pub fn build_color_start(color: &str) -> String {
 
 /// AI 提案コマンドの危険度 (`Risk`) を確認画面の文字色 (256-color) にマップする。
 /// ユーザ指定の色分け: Green=緑 / Yellow=黄 / Orange=橙 / Red=赤。
-/// ネオン調の原色を避けトーンダウンした値を使う (緑 40→71 / 黄 226→178 / 橙 208→166 / 赤 196 維持)。
-/// 橙はブランド色 208 (aish プロンプト) と区別するため深橙 166 にする。ハードコード既定 (config 化はしない)。
+/// ネオン調の原色を避けトーンダウンした値を使う (緑 40→108 / 黄 226→178 / 橙 208→166 / 赤 196 維持)。
+/// 緑はさらに彩度を落としたセージ 108、橙はブランド色 208 (aish プロンプト) と区別するため深橙 166。
+/// ハードコード既定 (config 化はしない)。
 pub fn risk_color(risk: Risk) -> &'static str {
     match risk {
-        Risk::Green => "\x1b[38;5;71m",
+        Risk::Green => "\x1b[38;5;108m",
         Risk::Yellow => "\x1b[38;5;178m",
         Risk::Orange => "\x1b[38;5;166m",
         Risk::Red => "\x1b[38;5;196m",
@@ -1422,7 +1423,7 @@ mod tests {
 
     #[test]
     fn risk_color_maps_all_variants() {
-        assert!(risk_color(Risk::Green).contains("38;5;71"));
+        assert!(risk_color(Risk::Green).contains("38;5;108"));
         assert!(risk_color(Risk::Yellow).contains("38;5;178"));
         assert!(risk_color(Risk::Orange).contains("38;5;166"));
         assert!(risk_color(Risk::Red).contains("38;5;196"));
@@ -1444,7 +1445,7 @@ mod tests {
         let v = VettedCommand::vet("ls -la").unwrap();
         let s = build_confirm_prompt(&v, 1, 3, Some(Risk::Green), "CONF");
         assert!(s.contains("ls -la"));
-        assert!(s.contains("38;5;71")); // Green
+        assert!(s.contains("38;5;108")); // Green
         assert!(s.contains("[Y/n/e/a/q]")); // 残コマンドあり: デフォルト Yes (Y 大文字)、a は小文字
     }
 
