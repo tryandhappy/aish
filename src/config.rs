@@ -775,7 +775,8 @@ fn default_ai_color() -> String {
 }
 
 fn default_confirm_color() -> String {
-    "\x1b[38;5;228;48;5;239m".to_string()
+    // 淡青 (153) + 暗灰背景 (239)。aish プロンプト (オレンジ) と分離するため寒色にする。
+    "\x1b[38;5;153;48;5;239m".to_string()
 }
 
 fn default_term_cursor_color() -> String {

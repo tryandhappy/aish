@@ -117,12 +117,13 @@ pub fn build_color_start(color: &str) -> String {
 
 /// AI 提案コマンドの危険度 (`Risk`) を確認画面の文字色 (256-color) にマップする。
 /// ユーザ指定の色分け: Green=緑 / Yellow=黄 / Orange=橙 / Red=赤。
-/// 橙は既存ブランド色 208 に合わせる。ハードコード既定 (config 化はしない)。
+/// ネオン調の原色を避けトーンダウンした値を使う (緑 40→71 / 黄 226→178 / 橙 208→166 / 赤 196 維持)。
+/// 橙はブランド色 208 (aish プロンプト) と区別するため深橙 166 にする。ハードコード既定 (config 化はしない)。
 pub fn risk_color(risk: Risk) -> &'static str {
     match risk {
-        Risk::Green => "\x1b[38;5;40m",
-        Risk::Yellow => "\x1b[38;5;226m",
-        Risk::Orange => "\x1b[38;5;208m",
+        Risk::Green => "\x1b[38;5;71m",
+        Risk::Yellow => "\x1b[38;5;178m",
+        Risk::Orange => "\x1b[38;5;166m",
         Risk::Red => "\x1b[38;5;196m",
     }
 }
@@ -455,9 +456,10 @@ fn build_confirm_prompt(
         Some(r) => risk_color(r),
         None => confirm_color,
     };
-    // "Exec?" をオレンジ文字+暗い茶色背景 (prompt_color 系) で区別する試行。
+    // "Exec?" を青系 (スカイブルー 117 + 濃紺背景) で表示する。aish プロンプト (オレンジ) と
+    // 明確に分離し「aish が話す = 暖色 / システムが承認を求める = 寒色」を色で示す (ユーザ指摘 2026-09)。
     // 選択肢 [Y/n] / [Y/n/a] は bold + reverse で強調。
-    let label_on = "\x1b[38;5;208;48;2;50;35;20m";
+    let label_on = "\x1b[38;5;117;48;2;20;35;55m";
     let hl_on = "\x1b[1;7m";
     // 先頭に改行を入れて、確認プロンプトを必ず行頭から開始する。
     // 2つ目以降は直前にシェルプロンプト (`user@host:~$ `) が描画されるため、
@@ -1426,9 +1428,9 @@ mod tests {
 
     #[test]
     fn risk_color_maps_all_variants() {
-        assert!(risk_color(Risk::Green).contains("38;5;40"));
-        assert!(risk_color(Risk::Yellow).contains("38;5;226"));
-        assert!(risk_color(Risk::Orange).contains("38;5;208"));
+        assert!(risk_color(Risk::Green).contains("38;5;71"));
+        assert!(risk_color(Risk::Yellow).contains("38;5;178"));
+        assert!(risk_color(Risk::Orange).contains("38;5;166"));
         assert!(risk_color(Risk::Red).contains("38;5;196"));
     }
 
@@ -1448,7 +1450,7 @@ mod tests {
         let v = VettedCommand::vet("ls -la").unwrap();
         let s = build_confirm_prompt(&v, 1, 3, Some(Risk::Green), "CONF");
         assert!(s.contains("ls -la"));
-        assert!(s.contains("38;5;40")); // Green
+        assert!(s.contains("38;5;71")); // Green
         assert!(s.contains("[y/n/e/A/q]")); // 残コマンドあり
     }
 
@@ -1469,7 +1471,7 @@ mod tests {
         assert!(s.contains("cat <<'EOF'"));
         assert!(s.contains("hello"));
         assert!(s.contains("EOF"));
-        assert!(s.contains("38;5;226")); // Yellow でコマンド行が色付く
+        assert!(s.contains("38;5;178")); // Yellow でコマンド行が色付く
     }
 
     #[test]

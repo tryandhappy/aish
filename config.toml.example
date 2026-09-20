@@ -26,7 +26,7 @@
 # thinking_color = "\u001B[38;5;208m"                            # default: "\u001B[38;5;208m" (orange)
 # ai_color = "\u001B[38;5;216m"                                  # default: "\u001B[38;5;216m" (light orange)
 # input_color = ""                                               # default: "" (terminal default)
-# confirm_color = "\u001B[38;5;228;48;5;239m"                    # default: pale yellow text, gray bg
+# confirm_color = "\u001B[38;5;153;48;5;239m"                    # default: pale blue text, gray bg
 
 # Terminal-level "aish is running" indicators (OSC 10/11/12).
 # Format: "#rrggbb" or "rgb:rr/gg/bb" — color specs sent to the terminal itself, NOT ANSI SGR.
