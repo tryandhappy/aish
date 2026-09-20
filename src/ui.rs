@@ -100,12 +100,9 @@ pub enum InputRequest {
     Passthrough(String),
     /// Y/n/a 確認プロンプト用。1 キー (Enter 不要) で確定する。
     /// IME 経由の全角・ひらがな確定文字 (`ｙ` / `ｎ` / `あ` 等) も受理する。
-    /// `default_all` = 残コマンドがあり [a] が出ているとき true。
-    /// このとき Enter のデフォルトは All (残り自動承認)、最後のコマンド
-    /// ([Y/n] だけ) では false で Enter=Yes。
-    ReadConfirmKey {
-        default_all: bool,
-    },
+    /// Enter のデフォルトは常に Yes (このコマンド 1 件だけ実行)。残り自動承認 (All) は
+    /// 明示的に `a`/`A` キーを押して選ぶ (安全側 = 意図しない一括承認を防ぐ)。
+    ReadConfirmKey,
 }
 
 pub fn build_color_start(color: &str) -> String {
@@ -441,14 +438,15 @@ fn build_confirm_prompt(
     risk: Option<Risk>,
     confirm_color: &str,
 ) -> String {
-    // 残コマンドがある (= 最後ではない) ときだけ [y/n/A/q] を出す。
+    // 残コマンドがある (= 最後ではない) ときだけ [a]/[q] を出す。
     // a = 残り全部を自動承認 (apt / sudo の慣習)、q = 残りを中止。
-    // 複数コマンド時はデフォルト = a なので A を大文字にして示す (Enter = All)。
-    // 最後のコマンドでは「残り」が無いので a も q も隠して [Y/n] に畳む
-    // (q は押せば効くが最後では n とほぼ等価)。デフォルトは Yes なので Y が大文字。
+    // デフォルトは常に Yes (このコマンド 1 件だけ実行) なので Y を大文字にして示す。
+    // a は明示押下でのみ効くので小文字のまま (Enter に載せない = 安全側)。
+    // 最後のコマンドでは「残り」が無いので a も q も隠して [Y/n/e] に畳む
+    // (q は押せば効くが最後では n とほぼ等価)。
     // e = このコマンドを編集してから再確認 (§ 15.15)。最後のコマンドでも編集は
     // 有用なので隠さず [Y/n/e] に出す。
-    let options = if index < total { "y/n/e/A/q" } else { "Y/n/e" };
+    let options = if index < total { "Y/n/e/a/q" } else { "Y/n/e" };
     // コマンド本文だけを危険度色にする。`Exec?` ラベルと `[options]` ブラケットは従来の
     // confirm_color を保つ (ブラケットは bold+reverse なので危険度色を当てると reverse と
     // 相まって派手になり視認性が落ちる — ユーザ指摘 2026-09。SPEC §15.7「ラベル/ブラケットは不変」)。
@@ -521,10 +519,10 @@ fn char_width(c: char) -> usize {
 /// 未知キー / 制御文字は無視して次のキーを待つ (打ち間違いで意図せず No に
 /// なるのを避けるため)。raw mode は ECHO off なので、マッチした文字のみ
 /// stdout に echo する。
-/// `default_all` = 残コマンドがあり [a] が出ているとき true。Enter のデフォルト
-/// が All (残り自動承認) になる。false (最後のコマンド [Y/n]) では Enter=Yes。
-pub fn read_confirm_key(default_all: bool) -> Option<ConfirmChoice> {
-    read_confirm_key_impl(default_all)
+/// Enter のデフォルトは常に Yes (このコマンド 1 件だけ実行)。残り自動承認 (All) は
+/// `a`/`A` キーの明示押下でのみ選ぶ。
+pub fn read_confirm_key() -> Option<ConfirmChoice> {
+    read_confirm_key_impl()
 }
 
 /// 押されたキーをそのまま `\n` 付きでターミナルに描画する。
@@ -557,7 +555,7 @@ fn match_confirm_char(c: char) -> Option<ConfirmChoice> {
     }
 }
 
-fn read_confirm_key_impl(default_all: bool) -> Option<ConfirmChoice> {
+fn read_confirm_key_impl() -> Option<ConfirmChoice> {
     // 入力の framing は crate::input に集約済み。ここは Tok を解釈するだけの薄い層。
     // Enter が制御文字フィルタに飲まれる順序トラップは next_event 側で型として解消済み。
     let mut src = StdinSource::new();
@@ -569,8 +567,8 @@ fn read_confirm_key_impl(default_all: bool) -> Option<ConfirmChoice> {
             // **必ず改行を出してから抜ける**。これをしないと、直後にメインループが
             // 送るシェルプロンプトのリフレッシュ (bash の `\r` + プロンプト文字列;
             // しかも先頭の改行は drain 側で除去される) が、カーソルがまだ
-            // `Exec? ... [y/n/A/q] ` 行末にあるためその行を上書きして消してしまう
-            // (ユーザ報告: キャンセルで最終行がプロンプトに上書きされる)。y/n/A/q は
+            // `Exec? ... [Y/n/e/a/q] ` 行末にあるためその行を上書きして消してしまう
+            // (ユーザ報告: キャンセルで最終行がプロンプトに上書きされる)。Y/n/e/a/q は
             // echo で改行が入るのでクリーン。Ctrl+C/Ctrl+D だけ echo char が無いので
             // ここで明示的に改行を出して揃える。
             Tok::Ctrl(0x03) | Tok::Ctrl(0x04) => {
@@ -585,14 +583,10 @@ fn read_confirm_key_impl(default_all: bool) -> Option<ConfirmChoice> {
                 echo_confirm('n');
                 return Some(ConfirmChoice::No);
             }
-            // Enter = デフォルト。複数コマンド時 (default_all) は All (残り自動承認)、
-            // 最後のコマンド ([Y/n]) は Yes。入力 char が無いのでデフォルト表記の
-            // 'A' / 'Y' を echo する (prompt の大文字と一致)。
+            // Enter = デフォルト = 常に Yes (このコマンド 1 件だけ実行)。残り自動承認 (All) は
+            // 意図しない一括実行を避けるため Enter に載せず、明示的な `a`/`A` 押下でのみ選ぶ。
+            // 入力 char が無いのでデフォルト表記の 'Y' を echo する (prompt の大文字と一致)。
             Tok::Enter => {
-                if default_all {
-                    echo_confirm('A');
-                    return Some(ConfirmChoice::All);
-                }
                 echo_confirm('Y');
                 return Some(ConfirmChoice::Yes);
             }
@@ -1451,7 +1445,7 @@ mod tests {
         let s = build_confirm_prompt(&v, 1, 3, Some(Risk::Green), "CONF");
         assert!(s.contains("ls -la"));
         assert!(s.contains("38;5;71")); // Green
-        assert!(s.contains("[y/n/e/A/q]")); // 残コマンドあり
+        assert!(s.contains("[Y/n/e/a/q]")); // 残コマンドあり: デフォルト Yes (Y 大文字)、a は小文字
     }
 
     #[test]

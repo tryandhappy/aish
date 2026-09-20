@@ -10,7 +10,7 @@ CLI SSH + AI (Claude Code) ツール。クライアント側の Claude Code か�
 - **aishプロンプト**（ミニバッファ）: `Ctrl+/` で開く `[aish]` 入力欄。最下行に表示し AI への質問を入力。ESC / Ctrl+C / Ctrl+/ でキャンセル。
 - **ステータスバー**: 最下行の `aish v{version} | Ctrl+/ for AI` 行。
 - **スピナー**: AI 応答待ちアニメーション（`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` + `Thinking...`）。
-- **確認プロンプト**: AI 提案コマンドの実行可否を問う `Exec? {cmd} [y/n/A/q]`（最後／単一は `[Y/n]`）。
+- **確認プロンプト**: AI 提案コマンドの実行可否を問う `Exec? {cmd} [Y/n/e/a/q]`（最後／単一は `[Y/n/e]`）。Enter=デフォルト Yes。
 - **ReadLineモード**: 確認プロンプト応答など、ライン編集付き入力状態。
 
 ---
@@ -209,7 +209,7 @@ trait `AiBackend` で対応:
 ### 6.5 コマンド実行ループ
 1. `message` を `ai_color` で表示。`commands` 空なら対話終了。
 2. `commands` を番号付き全件表示。複数返っても 1 件ずつ確認。
-3. **各コマンドを 1 つずつ** `Exec? {cmd} [y/n/A/q]` で確認（キーの意味は §15.2）し、承認分を**そのまま** `<cmd>\n` で PTY に送信（変形・ラップしない＝透明性が信頼の根幹）。
+3. **各コマンドを 1 つずつ** `Exec? {cmd} [Y/n/e/a/q]` で確認（キーの意味は §15.2）し、承認分を**そのまま** `<cmd>\n` で PTY に送信（変形・ラップしない＝透明性が信頼の根幹）。
 4. **完了待ちループ**（約 20ms 周期）: PTY ドレイン（表示 + ring 追記 + `PromptSniffer.feed()`）/ stdin→PTY 転送（ノンブロッキング。パスワード入力・Ctrl+C 中断可）/ SIGWINCH / 完了判定（`matches_prompt()` 真 + 200ms 静音）。
 5. 1 つも実行されず、または Ctrl+C/Ctrl+D 中止なら AI に問わず終了。
 6. 1 つ以上実行し Ctrl+C/Ctrl+D 以外で抜けたら、各コマンド実行サマリ + 出力本体（`terminal` フェンス）を AI へ送信（`q` 中止時は「残りを中止した」旨に切替）。1 へ戻る。
@@ -487,12 +487,12 @@ backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
 - **win32-input-mode（`ESC[Vk;Sc;Uc;Kd;Cs;Rc_`、`_`=0x5F 終端）のデコード**: Windows Terminal + PowerShell では **PSReadLine がこのモードを有効化**し、キー入力が `ReadConsoleInputW` の KEY_EVENT でなくこの CSI シーケンスのバイト列で aish に届く（2026-07 実測: Ctrl+/ = `ESC[191;53;0;1;40;1_`、Vk=191=0xBF=VK_OEM_2、Cs=0x28 に LEFT_CTRL_PRESSED=0x8）。`_` は CSI 終端範囲(0x40-0x7E)なので `decode_csi` が既に 1 つの `InEvent`(raw 保持) に framing 済み → `classify_csi` の先頭で `final_byte==b'_'` なら純関数 `classify_win32_input_mode(params)` に委譲する。**`#[cfg]` を付けない**（Unix では来ず無害、ubuntu CI で golden test を回すため）。パラメータを `Vk;Sc;Uc;Kd;Cs;Rc` に数値化し、**key-down(Kd≠0) のみ `Some(Tok)`**、key-up(Kd=0)・非数値・フィールド 4 未満は `None`→`EscSeq` に落とす（全 tok 消費者が EscSeq を無視し passthrough は raw を送るので、1 キー=down/up 2 連でも二重入力にならず新 Tok variant も不要）。マッピング: Ctrl(Cs に 0x8/0x4)+（Vk=0xBF or Uc∈{0x1f,0x2f}）→ `Ctrl(0x1f)`（term/windows.rs の pump 正規化と同値・エントリキー）、Vk で Enter/Backspace/Esc/矢印/Home/End/Delete、Uc<0x20 → `Ctrl(uc)`（Ctrl+C 等）、印字可能 BMP → `Char`。**非 BMP=サロゲート（1 record=1 UTF-16 unit）は None フォールバック**（稀。passthrough は raw で無事）。これがないと **Ctrl+/ が PowerShell に素通りしミニバッファが開かない**（実測: Ctrl+/ 後の入力が PowerShell コマンド化し CommandNotFoundException、文字が PSReadLine の構文ハイライトで黄色くなる）。全 UI（confirm/picker/minibuffer/passthrough）が `next_event`→`ev.tok` 経由なので 1 箇所で直る。
 - 「bash readline」= readline / emacs 互換シェルの意（§14）。
 
-### 15.2 確認プロンプト y/n/A/q（`read_confirm_key`）
+### 15.2 確認プロンプト Y/n/e/a/q（`read_confirm_key`）
 
 - **1 キー即確定**（`src/ui.rs`、Enter 不要）。byte 解析は `input::next_event` に集約。
 - 受理: `y/Y/n/N/a/A/q/Q/e/E` + IME 全角 `ｙＹｎＮａＡｑＱｅＥ` + ひらがな `あ`(=a) / `ん`(=n) / `え`(=e)。Space はデフォルト Yes（文脈に依らず）。**未知キーは無視して再読み取り**（打ち間違いを No にしない）。`e`=編集は §15.15（`[a]` 自動承認中は confirm prompt が出ないので存在しない）。
 - **Enter は `b < 0x20` 判定より先に `Tok::Enter` に分類**（「Enter が効かない」回帰が過去 2 回。golden test `enter_is_not_swallowed_by_control_filter` 等で固定）。
-- **Enter のデフォルトは文脈依存**（2026-08 変更。ユーザ要望「複数コマンド時は Enter で残り全部承認したい」）。**残コマンドあり = プロンプト `[y/n/A/q]` で Enter=All（残り自動承認）、echo `A`**。**最後／単一コマンド = プロンプト `[Y/n]` で Enter=Yes、echo `Y`**。文脈は `AiConversation::confirm_and_execute` が `i + 1 < total`（= `print_single_confirm_prompt` の `index < total`）を `InputRequest::ReadConfirmKey { default_all }` で入力スレッドへ渡し、`read_confirm_key(default_all)` の `Tok::Enter` 分岐で分ける。`default_all` は Enter のみに効き、Space（常に Yes）・明示キーには影響しない。プロンプト文字列の大文字（`A` / `Y`）と echo される既定文字を一致させて「Enter で何が起きるか」を視覚的に一致させている。
+- **Enter のデフォルトは常に Yes**（このコマンド 1 件だけ実行。2026-09 変更）。**2026-08 に「複数コマンド時は Enter=All（残り自動承認）」を入れたが撤回した**（ユーザ要望「Enter 連打で意図せず残り全部を一括承認してしまうのを避けたい。デフォルトは安全側=1 件ずつにしたい」2026-09）。プロンプトは残コマンドあり = `[Y/n/e/a/q]`（Y 大文字=デフォルト、a 小文字）、最後／単一 = `[Y/n/e]`。**残り自動承認 (All) は明示的に `a`/`A` キーを押してのみ選ぶ**（Enter には載せない）。echo は常に `Y`。`read_confirm_key()` の `Tok::Enter` 分岐は無条件 Yes。**`default_all` フラグと `InputRequest::ReadConfirmKey` のフィールドは廃止**（Enter=All が消えて不要になった）。プロンプト先頭の `Y` 大文字と echo `Y` を一致させ「Enter で何が起きるか」を視覚的に示す。追加の 1 キー割り当て（Tab / Alt+Enter 等での All）は検討したが**見送り**（Shift+Enter/Ctrl+Enter は多くの端末で素の Enter と同一バイトで区別不可、aish は端末状態を変えない原則で kitty keyboard protocol 等を有効化しないため）。
 - **キー semantics**: `y`/Space=実行、Enter=デフォルト（上記）、`n`=1 回スキップ、`a`=残り自動承認、`q`=残り中止（実行済みあれば AI follow-up）、`Ctrl+C`/`Ctrl+D`=残り中止かつ **AI に問わない**。**ESC 単独は `n` と同じ 1 回スキップ**（旧「残り全部キャンセル」から変更。**Ctrl+C 系 abort arm に戻さない**）。Quit と Abort の差は follow-up の有無のみ（`ExecOutcome::{Quit,Abort}`。Abort は executed 非空でも follow-up せず `break`）。
 - **AI 応答の `command_result_followup: false` は実行後の AI 自動問い合わせ（follow-up）を抑制**（2026-07 追加）。「コマンドを教えてほしいだけ」のとき実行結果を AI に送り返す待ち時間が煩わしい、という要望に対し AI 自身が「出力確認が必要か」を毎ターン宣言する設計。`AiConversation::run` の follow-up 送信直前で `!response.command_result_followup → break`。**false のときは `q`（Quit）でも follow-up しない**（false = 一切 follow-up なしで一貫。Abort は従来どおり常になし）。**欠落時は true（従来動作）**: `#[serde(default)]` で、フラグを出さないモデル・lossy フォールバック（この場合 commands 空で follow-up 自体起きない）でも調査ループが壊れない後方互換。follow-up しなくても実行結果は ring_buffer の未送信 cursor に残り、次のユーザ質問時に terminal コンテキストとして送られる（情報は失われない）。承認ゲート Y/n/a/q は不変（信頼の根幹への影響なし）。
 - **Ctrl+C/Ctrl+D キャンセルは抜ける前に必ず stdout へ `\n` を 1 つ出す**（`Tok::Eof` は対象外）。出さないと直後のリフレッシュが `Exec? …` 行を上書きして消す（過去バグ）。他キーは `echo_confirm` 末尾 `\n` でクリーン。
@@ -528,7 +528,7 @@ backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
 - **制御文字ガードは `VettedCommand` 型（`src/vetted_command.rs`）**。実行ループ先頭（`Approval` 分岐前）で `VettedCommand::vet` が検証し、**`\n`/`\t` 以外**の制御文字（CR/ESC/NUL/他 C0/DEL/C1）入りは確認に載せず `print_rejected_command` → `continue`（PTY に送らない）。**`\n`（改行）と `\t`（TAB）は許可** — heredoc / 複数行スクリプトを 1 提案として送るため。`print_single_confirm_prompt` が `\n` を実際の改行 + 字下げで**全行描画**（TAB は字下げ literal、他制御文字は caret 化）するので「画面で見た全行 = 送信する全行」が保たれ隠れ行を作れない（`\r` での行頭復帰偽装だけを弾く）。検証後は表示（`print_single_confirm_prompt`）も送信（`send_approved_command`）も `&VettedCommand` のみ受理 → **「画面で承認した物 = サーバで実行される物」が型レベルで保たれ、撤去・迂回は型エラー**（vet は検証のみで変形しない。`as_str()` が同一スライスを返すことをテストで固定）。`[a]` 経路も通る。関連型: `ConfirmDecision`（Run/Skip/RunRest/QuitRest/AbortNoAi/Edit）/ `Approval`（AskEach/All）/ `ExecOutcome`（Completed/Quit/Abort）。`e`=編集した文字列も送信前に再 vet される（§15.15）。
 - **AI 由来の `message` / `commands` は描画前に制御文字を caret 可視化**（`visualize_control_line`、`print_ai_message` / `print_ai_commands` / `print_single_confirm_prompt` で適用。ESC→`^[`、CR→`^M`、TAB→`^I`、NUL→`^@`）。`\r` 行頭復帰 + `\x1b[2K` 行消去による「見た目 ≠ 送るバイト」偽装を防ぐ。AI 出力はプロンプトインジェクションで未信頼になり得るので**生 `println!` に戻さない**。`message` は複数行が正当なので `.lines()` 分割を維持し行内のみ可視化。
 - **完了判定は `PromptSniffer` の passive 検出**（§6.5）。承認文字列はそのまま PTY へ。
-- **危険度分類の metadata は信頼境界の外**（2026-09〜）。`ProposedCommand.risk` は**表示専用**で、`VettedCommand` にも `send_approved_command` の送信バイトにも一切入れない。`confirm_and_execute` は loop index で `&ProposedCommand` を並走参照し、`command` だけを `Cow`→`VettedCommand` に載せる。`e=編集`しても risk は index 固定の元コマンド由来をそのまま維持（編集後のバイトに対する分類ではない点は許容 = ユーザ合意）。確認プロンプトは `build_confirm_prompt`（純関数・golden test）が**コマンド本文だけ**を危険度色（`ui::risk_color`: Green=`38;5;71` / Yellow=`38;5;178` / Orange=`38;5;166` / Red=`38;5;196`、ハードコード）で描画。**2026-09 に配色を見直し**: 従来のネオン原色（緑 40 / 黄 226 / 橙 208）は目立ちすぎ、かつ橙 208 は aish ブランド色（`[aish]` プロンプト・スピナー）と同一で「aish が話す色」と「危険度色」が混同したため、トーンダウンした値（緑 71 / 黄 178 / 橙は深橙 166）へ変更（赤 196 は危険を目立たせるため維持）。`Exec?` ラベルは**青系**（`38;5;117` スカイブルー + 濃紺背景 `48;2;20;35;55`）で描画し、aish プロンプトのオレンジと分離する（「aish が話す = 暖色 / システムが承認を求める = 寒色」をユーザに色で示す = 2026-09 ユーザ指摘。従来はラベルが prompt_color と同一のオレンジ+暗茶背景で見分けづらかった）。`[y/n/e/A/q]` ブラケットは confirm_color を維持（ブラケットは bold+reverse なので危険度色を当てると派手すぎる = ユーザ指摘）。confirm_color 既定も暖色（淡黄 228）から寒色（淡青 `38;5;153` + 灰背景 239）へ変更（`[display]` で上書き可）。`print_ai_commands` の事前一覧も各コマンドを危険度色に。**コマンドごとの説明文は当初持たせたが表示が煩雑になるため撤去**（explanation を schema/prompt/型/表示から削除。2026-09）。
+- **危険度分類の metadata は信頼境界の外**（2026-09〜）。`ProposedCommand.risk` は**表示専用**で、`VettedCommand` にも `send_approved_command` の送信バイトにも一切入れない。`confirm_and_execute` は loop index で `&ProposedCommand` を並走参照し、`command` だけを `Cow`→`VettedCommand` に載せる。`e=編集`しても risk は index 固定の元コマンド由来をそのまま維持（編集後のバイトに対する分類ではない点は許容 = ユーザ合意）。確認プロンプトは `build_confirm_prompt`（純関数・golden test）が**コマンド本文だけ**を危険度色（`ui::risk_color`: Green=`38;5;71` / Yellow=`38;5;178` / Orange=`38;5;166` / Red=`38;5;196`、ハードコード）で描画。**2026-09 に配色を見直し**: 従来のネオン原色（緑 40 / 黄 226 / 橙 208）は目立ちすぎ、かつ橙 208 は aish ブランド色（`[aish]` プロンプト・スピナー）と同一で「aish が話す色」と「危険度色」が混同したため、トーンダウンした値（緑 71 / 黄 178 / 橙は深橙 166）へ変更（赤 196 は危険を目立たせるため維持）。`Exec?` ラベルは**青系**（`38;5;117` スカイブルー + 濃紺背景 `48;2;20;35;55`）で描画し、aish プロンプトのオレンジと分離する（「aish が話す = 暖色 / システムが承認を求める = 寒色」をユーザに色で示す = 2026-09 ユーザ指摘。従来はラベルが prompt_color と同一のオレンジ+暗茶背景で見分けづらかった）。`[Y/n/e/a/q]` ブラケットは confirm_color を維持（ブラケットは bold+reverse なので危険度色を当てると派手すぎる = ユーザ指摘）。confirm_color 既定も暖色（淡黄 228）から寒色（淡青 `38;5;153` + 灰背景 239）へ変更（`[display]` で上書き可）。`print_ai_commands` の事前一覧も各コマンドを危険度色に。**コマンドごとの説明文は当初持たせたが表示が煩雑になるため撤去**（explanation を schema/prompt/型/表示から削除。2026-09）。
 
 ### 15.8 その他の UI ルール
 
@@ -646,7 +646,7 @@ Windows で「aish が直接 stdout に描いた行が、後続のコマンド�
 
 ### 15.15 確認プロンプトの `e`=編集（`show_command_editor`）
 
-AI 提案コマンドを実行前にその場で編集する機能（2026-09）。提案が惜しい（パスやオプションを 1 つ直したい）ときに手打ちし直さず済ませたい、という要望への対応。確認プロンプト `[y/n/e/A/q]` で `e` を押すと提案コマンドをプレフィルした行エディタが開き、編集後に**再確認**して実行する。
+AI 提案コマンドを実行前にその場で編集する機能（2026-09）。提案が惜しい（パスやオプションを 1 つ直したい）ときに手打ちし直さず済ませたい、という要望への対応。確認プロンプト `[Y/n/e/a/q]` で `e` を押すと提案コマンドをプレフィルした行エディタが開き、編集後に**再確認**して実行する。
 
 - **入力ソースは picker 方式（§15.12 前例）**: `ui::show_command_editor(initial, display) -> Option<String>` は **main スレッドが fd0 を直接読む同期ブロッキング関数**。`InputRequest` は拡張しない。安全な根拠: 確認キー読みは入力スレッドが `read_confirm_key` で行い `InputEvent::Confirm` を返して**直後に `prompt_rx.recv()` へ戻り park する**。`confirm_and_execute`（main スレッド）が `Confirm(Edit)` を受け取った瞬間、入力スレッドは必ず parked（次の `InputRequest` まで fd0 に触らない）＝ `show_picker` が main スレッド直読みを許される条件とまったく同じ。`InputRequest::ReadCommandEdit` 拡張案は edited `String` のスレッド間往復・新 `InputEvent` variant・`wait_confirm_decision` の多段状態機械が要り、§15.12 が確立した前例に反するので却下。
 - **承認は常に confirm prompt 再表示で取る（信頼の根幹）**: 編集結果は必ず再 `VettedCommand::vet` → `print_single_confirm_prompt` 再表示 → 再度 `InputRequest::ReadConfirmKey` で y/n を取り直す。**エディタ画面を承認画面にしない**（エディタは vet 前の下書き UI）。`confirm_and_execute` の per-command 部を内側 `loop` にし、`Cow<str>` で編集置換を保持（未編集は borrow のまま無コピー）。decision 確定後は `current` 不変（Edit は必ず `continue`）なので「confirm prompt で表示した文字列 == 送信直前に再 vet する文字列」が成立。vet は同一スライス恒等なので二重 vet でも承認 = 実行は保たれる。
@@ -654,7 +654,7 @@ AI 提案コマンドを実行前にその場で編集する機能（2026-09）�
 - **行エディタの共通化**: `read_minibuffer_line` に `LineEditOpts { initial, use_history, exit_word_cancels }` を追加。minibuffer は `{"", true, true}`、編集モードは `{initial, false, false}`。`"exit"`/空の分類は純関数 `classify_line_submit`（golden test）に切り出し。`redraw_minibuffer` / `compute_visual_layout` / grow-shrink は無変更（既存 golden test が温存）。
 - **semantics**: 空 / 空白のみの編集結果 = Skip（n 相当）。編集キャンセル（ESC/Ctrl+C/Ctrl+//空 Ctrl+D）= **元コマンドの再確認に戻す**（abort にしない。エディタ内の Ctrl+C は minibuffer 準拠でキャンセル＝確認画面での Ctrl+C の abort とは非対称）。複数行編集は vet が `\n` を許可し全行再表示 → 承認。制御文字混入（paste 等）は再 vet が拒否 → Skip。`[a]` 自動承認中は confirm prompt が出ないので e は存在しない（仕様）。
 - **既知の劣化**: 元コマンドに TAB を含む場合、エディタ内 cursor 桁が `char_width('\t')=0` のためズレうる（cosmetic。承認は confirm prompt 再表示なので信頼には無影響）。
-- **手動検証チェックリスト**: 単一/複数コマンドで e→編集→再確認→実行 / 編集→Enter=All / 編集→ESC 取消（元コマンド再確認）/ 空編集 skip / `exit` へ編集して実行 / 複数行（Alt+Enter）編集 / Windows Terminal + PowerShell で編集→実行（set_anchor 非呼出により送信前 resync が編集分の描画も吸収、崩れなし）。
+- **手動検証チェックリスト**: 単一/複数コマンドで e→編集→再確認→実行 / 編集→Enter=Yes（1 件実行）/ 編集→ESC 取消（元コマンド再確認）/ 空編集 skip / `exit` へ編集して実行 / 複数行（Alt+Enter）編集 / Windows Terminal + PowerShell で編集→実行（set_anchor 非呼出により送信前 resync が編集分の描画も吸収、崩れなし）。
 
 ### 15.16 minibuffer プロンプト履歴の永続化（`history.rs`）
 

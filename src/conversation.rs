@@ -284,12 +284,9 @@ impl AiConversation<'_> {
                     Some(cmd.risk),
                     self.display,
                 );
-                // 残コマンドがある (最後ではない) とき [a] が出ており Enter=All。
-                // print_single_confirm_prompt の `index < total` と同じ条件。
-                let default_all = i + 1 < total;
-                let _ = self
-                    .prompt_tx
-                    .send(ui::InputRequest::ReadConfirmKey { default_all });
+                // Enter のデフォルトは常に Yes (このコマンド 1 件だけ実行)。残り自動承認は
+                // 明示的な `a`/`A` 押下でのみ選ぶ (default_all フラグは廃止)。
+                let _ = self.prompt_tx.send(ui::InputRequest::ReadConfirmKey);
                 match wait_confirm_decision(self.input_rx) {
                     ConfirmDecision::Edit => {
                         // main スレッド同期のエディタを開く (入力スレッドは Confirm

@@ -772,9 +772,9 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                     }
                     ui::passthrough_read(&input_tx, &input_bg, &input_aish_label);
                 }
-                ui::InputRequest::ReadConfirmKey { default_all } => {
+                ui::InputRequest::ReadConfirmKey => {
                     // Y/n/a 1 キー即確定。None は Ctrl+C / Ctrl+D / ESC = 全キャンセル。
-                    let event = match ui::read_confirm_key(default_all) {
+                    let event = match ui::read_confirm_key() {
                         Some(choice) => ui::InputEvent::Confirm(choice),
                         None => ui::InputEvent::ReadLineCancelled,
                     };
@@ -994,13 +994,12 @@ KEYS (起動後):
     Enter / Alt+Enter      aish プロンプトで送信 / 改行挿入 (ESC / Ctrl+C でキャンセル)
     Up / Down              aish プロンプトの履歴を呼び出す (~/.aish/history に永続化)
 
-  提案コマンドの確認 (Exec? <cmd> [y/n/e/A/q]):
-    y / Space              このコマンドを実行
+  提案コマンドの確認 (Exec? <cmd> [Y/n/e/a/q]):
+    y / Space / Enter      このコマンドを実行 (Enter がデフォルト)
     n / ESC                このコマンドをスキップ
     e                      コマンドを編集し、再確認してから実行
-    A                      このコマンドを実行し、残りを自動承認
+    a                      このコマンドを実行し、残りを自動承認
     q                      残りを中止 (AI に結果を報告)
-    Enter                  残りがあれば A、最後のコマンドなら y
     Ctrl+C / Ctrl+D        残りを中止 (AI に問わない) / 実行中は Ctrl+C でコマンド中断
 
 SLASH COMMANDS (aish プロンプトに入力):
