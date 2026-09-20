@@ -253,6 +253,9 @@ mod tests {
     use super::*;
 
     #[test]
+    // const 配列への is_empty は clippy が「常に false」と警告するが、これは
+    // 意図的な回帰防止アサート (将来 MODEL_DEFAULTS/EFFORT_DEFAULTS を空にする変更を弾く)。
+    #[allow(clippy::const_is_empty)]
     fn model_defaults_present() {
         // `grok models` 取得失敗時の fallback スナップショットが空にならない (既定消失の回帰防止)。
         assert!(!MODEL_DEFAULTS.is_empty());

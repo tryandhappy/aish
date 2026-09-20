@@ -7,7 +7,7 @@ CLI SSH + AI (Claude Code)。ローカルシェル / SSH 接続先サーバを�
 - 対応 OS: Linux (Ubuntu) / macOS / Windows 10 1809+ native（Windows Terminal 推奨。**Windows 実機検証済み (2026-07)** — チェックリストは SPEC.md § 15.13）
 - CI (`ci.yml`): 全 push で `cargo fmt --all -- --check` / `cargo clippy --all-targets -- -D warnings` (ubuntu) / `cargo test` (ubuntu + macOS)。**push 前に 3 つともローカルで通す**（`release.yml`=タグ push リリースとは独立）。
   - **テストは `cargo test`、`--lib` を付けない**（bin-only crate なので 0 件になる）。
-  - **clippy の構造的 lint は一部 `#[allow(clippy::...)]` で意図的に抑制**（`utf8_char_len` の `if_same_then_else`、minibuffer/echo の `write_with_newline`、`compute_visual_layout` の `needless_range_loop`、minibuffer 関数群の `too_many_arguments`、入力スレッドの `while_let_loop`）。trust-critical / 意図的コード温存のため、**安易に外して writeln! 化やリファクタしない**。
+  - **clippy の構造的 lint は一部 `#[allow(clippy::...)]` で意図的に抑制**（`utf8_char_len` の `if_same_then_else`、minibuffer/echo の `write_with_newline`、`compute_visual_layout` の `needless_range_loop`、minibuffer 関数群の `too_many_arguments`、入力スレッドの `while_let_loop`、grok テスト `model_defaults_present` の `const_is_empty`=const 配列を空にする回帰を弾く意図的アサート）。trust-critical / 意図的コード温存のため、**安易に外して writeln! 化やリファクタしない**。
 
 ## 仕様
 
