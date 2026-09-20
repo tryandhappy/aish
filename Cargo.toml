@@ -1,6 +1,6 @@
 [package]
 name = "aish"
-version = "1.2.1-beta.2"
+version = "1.2.1-beta.3"
 edition = "2021"
 description = "CLI SSH + AI (Claude Code)"
 license = "MIT"
