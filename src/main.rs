@@ -994,12 +994,12 @@ KEYS (起動後):
     Enter / Alt+Enter      aish プロンプトで送信 / 改行挿入 (ESC / Ctrl+C でキャンセル)
     Up / Down              aish プロンプトの履歴を呼び出す (~/.aish/history に永続化)
 
-  提案コマンドの確認 (Exec? <cmd> [Y/n/e/a/q]):
+  提案コマンドの確認 (Exec? <cmd> [Y/n/a/q/e]):
     y / Space / Enter      このコマンドを実行 (Enter がデフォルト)
     n / ESC                このコマンドをスキップ
-    e                      コマンドを編集し、再確認してから実行
     a                      このコマンドを実行し、残りを自動承認
     q                      残りを中止 (AI に結果を報告)
+    e                      コマンドを編集し、再確認してから実行
     Ctrl+C / Ctrl+D        残りを中止 (AI に問わない) / 実行中は Ctrl+C でコマンド中断
 
 SLASH COMMANDS (aish プロンプトに入力):

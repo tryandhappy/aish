@@ -14,6 +14,10 @@ use crate::input::{self, StdinSource, Tok};
 
 static PROMPT_HISTORY: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 
+/// 確認プロンプトのキー説明行を「プロセス起動後、最初に確認プロンプトを出す 1 回だけ」
+/// 表示するためのフラグ。永続化しない (プロセスごとに true から始まる)。
+static CONFIRM_HELP_PENDING: AtomicBool = AtomicBool::new(true);
+
 fn prompt_history() -> &'static Mutex<Vec<String>> {
     PROMPT_HISTORY.get_or_init(|| Mutex::new(Vec::new()))
 }
@@ -422,9 +426,12 @@ pub fn print_single_confirm_prompt(
     risk: Option<Risk>,
     display: &DisplayConfig,
 ) {
+    // キー説明行は「起動後、最初に確認プロンプトを出す 1 回だけ」表示する
+    // (揮発。ファイル保存はしない)。swap で true→false にして以降は出さない。
+    let show_help = CONFIRM_HELP_PENDING.swap(false, Ordering::SeqCst);
     print!(
         "{}",
-        build_confirm_prompt(cmd, index, total, risk, &display.confirm_color)
+        build_confirm_prompt(cmd, index, total, risk, &display.confirm_color, show_help)
     );
     io::stdout().flush().ok();
 }
@@ -438,6 +445,7 @@ fn build_confirm_prompt(
     total: usize,
     risk: Option<Risk>,
     confirm_color: &str,
+    show_help: bool,
 ) -> String {
     // 残コマンドがある (= 最後ではない) ときだけ [a]/[q] を出す。
     // a = 残り全部を自動承認 (apt / sudo の慣習)、q = 残りを中止。
@@ -447,7 +455,8 @@ fn build_confirm_prompt(
     // (q は押せば効くが最後では n とほぼ等価)。
     // e = このコマンドを編集してから再確認 (§ 15.15)。最後のコマンドでも編集は
     // 有用なので隠さず [Y/n/e] に出す。
-    let options = if index < total { "Y/n/e/a/q" } else { "Y/n/e" };
+    // e (編集) はキー列挙の末尾に置く (ユーザ要望 2026-09)。残コマンドありは a/q も出す。
+    let options = if index < total { "Y/n/a/q/e" } else { "Y/n/e" };
     // コマンド本文だけを危険度色にする。`Exec?` ラベルと `[options]` ブラケットは従来の
     // confirm_color を保つ (ブラケットは bold+reverse なので危険度色を当てると reverse と
     // 相まって派手になり視認性が落ちる — ユーザ指摘 2026-09。SPEC §15.7「ラベル/ブラケットは不変」)。
@@ -469,6 +478,17 @@ fn build_confirm_prompt(
     // (vet と可視化の対象集合が将来ズレても「見た目 ≠ 送信バイト」の偽装だけは成立しないように)。
     let raw = cmd.as_str();
     let mut out = String::new();
+    // 初回のみキー説明行を Exec? の「上」に淡グレーで出す。プロンプト行 (Exec? ... [opts] ) の
+    // 直後でカーソルがキー入力を待ち echo するため、説明はプロンプトより上に置く (下に置くと
+    // カーソル移動が必要 = ConPTY 対策でカーソル操作を増やさない原則に反する)。
+    if show_help {
+        let help = if index < total {
+            "  Enter=run  n=skip  a=run all  q=abort  e=edit"
+        } else {
+            "  Enter=run  n=skip  e=edit"
+        };
+        out.push_str(&format!("\n\x1b[38;5;245m{help}\x1b[0m"));
+    }
     if raw.contains('\n') {
         // 複数行コマンド: "Exec?" を独立行に出し、コマンド全行を 2 空白字下げで描画してから
         // [options] を独立行に出す。コマンド各行は `\n` で分割し、TAB は字下げ literal・他の
@@ -1433,7 +1453,7 @@ mod tests {
     fn confirm_prompt_colors_command_by_risk() {
         // 単一行: コマンドは危険度色 (Red=196)、ラベル/ブラケットは confirm_color を維持。
         let v = VettedCommand::vet("rm -rf /var/log/app").unwrap();
-        let s = build_confirm_prompt(&v, 1, 1, Some(Risk::Red), "CONF");
+        let s = build_confirm_prompt(&v, 1, 1, Some(Risk::Red), "CONF", false);
         assert!(s.contains("rm -rf /var/log/app")); // コマンドバイトはそのまま
         assert!(s.contains("38;5;196")); // コマンドは Red 色
         assert!(s.contains("CONF")); // Exec? ラベルと [options] ブラケットは confirm_color を維持
@@ -1443,17 +1463,17 @@ mod tests {
     #[test]
     fn confirm_prompt_green_and_options_bracket() {
         let v = VettedCommand::vet("ls -la").unwrap();
-        let s = build_confirm_prompt(&v, 1, 3, Some(Risk::Green), "CONF");
+        let s = build_confirm_prompt(&v, 1, 3, Some(Risk::Green), "CONF", false);
         assert!(s.contains("ls -la"));
         assert!(s.contains("38;5;108")); // Green
-        assert!(s.contains("[Y/n/e/a/q]")); // 残コマンドあり: デフォルト Yes (Y 大文字)、a は小文字
+        assert!(s.contains("[Y/n/a/q/e]")); // 残コマンドあり: デフォルト Yes (Y 大文字)、e は末尾
     }
 
     #[test]
     fn confirm_prompt_none_risk_falls_back_to_confirm_color() {
         // risk なし → 従来の confirm_color を使う (後方安全)。
         let v = VettedCommand::vet("uptime").unwrap();
-        let s = build_confirm_prompt(&v, 1, 1, None, "CONFCOLOR");
+        let s = build_confirm_prompt(&v, 1, 1, None, "CONFCOLOR", false);
         assert!(s.contains("CONFCOLOR"));
         assert!(s.contains("uptime"));
     }
@@ -1462,11 +1482,33 @@ mod tests {
     fn confirm_prompt_command_bytes_verbatim_multiline() {
         // 複数行コマンドの全行が結果に含まれる (隠れ行なし = 信頼境界)。
         let v = VettedCommand::vet("cat <<'EOF'\nhello\nEOF").unwrap();
-        let s = build_confirm_prompt(&v, 1, 1, Some(Risk::Yellow), "CONF");
+        let s = build_confirm_prompt(&v, 1, 1, Some(Risk::Yellow), "CONF", false);
         assert!(s.contains("cat <<'EOF'"));
         assert!(s.contains("hello"));
         assert!(s.contains("EOF"));
         assert!(s.contains("38;5;178")); // Yellow でコマンド行が色付く
+    }
+
+    #[test]
+    fn confirm_prompt_help_line_shown_only_when_requested() {
+        let v = VettedCommand::vet("ls -la").unwrap();
+        // 残コマンドあり + show_help=true: ヘルプ行が Exec? より前に出て a/q も含む。
+        let with_help = build_confirm_prompt(&v, 1, 3, Some(Risk::Green), "CONF", true);
+        let help_pos = with_help.find("Enter=run").expect("help line present");
+        let exec_pos = with_help.find("Exec?").expect("Exec? present");
+        assert!(help_pos < exec_pos); // ヘルプはプロンプトの上
+        assert!(with_help.contains("a=run all"));
+        assert!(with_help.contains("q=abort"));
+        assert!(with_help.contains("e=edit"));
+        // show_help=false ならヘルプ行は出ない。
+        let without_help = build_confirm_prompt(&v, 1, 3, Some(Risk::Green), "CONF", false);
+        assert!(!without_help.contains("Enter=run"));
+        // 最後/単一コマンドのヘルプは a/q を含まない (e は含む)。
+        let last = build_confirm_prompt(&v, 1, 1, Some(Risk::Green), "CONF", true);
+        assert!(last.contains("Enter=run"));
+        assert!(last.contains("e=edit"));
+        assert!(!last.contains("a=run all"));
+        assert!(!last.contains("q=abort"));
     }
 
     #[test]
