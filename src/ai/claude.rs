@@ -6,7 +6,7 @@ use super::types::{AiBackend, AiError, AiRequest, AiResponse};
 use crate::config::{AiConfig, LogConfig, OptionLists};
 
 /// `/effort` ピッカーの組み込み既定 (config 未設定時)。claude CLI の `--effort`。
-const EFFORT_DEFAULTS: &[&str] = &["low", "medium", "high"];
+const EFFORT_DEFAULTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 
 /// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort
 /// (検証せず `--model <値>` に渡すだけ。誤りの実害は CLI 起動エラー程度)。
@@ -102,8 +102,8 @@ impl ClaudeBackend {
             args.push("--resume".to_string());
             args.push(sid.clone());
         } else {
-            // `self.system_prompt` (= build_system_prompt_claude → build_system_prompt) に
-            // 安全制約・JSON フォーマット指示が全て含まれている。inline で追記する必要なし。
+            // `self.system_prompt` (= build_system_prompt_claude) に役割・安全制約・応答ルールが
+            // 含まれている。出力形式は下の `--json-schema` が強制する。
             // `--append-system-prompt` は append 動作なので初回のみ (resume では二重追加になる)。
             args.push("--append-system-prompt".to_string());
             args.push(self.system_prompt.clone());

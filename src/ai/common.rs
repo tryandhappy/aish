@@ -116,13 +116,11 @@ pub(crate) fn shell_join(args: &[String]) -> String {
         .join(" ")
 }
 
-/// Claude Code 用の system prompt。
-/// 元々は base + language のみで CLI フラグ (`--disallowedTools` / `--output-format json` / `--json-schema`)
-/// に安全制約と JSON 出力指示を委ねていたが、defense-in-depth のため他 backend と同じ
-/// `build_system_prompt` の内容 (安全制約 + JSON フォーマット指示) を Claude にも適用する。
-/// CLI フラグによる構造的制約と prompt レベルの指示の二段構え。
+/// Claude Code 用の system prompt = 役割・安全制約・応答ルール (`system_prompt_rules`)。
+/// 安全制約は `--disallowedTools` との二段構え。出力形式は `--json-schema` (`AI_RESPONSE_SCHEMA`)
+/// が構造化出力として強制するので、JSON 単独出力指示 (`JSON_OUTPUT_INSTRUCTIONS`) は付けない。
 pub(crate) fn build_system_prompt_claude(prompt: &str, language: &str) -> String {
-    build_system_prompt(prompt, language)
+    system_prompt_rules(prompt, language)
 }
 
 /// AI 応答の JSON Schema (`--json-schema` 対応 backend が構造化出力を強制するのに使う)。
@@ -153,10 +151,27 @@ pub(crate) const AI_RESPONSE_SCHEMA: &str = r#"{
   "required": ["message", "commands", "command_result_followup"]
 }"#;
 
+/// JSON 単独出力指示。JSON Schema を強制できない backend だけが使う。
+const JSON_OUTPUT_INSTRUCTIONS: &str = "出力フォーマット: 必ず以下の JSON だけを 1 つ出力してください。\
+     前後に説明文・コードフェンス・追加テキストを付けないでください。\n\
+     {\"message\": \"ユーザへの説明\", \"commands\": [{\"command\": \"提案コマンド\", \"risk\": \"Green\"}], \"command_result_followup\": true}\n\
+     追加のコマンド提案が不要な場合は commands を [] にしてください。\n\
+     実行したいコマンドがあれば必ず commands 配列に入れてください。\
+     message 中にコマンドの説明やコードブロックが出てきても構いませんが、\
+     実行を意図したコマンドは必ず commands 配列に含めてください。";
+
 /// 既定の system prompt。JSON Schema / ツール禁止フラグを持たない backend (codex/gemini/qwen)
 /// 向けに、安全制約と JSON 単独出力指示を埋め込む。
 /// Claude では `build_system_prompt_claude` を使う。
 pub(crate) fn build_system_prompt(base: &str, language: &str) -> String {
+    format!(
+        "{}\n\n{JSON_OUTPUT_INSTRUCTIONS}",
+        system_prompt_rules(base, language)
+    )
+}
+
+/// 全 backend 共通の役割・安全制約・応答ルール。
+fn system_prompt_rules(base: &str, language: &str) -> String {
     let lang_part = if language.is_empty() {
         String::new()
     } else {
@@ -164,18 +179,13 @@ pub(crate) fn build_system_prompt(base: &str, language: &str) -> String {
     };
     format!(
         "{base}{lang_part}\n\n\
-         重要:\n\
-         - あなたはLinux/ルータ管理の専門家です。\n\
-         - SSH/Terminalの内容を把握しています。\n\
-         - ユーザの指示に従いコマンドを考えて提案してください。\n\
-         - コマンドは出力フォーマットの「提案コマンド」で提案します。\n\
-         - 提案コマンドはユーザが実行するかどうか確認します。\n\
-         - **いかなるツール呼び出しも直接行わないでください**。必ず提案コマンドを使用してください。\n\
-         - shell exec, file read, file write, code interpreter 等のいずれも禁止です。\n\
-         - 情報収集もかならず提案コマンドを使用してください。\n\
-         - あなたが直接、端末の情報を収集・閲覧・操作・書込・編集・実行等するのは禁止です。\n\
-         - ターミナルの内容は既に下記 ```terminal``` ブロックに含まれています。\n\
-         - コマンドは「提案のみ」行ってください。\n\n\
+         役割:\n\
+         - あなたはLinux/ルータ管理の専門家です。ユーザの指示に従い、実行すべきコマンドを考えて commands で提案します。\n\
+         - ユーザは提案コマンドを1件ずつ確認してから自分の端末で実行します。\
+         この承認を経ずにサーバで何かが実行されることが無い、というのがこの道具の安全性の前提です。\
+         そのためあなた自身はツール (shell 実行・ファイル読み書き・検索・コード実行等) を使わず、\
+         情報収集が必要なときもそのためのコマンドを提案してください。\n\
+         - 現在の端末の内容は ```terminal``` ブロックで渡されます。\n\n\
          応答ルール:\n\
          - commands の各要素は command(コマンド本体)・risk(危険度) を持つオブジェクトにしてください。\n\
          - risk は次の4段階から選びます: Green=サーバに影響を与えないReadOnly(軽負荷なログ表示・ファイル検索)、Yellow=再起動等の一時的なサービス停止の可能性、または大量のログ/ファイル検索等の高負荷、Orange=サーバ設定の変更(設定ファイルの書き換え・config変更)、Red=不可逆(ファイル削除・DBレコード削除・設定削除)。迷う場合は安全側(より高いリスク)を選んでください。\n\
@@ -183,14 +193,7 @@ pub(crate) fn build_system_prompt(base: &str, language: &str) -> String {
          - ただし &&・|| による条件付き実行や、for/while/until/case/if 等の制御構文に含まれる ; は1つのコマンドとして維持してください。\n\
          - 1つのコマンドが複数行になる場合 (heredoc やスクリプト等) は、無理に1行へ詰めず改行をそのまま保持して1要素にしてください。\n\
          - command_result_followup: 提案コマンドの実行後、その出力を見て分析・調査・操作を続行する必要があるなら true。\
-         ユーザにコマンドを教える・提示するだけで出力の確認が不要なら false。省略時は true として扱われます。\n\n\
-         出力フォーマット: 必ず以下の JSON だけを 1 つ出力してください。\
-         前後に説明文・コードフェンス・追加テキストを付けないでください。\n\
-         {{\"message\": \"ユーザへの説明\", \"commands\": [{{\"command\": \"提案コマンド\", \"risk\": \"Green\"}}], \"command_result_followup\": true}}\n\
-         追加のコマンド提案が不要な場合は commands を [] にしてください。\n\
-         実行したいコマンドがあれば必ず commands 配列に入れてください。\
-         message 中にコマンドの説明やコードブロックが出てきても構いませんが、\
-         実行を意図したコマンドは必ず commands 配列に含めてください。"
+         ユーザにコマンドを教える・提示するだけで出力の確認が不要なら false。省略時は true として扱われます。"
     )
 }
 
@@ -619,17 +622,16 @@ mod tests {
     }
 
     #[test]
-    fn build_system_prompt_claude_matches_generic_builder() {
-        // Claude 版は build_system_prompt と完全に同じ出力。defense-in-depth で
-        // 同じ安全制約・JSON 指示を CLI フラグと併用する。
-        assert_eq!(
-            build_system_prompt_claude("base.", "Japanese"),
-            build_system_prompt("base.", "Japanese")
-        );
-        assert_eq!(
-            build_system_prompt_claude("base.", ""),
-            build_system_prompt("base.", "")
-        );
+    fn build_system_prompt_claude_is_generic_minus_json_instructions() {
+        // Claude 版は安全制約・応答ルールを共有し、JSON 単独出力指示だけを持たない
+        // (出力形式は --json-schema が強制する)。
+        for lang in ["Japanese", ""] {
+            let claude = build_system_prompt_claude("base.", lang);
+            let generic = build_system_prompt("base.", lang);
+            assert_eq!(generic, format!("{claude}\n\n{JSON_OUTPUT_INSTRUCTIONS}"));
+            assert!(!claude.contains("出力フォーマット"), "got: {claude}");
+            assert!(claude.contains("command_result_followup"), "got: {claude}");
+        }
     }
 
     #[test]
