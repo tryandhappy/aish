@@ -9,15 +9,18 @@ use crate::config::{AiConfig, LogConfig, OptionLists};
 const EFFORT_DEFAULTS: &[&str] = &["none", "low", "medium", "high", "xhigh", "max"];
 
 /// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort。更新はリリース必要。
-/// 2026-09 現況スナップショット (copilot 未インストールのため slug は changelog 準拠の best-effort)。
-/// CLI に auto model selection もあるが headless での `--model auto` 可否が未実測なので採用見送り。
-/// gpt-5.6-terra/gpt-5.5 は copilot changelog で未確認のため確認済みの `gpt-5.6` に統一。
+/// 2026-09 現況スナップショット (copilot 未インストールのため slug は docs.github.com の
+/// supported-models 準拠の best-effort)。copilot は Anthropic/Gemini を dot 形式で持つ
+/// (`claude-opus-5.5`/`gemini-3.7-flash`)。CLI に auto model selection もあるが headless での
+/// `--model auto` 可否が未実測なので採用見送り。claude-fable 系は supported-models 未掲載のため除外。
 const MODEL_DEFAULTS: &[&str] = &[
+    "claude-opus-5.5",
     "claude-sonnet-5",
     "claude-opus-5",
-    "claude-fable-5",
-    "gpt-5.6",
+    "gpt-6-sol",
+    "gpt-5.6-sol",
     "gemini-3.7-flash",
+    "grok-4.7",
 ];
 
 /// GitHub Copilot CLI (`copilot`) backend。

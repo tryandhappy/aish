@@ -14,8 +14,8 @@ use crate::config::{AiConfig, LogConfig, OptionLists};
 const MODEL_DEFAULTS: &[&str] = &[
     "auto",
     "composer-2.5",
-    "claude-opus-5",
-    "gpt-5.6-sol",
+    "claude-opus-5-5",
+    "gpt-6-sol",
     "gemini-3.1-pro",
 ];
 
