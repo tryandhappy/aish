@@ -85,25 +85,18 @@ git tag -a "v$NEW" -m "Release v$NEW"
 
 ## 5. push 確認
 
-`AskUserQuestion` で次を聞く:
+`AskUserQuestion` で「push しますか? (origin に main + tag を送信)」を聞き、Yes なら `git push origin main --tags`。
 
-1. push しますか? (origin に main + tag を送信)
-2. ローカルバイナリも `cargo install --path . --force` で更新しますか?
-
-両方とも独立に Yes/No 選択。
-
-選択に応じて:
-- push: `git push origin main --tags`
-- install: `cargo install --path . --force` (release ビルド + `~/.cargo/bin/aish` に上書き)
+ローカルバイナリの更新は提案しない。ユーザ環境の実体は `/usr/local/bin/aish` で、`~/.cargo/bin/aish` と二重になるとどちらが動いているか紛れるため (`cargo install --path .` は使わない)。
 
 ## 6. 完了報告
 
-最後に、何が行われたかを 3-5 行で要約 (新バージョン、commit hash、tag 名、push 有無、install 有無)。GitHub Release 作成までは行わない (任意作業として `gh release create v$NEW --notes-from-tag` を提案するに留める)。
+最後に、何が行われたかを 3-5 行で要約 (新バージョン、commit hash、tag 名、push 有無)。GitHub Release 作成までは行わない (任意作業として `gh release create v$NEW --notes-from-tag` を提案するに留める)。
 
 ---
 
 ## 注意事項
 
-- バージョン番号は SemVer (`X.Y.Z` 数値のみ) を期待する。`v` プレフィックスは tag 側にだけ付与し、Cargo.toml 内では付けない
+- バージョン番号は SemVer (`X.Y.Z`、prerelease は `X.Y.Z-rc.N` 等のハイフン付き識別子)。`v` プレフィックスは tag 側にだけ付与し、Cargo.toml 内では付けない
 - 既に同名の tag が存在する場合は `git tag -l "v$NEW"` で事前検出して中止すること (force 上書きはしない)
 - `cargo build` が失敗 / 警告ありで終わった場合は commit 前に必ず止まる

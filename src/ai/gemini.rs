@@ -9,13 +9,12 @@ const MAX_HISTORY_TURNS: usize = 8;
 
 /// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort。更新はリリース必要。
 /// 2026-09 現況: gemini-3.8-flash が GA (2026-09-02)。Pro は 3.1-pro-preview が CLI 露出の最新
-/// (3.5 Pro は未リリース)。gemini-3-pro/3-flash は現行モデルへの解決が未確認なので明示版へ更新。
+/// (3.5 Pro は未リリース)。2.5 系は access-limited legacy 化したため 3.5-flash-lite へ差し替え。
 const MODEL_DEFAULTS: &[&str] = &[
     "gemini-3.8-flash",
     "gemini-3.1-pro-preview",
     "gemini-3.7-flash",
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
+    "gemini-3.5-flash-lite",
 ];
 
 /// Gemini CLI backend。
