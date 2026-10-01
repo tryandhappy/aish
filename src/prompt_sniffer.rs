@@ -7,6 +7,11 @@ const DEFAULT_TERMINATORS: &[char] = &['$', '#', '>', '%', '➜', '❯', '»'];
 /// 長すぎる prompt は通常存在しないので 256 バイトで十分。
 const TAIL_BUFFER_BYTES: usize = 256;
 
+/// ANSI 未除去の生出力末尾を保持するバッファサイズ。ConPTY が末尾スペースを
+/// カーソル移動 (CUF) で代替した形 (`…$\x1b[K\x1b[1C`) を検出するために使う。
+/// シェル統合の OSC シーケンス (`\x1b]3008;…`) が長いので stripped より広く取る。
+const RAW_TAIL_BUFFER_BYTES: usize = 512;
+
 /// PTY 出力末尾を観察してプロンプト戻りを検出するスニッファ。
 ///
 /// 「人間がプロンプトを目視で確認している」のと同じ要領で、ANSI 除去後の
@@ -21,6 +26,8 @@ pub struct PromptSniffer {
     terminators: BTreeSet<char>,
     /// PTY 出力末尾の ANSI 除去後バッファ
     tail_stripped: Vec<u8>,
+    /// PTY 出力末尾の ANSI 未除去バッファ (ConPTY の CUF 代替末尾スペース検出用)
+    tail_raw: Vec<u8>,
 }
 
 impl PromptSniffer {
@@ -28,6 +35,7 @@ impl PromptSniffer {
         Self {
             terminators: DEFAULT_TERMINATORS.iter().copied().collect(),
             tail_stripped: Vec::new(),
+            tail_raw: Vec::new(),
         }
     }
 
@@ -38,6 +46,11 @@ impl PromptSniffer {
         if self.tail_stripped.len() > TAIL_BUFFER_BYTES {
             let drop = self.tail_stripped.len() - TAIL_BUFFER_BYTES;
             self.tail_stripped.drain(..drop);
+        }
+        self.tail_raw.extend_from_slice(data);
+        if self.tail_raw.len() > RAW_TAIL_BUFFER_BYTES {
+            let drop = self.tail_raw.len() - RAW_TAIL_BUFFER_BYTES;
+            self.tail_raw.drain(..drop);
         }
     }
 
@@ -53,8 +66,24 @@ impl PromptSniffer {
             // 代替するため、ANSI 除去後は `PS C:\path>` (空白なし) で届くことがある
             // (§ 15.13)。同じ形判定を `PS ` 接頭辞付きでも受理する。
             // `cfg!` の実行時定数分岐なので Unix ではデッドブランチ (挙動不変)。
-            return cfg!(windows)
-                && (is_cmd_style_prompt(last_line) || is_powershell_style_prompt(last_line));
+            if !cfg!(windows) {
+                return false;
+            }
+            if is_cmd_style_prompt(last_line) || is_powershell_style_prompt(last_line) {
+                return true;
+            }
+            // WSL/SSH 等の Unix 系プロンプト (`user@host:~$`, `root@host:~#`) も
+            // スクロールで最下行に出ると末尾空白が CUF 化され、ANSI 除去後は終端文字
+            // 止まりで届く。生末尾が `\x1b[{n}C`(CUF = 代替された末尾空白) で終わって
+            // いれば、末尾空白ありと同じ扱いにして終端文字で判定する (§ 15.13)。
+            // 通常の出力行は末尾に CUF を持たないので cmd/PS 形と同じく誤検出しにくい。
+            if ends_with_cursor_forward(&self.tail_raw) {
+                return match last_line.chars().last() {
+                    Some(c) => self.terminators.contains(&c),
+                    None => false,
+                };
+            }
+            return false;
         }
         let before_space = last_line.trim_end_matches(' ');
         match before_space.chars().last() {
@@ -97,6 +126,24 @@ fn is_powershell_style_prompt(last_line: &str) -> bool {
     last_line
         .strip_prefix("PS ")
         .is_some_and(is_cmd_style_prompt)
+}
+
+/// 生出力末尾が CUF (`ESC [ {digits}? C` = Cursor Forward) で終わっているか。
+/// ConPTY は最下行へスクロールで出た行の末尾空白を文字でなく CUF で代替するため、
+/// プロンプト末尾の空白がこの形で届く (`…$\x1b[K\x1b[1C`、§ 15.13)。`\x1b[K` 等が
+/// 間にあっても末尾の CUF だけを見る。`matches_prompt` が Windows 実行時のみ併用。
+/// 純関数として切り出し、テストは両 OS で走らせる。
+fn ends_with_cursor_forward(raw: &[u8]) -> bool {
+    if raw.last() != Some(&b'C') {
+        return false;
+    }
+    // 'C' の手前の数字列 (省略時は既定 1) を読み飛ばす。
+    let mut i = raw.len() - 1; // 'C' の位置
+    while i > 0 && raw[i - 1].is_ascii_digit() {
+        i -= 1;
+    }
+    // 残りが `ESC [` で終わっていれば CUF。
+    i >= 2 && raw[i - 1] == b'[' && raw[i - 2] == 0x1b
 }
 
 #[cfg(test)]
@@ -318,6 +365,44 @@ mod tests {
         // 空白なしで届く。
         assert!(fed(b"wsl output\r\nPS C:\\Users\\foo>\x1b[26C").matches_prompt());
         assert!(fed(b"PS C:\\Users\\foo>").matches_prompt());
+    }
+
+    #[test]
+    fn cursor_forward_terminated_prompt_shape() {
+        // CUF (`ESC [ n C`) 終端の検出。純関数は両 OS でこの判定。
+        assert!(ends_with_cursor_forward(b"user@host:~$\x1b[1C"));
+        assert!(ends_with_cursor_forward(b"user@host:~$\x1b[K\x1b[1C"));
+        assert!(ends_with_cursor_forward(b"user@host:~$\x1b[12C"));
+        assert!(ends_with_cursor_forward(b"\x1b[C")); // 数字省略 = 既定 1
+                                                      // CUF でない終端は偽。
+        assert!(!ends_with_cursor_forward(b"user@host:~$ "));
+        assert!(!ends_with_cursor_forward(b"user@host:~$"));
+        assert!(!ends_with_cursor_forward(b"echo C"));
+        assert!(!ends_with_cursor_forward(b"\x1b[1A")); // CUU (上移動) は別物
+        assert!(!ends_with_cursor_forward(b""));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn matches_wsl_bash_prompt_with_cuf_substituted_space_on_windows() {
+        // WSL bash プロンプトがスクロールで最下行に出た実受信形 (ptyprobe 採取)。
+        // 末尾空白が `\x1b[K\x1b[1C` に代替され、ANSI 除去後は `…~$` で届く。
+        let scrolled =
+            b"\x1b[32m\x1b[1mtryandhappy@next\x1b[m:\x1b[34m\x1b[1m~\x1b[m$\x1b[K\x1b[1C";
+        assert!(fed(scrolled).matches_prompt());
+        // root の `#` 終端も同様。
+        let root = b"\x1b[1mroot@next\x1b[m:~#\x1b[K\x1b[1C";
+        assert!(fed(root).matches_prompt());
+        // CUF があっても終端文字でなければ完了としない (出力途中の誤検出防止)。
+        assert!(!fed(b"loading\x1b[K\x1b[1C").matches_prompt());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cuf_substituted_prompt_is_dead_branch_on_unix() {
+        // Unix では CUF 代替の特例が効かない (挙動バイト不変の保証)。
+        let scrolled = b"tryandhappy@next:~$\x1b[K\x1b[1C";
+        assert!(!fed(scrolled).matches_prompt());
     }
 
     #[cfg(unix)]
