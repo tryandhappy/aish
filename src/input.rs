@@ -240,7 +240,10 @@ fn classify_win32_input_mode(params: &[u8]) -> Option<Tok> {
     }
     const LEFT_CTRL_PRESSED: u32 = 0x0008;
     const RIGHT_CTRL_PRESSED: u32 = 0x0004;
+    const LEFT_ALT_PRESSED: u32 = 0x0002;
+    const RIGHT_ALT_PRESSED: u32 = 0x0001;
     let ctrl = cs & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED) != 0;
+    let alt = cs & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED) != 0;
 
     // Ctrl+/ (エントリキー)。VK_OEM_2(0xBF) または uChar が 0x1f/0x2f。term/windows.rs の
     // pump 正規化と同一値・同一条件 (US=0x1f / JIS=0x2f / VK 経路)。
@@ -250,6 +253,9 @@ fn classify_win32_input_mode(params: &[u8]) -> Option<Tok> {
     // Vk による特殊キー (Enter/Backspace/Esc は制御文字フィルタより先に判定する — さもないと
     // uChar<0x20 の下の分岐に飲まれる。next_event の順序トラップと同じ理由)。
     match vk {
+        // Alt+Enter = 改行挿入。win32-input-mode では Alt は ESC 前置ではなく Cs(修飾状態)
+        // ビットで届くため、Unix の ESC+CR→AltEnter 相当をここで明示する (さもないと送信扱い)。
+        0x0D if alt => return Some(Tok::AltEnter),
         0x0D => return Some(Tok::Enter),     // VK_RETURN
         0x08 => return Some(Tok::Backspace), // VK_BACK
         0x1B => return Some(Tok::Esc),       // VK_ESCAPE
@@ -732,6 +738,19 @@ mod tests {
         assert_eq!(decode_all(b"\x1b[36;71;0;1;0;1_"), vec![Tok::Home]);
         assert_eq!(decode_all(b"\x1b[35;79;0;1;0;1_"), vec![Tok::End]);
         assert_eq!(decode_all(b"\x1b[46;83;0;1;0;1_"), vec![Tok::Delete]);
+    }
+
+    #[test]
+    fn win32_alt_enter_is_newline() {
+        // Windows Terminal + PowerShell 実測 (keys.log): Alt+Enter は Cs に Alt ビット
+        // (LEFT_ALT=0x02) を立てて届く。Cs=0x22 = NUMLOCK(0x20)|LEFT_ALT(0x02)。
+        // Enter 本文 (Vk=0x0D) + Alt → AltEnter (改行挿入)。送信 (Tok::Enter) にしない。
+        assert_eq!(decode_all(b"\x1b[13;28;13;1;34;1_"), vec![Tok::AltEnter]);
+        // RIGHT_ALT(0x01) 単独でも改行。
+        assert_eq!(decode_all(b"\x1b[13;28;13;1;1;1_"), vec![Tok::AltEnter]);
+        // Alt なしの素の Enter (Cs=0x20=NUMLOCK のみ / Cs=0) は従来どおり送信。
+        assert_eq!(decode_all(b"\x1b[13;28;13;1;32;1_"), vec![Tok::Enter]);
+        assert_eq!(decode_all(b"\x1b[13;28;13;1;0;1_"), vec![Tok::Enter]);
     }
 
     #[test]
