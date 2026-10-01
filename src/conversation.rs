@@ -98,6 +98,11 @@ enum CommandWait {
     /// 実行中に Ctrl+C (0x03) が押された。PTY へ転送済みで、コマンドは中断され
     /// プロンプトに復帰した。残りコマンドは実行せず中止する。
     Interrupted,
+    /// 実行中に Ctrl+/ (0x1f) が押された。プロンプト検出が成立しない (ConPTY の
+    /// 描画差やカスタムプロンプト等で sniffer が見失った) 状況からの人間による
+    /// 待機打ち切り。PTY へは転送しておらず、コマンドは実行中のままかもしれない。
+    /// 残りコマンドは実行せず中止し、AI にも問い合わせない (§ 15.13)。
+    WaitAborted,
     /// 子プロセス (ssh / shell) が死んだ。残り出力は drain 済み。
     PtyDied,
 }
@@ -409,6 +414,20 @@ impl AiConversation<'_> {
                         outcome: ExecOutcome::Abort,
                     });
                 }
+                CommandWait::WaitAborted => {
+                    // Ctrl+/ で完了待ちを打ち切った。コマンドは送信済み (= 実行した)
+                    // として記録し、残りは送らず中止、follow-up もしない。コマンドが
+                    // まだ走っている可能性をユーザに 1 行で知らせる (stdout のみ、
+                    // PTY には何も書かない)。
+                    println!(
+                        "\x1b[38;5;245m[aish] command wait aborted (Ctrl+/); the command may still be running\x1b[0m"
+                    );
+                    executed.push(format!("`{cmd}`"));
+                    return Ok(ExecReport::Done {
+                        executed,
+                        outcome: ExecOutcome::Abort,
+                    });
+                }
                 CommandWait::PromptReturned => {}
             }
 
@@ -623,6 +642,18 @@ fn wait_for_command_completion(
             // interrupted が立たないまま follow-up 判定を誤る (§ 15.13)。
             if crate::input::bytes_contain_ctrl_c(&stdin_bytes) {
                 interrupted = true;
+            }
+            // Ctrl+/ は「完了待ちの打ち切り」。sniffer がプロンプトを見失った
+            // (ConPTY が末尾空白を省く / カスタムプロンプト等) 状況からの救済路で、
+            // これが無いと子プロセス死亡まで永遠に抜けられない (2026-10 実機報告:
+            // Enter 連打も Ctrl+/ も効かない)。0x1f は PowerShell では無意味・子 TUI
+            // には誤入力になるため、このチャンクは PTY へ転送せずに抜ける。
+            // anchor は更新しない (ConPTY と同期しているか不明なため)。
+            if crate::input::bytes_contain_ctrl_slash(&stdin_bytes) {
+                debug_log(&format!(
+                    "exec wait aborted by Ctrl+/: chunks={chunk_count} interrupted={interrupted}"
+                ));
+                return Ok(CommandWait::WaitAborted);
             }
             pty.write(&stdin_bytes)?;
         }

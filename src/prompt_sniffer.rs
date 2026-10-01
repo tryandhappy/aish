@@ -48,8 +48,13 @@ impl PromptSniffer {
         if !last_line.ends_with(' ') {
             // Windows 実行時のみ: cmd.exe の既定プロンプト `C:\path>` は末尾空白が
             // 無いため、形 (ドライブレター始まり + `>` 終端) で特例判定する。
+            // PowerShell の `PS C:\path> ` は本来末尾空白があるが、ConPTY は最下行へ
+            // スクロールで新規出現した行の末尾空白を文字として出さずカーソル移動で
+            // 代替するため、ANSI 除去後は `PS C:\path>` (空白なし) で届くことがある
+            // (§ 15.13)。同じ形判定を `PS ` 接頭辞付きでも受理する。
             // `cfg!` の実行時定数分岐なので Unix ではデッドブランチ (挙動不変)。
-            return cfg!(windows) && is_cmd_style_prompt(last_line);
+            return cfg!(windows)
+                && (is_cmd_style_prompt(last_line) || is_powershell_style_prompt(last_line));
         }
         let before_space = last_line.trim_end_matches(' ');
         match before_space.chars().last() {
@@ -81,6 +86,17 @@ fn is_cmd_style_prompt(last_line: &str) -> bool {
         return false;
     }
     bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/')
+}
+
+/// PowerShell 既定プロンプト (`PS C:\path>`) の形か: `PS ` 接頭辞の残りが cmd 形。
+/// ConPTY が末尾空白を省いた場合の救済で、`matches_prompt` が Windows 実行時のみ併用する。
+/// UNC / プロバイダ形 (`PS Microsoft.PowerShell.Core\FileSystem::\\srv\share>`) や
+/// oh-my-posh 等のカスタムプロンプトは対象外 (既知の制約)。cmd 形と同じく
+/// `record_match` の学習対象にはしない。純関数として切り出し、テストは両 OS で走らせる。
+fn is_powershell_style_prompt(last_line: &str) -> bool {
+    last_line
+        .strip_prefix("PS ")
+        .is_some_and(is_cmd_style_prompt)
 }
 
 #[cfg(test)]
@@ -268,10 +284,40 @@ mod tests {
         assert!(!is_cmd_style_prompt(""));
     }
 
+    #[test]
+    fn powershell_style_prompt_shape() {
+        // ConPTY が末尾空白を省いた PowerShell 既定形 — 純関数は両 OS でこの判定
+        assert!(is_powershell_style_prompt("PS C:\\Users\\foo>"));
+        assert!(is_powershell_style_prompt("PS C:\\>"));
+        assert!(is_powershell_style_prompt("PS d:/work>"));
+        // 末尾空白が残っていても形としては真 (matches_prompt は通常規則で先に拾う)
+        assert!(is_powershell_style_prompt("PS C:\\Users\\foo> "));
+        // 接頭辞は大文字 `PS ` 固定。cmd 形そのものは ps 関数では偽 (cmd 関数が担当)
+        assert!(!is_powershell_style_prompt("ps c:\\>"));
+        assert!(!is_powershell_style_prompt("C:\\Users\\foo>"));
+        // 空白なし `PS>` / UNC プロバイダ形 / 出力途中の行は誤検出しない
+        assert!(!is_powershell_style_prompt("PS>"));
+        assert!(!is_powershell_style_prompt("PS "));
+        assert!(!is_powershell_style_prompt(
+            "PS Microsoft.PowerShell.Core\\FileSystem::\\\\srv\\share>"
+        ));
+        assert!(!is_powershell_style_prompt("PS C:\\>echo done"));
+        assert!(!is_powershell_style_prompt(""));
+    }
+
     #[cfg(windows)]
     #[test]
     fn matches_cmd_prompt_without_trailing_space_on_windows() {
         assert!(fed(b"C:\\Users\\foo>").matches_prompt());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn matches_powershell_prompt_without_trailing_space_on_windows() {
+        // ConPTY が末尾空白をカーソル移動 (CUF) で代替した実受信形。ANSI 除去後は
+        // 空白なしで届く。
+        assert!(fed(b"wsl output\r\nPS C:\\Users\\foo>\x1b[26C").matches_prompt());
+        assert!(fed(b"PS C:\\Users\\foo>").matches_prompt());
     }
 
     #[cfg(unix)]
@@ -279,5 +325,6 @@ mod tests {
     fn cmd_shape_is_dead_branch_on_unix() {
         // Unix では特例が効かない (挙動バイト不変の保証)
         assert!(!fed(b"C:\\Users\\foo>").matches_prompt());
+        assert!(!fed(b"PS C:\\Users\\foo>").matches_prompt());
     }
 }

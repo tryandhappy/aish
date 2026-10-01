@@ -373,11 +373,26 @@ impl ByteSource for SliceSource<'_> {
 /// win32-input-mode 込みで既に対応済み) にバッファを再生させ `Tok::Ctrl(0x03)` の
 /// 有無で判定することで、生バイトでも win32-input-mode 経由でも同じ経路で拾う。
 pub fn bytes_contain_ctrl_c(bytes: &[u8]) -> bool {
+    bytes_contain_ctrl(bytes, 0x03)
+}
+
+/// バイト列に Ctrl+/ (0x1f、aish のエントリキー) 相当のキー入力が含まれるかを判定する。
+///
+/// `bytes_contain_ctrl_c` と同じ経路 (生 0x1f / win32-input-mode の VK_OEM_2 or
+/// uChar 0x1f,0x2f) で拾う。コマンド実行完了待ち (`conversation.rs` の
+/// `wait_for_command_completion`) で、プロンプト検出が成立しない状況からの
+/// 「待機打ち切り」キーとして使う (§ 15.13)。
+pub fn bytes_contain_ctrl_slash(bytes: &[u8]) -> bool {
+    bytes_contain_ctrl(bytes, 0x1f)
+}
+
+/// `next_event` にバッファを再生させて `Tok::Ctrl(ctrl)` の有無を返す共通実装。
+fn bytes_contain_ctrl(bytes: &[u8], ctrl: u8) -> bool {
     let mut src = SliceSource { bytes, pos: 0 };
     loop {
         match next_event(&mut src).tok {
             Tok::Eof => return false,
-            Tok::Ctrl(0x03) => return true,
+            Tok::Ctrl(c) if c == ctrl => return true,
             _ => {}
         }
     }
@@ -746,6 +761,25 @@ mod tests {
         assert!(bytes_contain_ctrl_c(
             b"\x1b[65;30;97;1;0;1_\x1b[67;46;3;1;8;1_"
         ));
+    }
+
+    #[test]
+    fn bytes_contain_ctrl_slash_detects_raw_and_win32_input_mode() {
+        // 生 0x1f (US 配列 / conhost 正規化後)
+        assert!(bytes_contain_ctrl_slash(b"\x1f"));
+        assert!(bytes_contain_ctrl_slash(b"abc\x1fdef"));
+        assert!(!bytes_contain_ctrl_slash(b"abcdef"));
+        assert!(!bytes_contain_ctrl_slash(b""));
+        // win32-input-mode: VK_OEM_2 + Ctrl / uChar=0x1f / uChar=0x2f (JIS)
+        assert!(bytes_contain_ctrl_slash(b"\x1b[191;53;0;1;8;1_"));
+        assert!(bytes_contain_ctrl_slash(b"\x1b[0;0;31;1;8;1_"));
+        assert!(bytes_contain_ctrl_slash(b"\x1b[0;0;47;1;8;1_"));
+        // Ctrl を伴わない `/` 単体 (uChar=0x2f, Cs=0) や Ctrl+C は検出しない
+        assert!(!bytes_contain_ctrl_slash(b"\x1b[191;53;47;1;0;1_"));
+        assert!(!bytes_contain_ctrl_slash(b"\x1b[67;46;3;1;8;1_"));
+        assert!(!bytes_contain_ctrl_slash(b"\x03"));
+        // 逆に Ctrl+C 判定は Ctrl+/ を拾わない
+        assert!(!bytes_contain_ctrl_c(b"\x1f"));
     }
 
     #[test]
