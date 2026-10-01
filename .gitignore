@@ -28,5 +28,8 @@ Thumbs.db
 # AISH_DEBUG_PTY=1 の生 PTY ダンプ (ローカル調査用)
 pty.log
 
+# AISH_DEBUG_KEYS=1 の生キーダンプ (ローカル調査用)
+keys*.log
+
 # ローカルの作業用ビルドディレクトリ
 /target-wip/
