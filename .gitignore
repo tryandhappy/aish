@@ -24,3 +24,9 @@
 # OS
 .DS_Store
 Thumbs.db
+
+# AISH_DEBUG_PTY=1 の生 PTY ダンプ (ローカル調査用)
+pty.log
+
+# ローカルの作業用ビルドディレクトリ
+/target-wip/
