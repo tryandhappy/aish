@@ -15,9 +15,11 @@ const EFFORT_DEFAULTS: &[&str] = &["low", "medium", "high", "xhigh"];
 /// `/model` ピッカーの組み込み既定。通常は `grok models` の実測パース
 /// (`available_models`) を使い、未ログイン/取得失敗時のみこの best-effort スナップショットに
 /// fallback する (更新にリリースが要る)。grok 1.0.25 / grok.com アカウントで実在確認 (2026-09)。
+/// 2026-11: docs.x.ai/docs/models に載った `grok-4.7` (2026-09-21、effort low/medium/high/xhigh、
+/// 既定 high) を先頭に追加。4.5 は xhigh 非対応 (high 扱い)。
 /// xAI の `<name>-latest` エイリアスは modelname 単位でしか解決せず (grok-4-latest は 4.5/4.6 に
 /// ならない)、改番で陳腐化回避に効かないため撤回済み (SPEC § 15.12)。
-const MODEL_DEFAULTS: &[&str] = &["grok-4.6", "grok-4.5"];
+const MODEL_DEFAULTS: &[&str] = &["grok-4.7", "grok-4.6", "grok-4.5"];
 
 /// `grok models` の出力から model slug だけを取り出す (純関数、golden test 対象)。
 ///

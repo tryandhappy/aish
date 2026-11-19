@@ -160,7 +160,7 @@ aish --ai gemini
 # install: curl -fsSL https://antigravity.google/cli/install.sh | bash
 
 aish --ai antigravity
-aish --ai antigravity --model gemini-3-pro --effort high
+aish --ai antigravity --model gemini-4-argon --effort high
 ```
 
 ### Qwen
@@ -180,17 +180,17 @@ aish --ai claude --model opus --effort xhigh
 
 # Claude Code Usage
 aish --ai claude \
-  --model sonnet|opus|haiku|best|claude-opus-4-8|sonnet[1m]|opus[1m] \
+  --model sonnet|opus|haiku|fable|best|claude-opus-5-5|sonnet[1m]|opus[1m] \
   --effort low|medium|high|xhigh|max|ultracode
 
 # Codex
-aish --ai codex --model gpt-5.6-sol
-aish --ai codex --model gpt-5.6-sol --effort xhigh
+aish --ai codex --model gpt-6.2-sol
+aish --ai codex --model gpt-6.2-sol --effort xhigh
 
 ## Codex Usage
 aish --ai \
-  codex --model gpt-5.6-sol|gpt-5.6-terra|gpt-5.5 \
-  --effort low|medium|high|xhigh
+  codex --model gpt-6.2-sol|gpt-6.2-astra|gpt-6.1-sol|gpt-6-luna \
+  --effort minimal|low|medium|high|xhigh|max|ultra
 ```
 
 

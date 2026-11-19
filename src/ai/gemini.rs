@@ -8,12 +8,15 @@ use crate::config::{AiConfig, LogConfig, OptionLists};
 const MAX_HISTORY_TURNS: usize = 8;
 
 /// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort。更新はリリース必要。
-/// 2026-09 現況: gemini-3.8-flash が GA (2026-09-02)。Pro は 3.1-pro-preview が CLI 露出の最新
-/// (3.5 Pro は未リリース)。2.5 系は access-limited legacy 化したため 3.5-flash-lite へ差し替え。
+/// 2026-11 現況 (aistudio.google.com/docs/models + gemini-cli 0.69.0 同梱 slug): Flash は
+/// gemini-3.8-flash / gemini-3.6-flash が Stable、Flash-Lite は gemini-3.5-flash-lite、Pro は
+/// 3.1-pro-preview が CLI 露出の最新。Gemini 4 系 (argon 等) は Gemini CLI 側が「最適化していない、
+/// Antigravity を使え」と案内しているため gemini backend には載せない (antigravity 側に置く)。
+/// 2.5 系は 2026-12-01 に 3.5-flash-lite / 3.8-flash へ自動ルーティングされる。
 const MODEL_DEFAULTS: &[&str] = &[
     "gemini-3.8-flash",
     "gemini-3.1-pro-preview",
-    "gemini-3.7-flash",
+    "gemini-3.6-flash",
     "gemini-3.5-flash-lite",
 ];
 

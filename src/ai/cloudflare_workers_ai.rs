@@ -22,14 +22,16 @@ const ENV_MODEL: &str = "CLOUDFLARE_MODEL";
 const DEFAULT_MODEL: &str = "@cf/zai-org/glm-5.3-flash";
 
 /// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort。更新はリリース必要。
-/// 2026-09 現況: Z.ai GLM が 5.3 / 5.3-flash / 5.2 へ更新、deepseek-v4 系が 2026-08-26 changelog で追加。
-/// gpt-oss-120b は現行維持。全一覧は developers.cloudflare.com/workers-ai/models/。
+/// 2026-11 現況 (developers.cloudflare.com/workers-ai/models/ カタログ実確認): GLM 5.3 系は据え置き、
+/// deepseek は v4.1-flash-1017 が最新、qwen3.8-27b / kimi-k2.7-code を追加。gpt-oss-120b は現行維持。
+/// glm-5.2 は上位版があるため落とした。
 const MODEL_DEFAULTS: &[&str] = &[
     "@cf/zai-org/glm-5.3-flash",
     "@cf/zai-org/glm-5.3",
-    "@cf/deepseek-ai/deepseek-v4-pro-0813",
+    "@cf/deepseek-ai/deepseek-v4.1-flash-1017",
+    "@cf/qwen/qwen3.8-27b",
+    "@cf/moonshotai/kimi-k2.7-code",
     "@cf/openai/gpt-oss-120b",
-    "@cf/zai-org/glm-5.2",
 ];
 
 /// Cloudflare Workers AI backend。

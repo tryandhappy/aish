@@ -5,7 +5,9 @@ use super::common::{
 use super::types::{AiBackend, AiError, AiRequest, AiResponse};
 use crate::config::{AiConfig, LogConfig, OptionLists};
 
-/// `/effort` ピッカーの組み込み既定 (config 未設定時)。claude CLI の `--effort`。
+/// `/effort` ピッカーの組み込み既定 (config 未設定時)。claude CLI の `--effort`
+/// (claude 2.1.328 `--help` 実測: low/medium/high/xhigh/max。`ultracode` は effort 値でなく
+/// ultracode モードの有効化トグルなので列挙しない)。
 const EFFORT_DEFAULTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 
 /// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort
@@ -21,13 +23,14 @@ const MODEL_DEFAULTS: &[&str] = &[
     "sonnet",
     "haiku",
     "fable",
-    // 現状把握しているフルネーム (2026-09 時点の best-effort スナップショット)
+    // 現状把握しているフルネーム (2026-11 時点の best-effort スナップショット、
+    // code.claude.com/docs/en/model-config の例示名に準拠)
+    "claude-fable-5-2",
     "claude-opus-5-5",
+    "claude-sonnet-5-5",
+    "claude-haiku-5-5",
     "claude-opus-5",
-    "claude-sonnet-5",
     "claude-fable-5-1",
-    "claude-opus-4-8",
-    "claude-haiku-4-5",
 ];
 
 pub struct ClaudeBackend {

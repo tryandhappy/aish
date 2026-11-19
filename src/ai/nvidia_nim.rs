@@ -17,16 +17,20 @@ const ENV_MODEL: &str = "NVIDIA_MODEL";
 const API_URL: &str = "https://integrate.api.nvidia.com/v1/chat/completions";
 
 /// model 未指定時の既定。広く使える instruct モデル (実機検証済み)。
-const DEFAULT_MODEL: &str = "meta/llama-3.3-70b-instruct";
+/// 2026-11: 旧既定 `meta/llama-3.3-70b-instruct` が公開 `GET /v1/models` カタログから消えたため、
+/// 同カタログに載っている軽量 nemotron へ変更 (`nvidia/llama-3.3-nemotron-super-49b-v1.5` /
+/// `nvidia/nemotron-3-super-120b-a12b` も同時に消滅)。
+const DEFAULT_MODEL: &str = "nvidia/nemotron-3.5-lightning-30b-a3b";
 
 /// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort。更新はリリース必要。
 /// 全一覧は `GET /v1/models` (config の models_command 例を参照)。
-/// 2026-08 現況: nemotron-3.5-lightning (2026-08-11, slug 確認済み) を追加。
+/// 2026-11 現況: 公開 `GET /v1/models` (key 無し) で実在確認した nemotron 4 種に総入れ替え
+/// (super-vl 120B は 2026-10-15 公開、ultra 550B は 2026-06-04 公開)。
 const MODEL_DEFAULTS: &[&str] = &[
-    "meta/llama-3.3-70b-instruct",
     "nvidia/nemotron-3.5-lightning-30b-a3b",
-    "nvidia/llama-3.3-nemotron-super-49b-v1.5",
-    "nvidia/nemotron-3-super-120b-a12b",
+    "nvidia/nemotron-3.5-super-vl-120b-a12b",
+    "nvidia/nemotron-3-ultra-550b-a55b",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
 ];
 
 /// NVIDIA NIM backend (build.nvidia.com / integrate.api.nvidia.com)。
@@ -228,18 +232,18 @@ mod tests {
     #[test]
     fn set_model_overrides() {
         let mut backend = NvidiaNimBackend::new(&AiConfig::default(), &LogConfig::default());
-        backend.set_model(Some("nvidia/llama-3.3-nemotron-super-49b-v1.5"));
-        assert_eq!(
-            backend.resolve_model(),
-            "nvidia/llama-3.3-nemotron-super-49b-v1.5"
-        );
+        backend.set_model(Some("nvidia/nemotron-3-ultra-550b-a55b"));
+        assert_eq!(backend.resolve_model(), "nvidia/nemotron-3-ultra-550b-a55b");
     }
 
     #[test]
     fn body_is_openai_compatible_with_max_tokens() {
-        let body: serde_json::Value =
-            serde_json::from_str(&build_body("meta/llama-3.3-70b-instruct", "hello")).unwrap();
-        assert_eq!(body["model"], "meta/llama-3.3-70b-instruct");
+        let body: serde_json::Value = serde_json::from_str(&build_body(
+            "nvidia/nemotron-3.5-lightning-30b-a3b",
+            "hello",
+        ))
+        .unwrap();
+        assert_eq!(body["model"], "nvidia/nemotron-3.5-lightning-30b-a3b");
         assert_eq!(body["messages"][0]["role"], "user");
         assert_eq!(body["messages"][0]["content"], "hello");
         assert_eq!(body["max_tokens"], 4096, "JSON 応答の途切れ防止に必須");

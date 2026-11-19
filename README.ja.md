@@ -184,13 +184,13 @@ aish --ai claude \
   --effort low|medium|high|xhigh|max|ultracode
 
 # Codex
-aish --ai codex --model gpt-5.6-sol
-aish --ai codex --model gpt-5.6-sol --effort xhigh
+aish --ai codex --model gpt-6.2-sol
+aish --ai codex --model gpt-6.2-sol --effort xhigh
 
 ## Codex Usage
 aish --ai \
-  codex --model gpt-5.6-sol|gpt-5.6-terra|gpt-5.5 \
-  --effort low|medium|high|xhigh
+  codex --model gpt-6.2-sol|gpt-6.2-astra|gpt-6.1-sol|gpt-6-luna \
+  --effort minimal|low|medium|high|xhigh|max|ultra
 ```
 
 

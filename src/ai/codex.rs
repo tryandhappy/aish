@@ -7,19 +7,22 @@ use super::types::{AiBackend, AiError, AiRequest, AiResponse};
 use crate::config::{AiConfig, LogConfig, OptionLists};
 
 /// `/effort` ピッカーの組み込み既定 (config 未設定時)。codex の `model_reasoning_effort`。
-const EFFORT_DEFAULTS: &[&str] = &["minimal", "low", "medium", "high", "xhigh"];
+/// 2026-11 現況 (codex-cli 0.160.0 バイナリの enum 実測): `max` (1 タスクに長時間) / `ultra`
+/// (subagent 分割) が追加。どちらも model 依存 (gpt-6-luna は max まで) で非対応 model では CLI がエラー。
+const EFFORT_DEFAULTS: &[&str] = &["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
 /// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort。更新はリリース必要。
 /// (codex 公式は ChatGPT ログイン時のモデル pin を非推奨。`/model -` で既定に戻せる。)
-/// 2026-09 現況: gpt-6 系 (astra/sol/luna) が登場 (developers.openai.com/codex/models)。
-/// gpt-5.5 は 2026-10-14 に Codex から廃止予定、gpt-5.4/gpt-5.4-mini は 2026-08-31 に廃止済みのため除外。
+/// 2026-11 現況 (learn.chatgpt.com/docs/models): 推奨は gpt-6.2-sol (日常) / gpt-6.2-astra (重作業)。
+/// gpt-6.1-terra は Codex CLI 0.159.0 以降が必要。gpt-5.5 は 2026-10-14 に Codex から廃止済み、
+/// gpt-5.4/gpt-5.4-mini は 2026-08-31 廃止済みのため 5.x 系はすべて除外。
 const MODEL_DEFAULTS: &[&str] = &[
+    "gpt-6.2-sol",
+    "gpt-6.2-astra",
+    "gpt-6.1-sol",
+    "gpt-6.1-terra",
     "gpt-6-astra",
-    "gpt-6-sol",
     "gpt-6-luna",
-    "gpt-5.6-sol",
-    "gpt-5.6-terra",
-    "gpt-5.6-luna",
 ];
 
 /// codex の自律エージェント挙動を無効化するための feature 一覧。

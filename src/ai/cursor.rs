@@ -11,11 +11,15 @@ use crate::config::{AiConfig, LogConfig, OptionLists};
 /// slug は dash 形式 (`cursor-agent --help` の実例 `claude-opus-4-8`)。composer-2.5 は要実測。
 /// `cursor-agent models` (要 auth) で一覧取得可能だが出力形式未実測のため組み込み自動取得はしない
 /// (config の `models_command` で任意設定は可能 — SPEC § 15.12)。
+/// 2026-11 現況: cursor-agent 2026.11.19 配布物に `composer-2.5` / `claude-opus-5-5` /
+/// `claude-sonnet-5-5` の slug を確認。OpenAI は cursor.com/docs/models 上 GPT-5.6 系が最新で
+/// gpt-6 系は提供されていないため `gpt-5.6-sol` に戻す (slug は dash 形式推定)。
 const MODEL_DEFAULTS: &[&str] = &[
     "auto",
     "composer-2.5",
     "claude-opus-5-5",
-    "gpt-6-sol",
+    "claude-sonnet-5-5",
+    "gpt-5.6-sol",
     "gemini-3.1-pro",
 ];
 

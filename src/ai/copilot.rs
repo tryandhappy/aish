@@ -9,17 +9,18 @@ use crate::config::{AiConfig, LogConfig, OptionLists};
 const EFFORT_DEFAULTS: &[&str] = &["none", "low", "medium", "high", "xhigh", "max"];
 
 /// `/model` ピッカーの組み込み既定 (config 未設定時)。値は流動的なので best-effort。更新はリリース必要。
-/// 2026-09 現況スナップショット (copilot 未インストールのため slug は docs.github.com の
-/// supported-models 準拠の best-effort)。copilot は Anthropic/Gemini を dot 形式で持つ
-/// (`claude-opus-5.5`/`gemini-3.7-flash`)。CLI に auto model selection もあるが headless での
-/// `--model auto` 可否が未実測なので採用見送り。claude-fable 系は supported-models 未掲載のため除外。
+/// 2026-11 現況スナップショット (copilot 未インストールのため slug は docs.github.com の
+/// supported-models の表示名 + 公式 `--model` 例 (`claude-haiku-4.5` / `gpt-6-astra`) から
+/// 組み立てた best-effort)。copilot は Anthropic/Gemini を dot 形式 (`claude-opus-5.5`)、
+/// OpenAI を dash 形式 (`gpt-6.2-sol`) で持つ。CLI に auto model selection もあるが headless での
+/// `--model auto` 可否が未実測なので採用見送り。Claude Opus 5 は supported-models から消えたため除外。
 const MODEL_DEFAULTS: &[&str] = &[
     "claude-opus-5.5",
-    "claude-sonnet-5",
-    "claude-opus-5",
-    "gpt-6-sol",
-    "gpt-5.6-sol",
-    "gemini-3.7-flash",
+    "claude-sonnet-5.5",
+    "claude-haiku-5.5",
+    "gpt-6.2-sol",
+    "gpt-6-astra",
+    "gemini-3.8-flash",
     "grok-4.7",
 ];
 

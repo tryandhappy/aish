@@ -7,18 +7,23 @@ use crate::config::{AiConfig, LogConfig, OptionLists};
 
 const MAX_HISTORY_TURNS: usize = 8;
 
-/// `/effort` ピッカーの組み込み既定 (config 未設定時)。agy CLI の `--effort low|medium|high`。
-const EFFORT_DEFAULTS: &[&str] = &["low", "medium", "high"];
+/// `/effort` ピッカーの組み込み既定 (config 未設定時)。agy CLI の `--effort`。
+/// 2026-11 現況: `agy --help` が `low|medium|high|xhigh|max` を列挙 (公開 help ダンプ準拠、
+/// 実機未確認の best-effort。無効値は agy 側がエラーにする)。
+const EFFORT_DEFAULTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 
 /// `/model` ピッカーの組み込み既定 (config 未設定時)。agy は Gemini CLI の後継で
 /// Gemini 系モデルを使う。値は流動的なので best-effort (`agy models` で最新を確認)。更新はリリース必要。
-/// 2026-09 現況: gemini backend とミラー (slug 自体は未検証 — SPEC § 15.10)。effort は native
-/// `--effort` で持つため、agy が model slug に effort を焼く形式でも素の gemini slug を使う。
+/// 2026-11 現況: Antigravity のピッカーは Gemini 4 (Argon=AI Pro 以上 / Hydrogen=全プラン /
+/// Carbon=AI Ultra) と Gemini 3.8 Flash を提示。slug は Gemini API (aistudio.google.com/docs/models)
+/// の ID をそのまま採る (agy での slug 自体は未検証 — SPEC § 15.10)。effort は native `--effort`
+/// で持つため、agy が model slug に effort を焼く形式でも素の gemini slug を使う。
+/// Claude Opus/Sonnet 5.5 も選べるが agy 側 slug が不明のため載せない。
 const MODEL_DEFAULTS: &[&str] = &[
+    "gemini-4-argon",
+    "gemini-4-hydrogen",
     "gemini-3.8-flash",
     "gemini-3.1-pro-preview",
-    "gemini-3.7-flash",
-    "gemini-3.5-flash-lite",
 ];
 
 /// Google Antigravity CLI backend (`agy`)。Gemini CLI の後継 (2026、`--ai antigravity`)。
@@ -172,7 +177,10 @@ mod tests {
     fn effort_defaults_present_without_config() {
         // agy は native `--effort` 対応なので effort ピッカーにも候補が出る (gemini/qwen と違う点)。
         let backend = AntigravityBackend::new(&AiConfig::default(), &LogConfig::default());
-        assert_eq!(backend.available_efforts(), vec!["low", "medium", "high"]);
+        assert_eq!(
+            backend.available_efforts(),
+            vec!["low", "medium", "high", "xhigh", "max"]
+        );
     }
 
     #[test]
