@@ -1286,7 +1286,15 @@ fn show_minibuffer(
 
     match result {
         Some(text) if text.trim().is_empty() => {
-            // 空 Enter → 何もしない。打ちかけがあれば画面に残す (ユーザが手で消す)。
+            // 空 Enter → "continue" とみなして AI に問い合わせる (ユーザ要望 2026-11)。
+            // 空入力なので ↑↓ プロンプト履歴には追加しない (下の Some(text) アームと
+            // 違う点)。エコーだけ出して通常の AiPrompt と同じ経路で送る。
+            let continue_text = String::from("continue");
+            let _ = writeln!(stdout);
+            let _ = write!(stdout, "{aish_label}{continue_text}\x1b[K\x1b[0m");
+            let _ = writeln!(stdout);
+            let _ = stdout.flush();
+            let _ = tx.send(InputEvent::AiPrompt(continue_text));
         }
         Some(text) => {
             // 履歴に追加（重複は追加しない）。新規エントリなら永続ファイルにも追記する。
@@ -1318,8 +1326,8 @@ fn show_minibuffer(
             // bash の打ちかけ入力消去 (Ctrl+A + Ctrl+K) はここでは送らない。
             // 初回コマンド承認の直前 (confirm_and_execute) と AI 対話終了時
             // (run() 末尾の refresh_prompt) で送られるので、ここで重ねて送らない。
-            // (= AI に質問した経路では対話終了時に打ちかけは消える。温存されるのは
-            //  minibuffer を空 Enter で抜けた場合だけ。)
+            // (= AI に質問した経路では対話終了時に打ちかけは消える。空 Enter も
+            //  "continue" として AI へ問い合わせる経路なので同様に消える。)
             let _ = tx.send(InputEvent::AiPrompt(text));
         }
         None => {

@@ -73,7 +73,8 @@ CLI SSH + AI (Claude Code) ツール。クライアント側の Claude Code か�
 ### 4.2 aishプロンプト（ミニバッファ）
 - `Ctrl+/` (0x1F) で開く最下行入力欄。`[aish] ` ラベル + 入力テキスト。表示中は `MINIBUFFER_ACTIVE` で PTY 描画抑制（リング記録は継続）。
 - 確定時: `[aish] {text}` を各論理行の先頭ラベル付きでエコー → 履歴追加（直前と同一なら追加せず）→ `InputEvent::AiPrompt(text)`。
-- キャンセル経路: 単独 ESC / Ctrl+C / Ctrl+/ / 入力が `exit` のまま Enter。空 Enter は無操作（ステータスバー復元のみ）。
+- **空 Enter（空白のみ含む）は `continue` とみなして AI に問い合わせる**（2026-11 ユーザ要望）。`[aish]continue` をエコーし `InputEvent::AiPrompt("continue")` を送る。**空入力なので ↑↓ プロンプト履歴には追加しない**（通常確定との差分はこの 1 点）。送信文字列は英語固定 `continue`。
+- キャンセル経路: 単独 ESC / Ctrl+C / Ctrl+/ / 入力が `exit` のまま Enter。
 - 開く直前にシェル側コマンド入力中（`at_line_start == false`）なら、キャンセル/確定時に `0x03` を PTY に送り部分入力を破棄。
 
 ### 4.3 マルチライン入力
@@ -515,7 +516,7 @@ backend = "nvidia"     # NVIDIA NIM (認証は環境変数: NVIDIA_API_KEY)
 ### 15.5 打ちかけ消去 / `refresh_prompt`
 
 - **打ちかけ消去（Ctrl+A+Ctrl+K = `0x01 0x0b`）は `PtyHandler::kill_line()` / `refresh_prompt()` にカプセル化し、リテラルを `pty_handler.rs` 以外に書かない**（grep で機械検査可能に保つ）。消去は AI 提案の「最初の実行」直前 1 回だけ（`confirm_and_execute` の `executed.is_empty()`）。minibuffer 確定（質問送信）時は送らない。
-- **リフレッシュ改行（slash 処理後 / AI 対話終了後 / minibuffer キャンセル）は必ず `refresh_prompt()`（行消去→改行）。素の `pty.write(b"\n")` は Ctrl+/ 前の打ちかけ（既に readline に到達済み）を submit する**（= 未承認コマンド実行。信頼の根幹）。`0x03` でなく `0x01,0x0b` なのは SIGINT を発火させないため（vim/top を kill しない）。非 readline プログラムに `^A^K` リテラルが流れる副作用は SIGINT より穏当。**打ちかけ温存は minibuffer を空 Enter で抜けた場合だけ**（改行を送らない）。消去側 write エラーは握りつぶし改行側 Result のみ返す。
+- **リフレッシュ改行（slash 処理後 / AI 対話終了後 / minibuffer キャンセル）は必ず `refresh_prompt()`（行消去→改行）。素の `pty.write(b"\n")` は Ctrl+/ 前の打ちかけ（既に readline に到達済み）を submit する**（= 未承認コマンド実行。信頼の根幹）。`0x03` でなく `0x01,0x0b` なのは SIGINT を発火させないため（vim/top を kill しない）。非 readline プログラムに `^A^K` リテラルが流れる副作用は SIGINT より穏当。消去側 write エラーは握りつぶし改行側 Result のみ返す。（旧仕様では minibuffer を空 Enter で抜けると打ちかけを温存していたが、2026-11 に空 Enter=`continue` 問い合わせへ変更したため温存ケースは消滅し、AI 対話経路で通常どおり消える。）
 - **AI 対話開始直前（`AiConversation::run` 冒頭、`get_unsent_for` 直前）に打ちかけを消去してから drain**。実カーソル == readline カーソルはこの瞬間だけ（DSR 絶対復元直後・AI 出力前）なので、ここでしか正しく消せない。入れないと折り返し打ちかけ + `n` キャンセルで bash の `ESC[A` 上移動が `Exec?` 行を上書きする（過去バグ）。消去 redisplay バイトは表示せず drain して捨てる（cursor 制御を流すと AI 出力開始位置がずれる）が `ring_buffer` には追記（不変条件）。`sleep(150ms)` は redisplay 到着待ち。**撤去時は折り返し打ちかけ + n キャンセルを pyte 等で必ず再検証**。
 
 ### 15.6 PTY drain / 入力スレッド再開

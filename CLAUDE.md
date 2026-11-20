@@ -52,6 +52,7 @@ AI コマンド実行（§ 15.3, 15.7）:
 
 minibuffer / 打ちかけ（§ 15.4, 15.5）:
 - aishプロンプト表示中は PTY 描画を抑制（`MINIBUFFER_ACTIVE`。リングバッファ記録は継続）。
+- **aishプロンプトの空 Enter（空白のみ含む）は `continue`（英語固定）とみなして AI に問い合わせる**（`show_minibuffer` の `text.trim().is_empty()` アームで `AiPrompt("continue")` を送る。2026-11 ユーザ要望。§ 4.2）。**エコーは出すが ↑↓ プロンプト履歴には追加しない**（空入力のため）。無操作に戻さない。
 - **`show_minibuffer` の scroll は cursor を実画面最下行に置いた全画面 LF scroll。DECSTBM region は使わない**。cursor 復元は絶対座標。**shrink branch の行クリアは撤去しない**。
 - **minibuffer キャンセルは `InputEvent::MinibufferCancelled` → main loop の `refresh_prompt`**（打ちかけは消えるが未承認 submit はしない）。`show_minibuffer` 側は stdout に `\n` を出さない。
 - minibuffer は bracketed paste マーカーを honor。aish 自身は `ESC[?2004h` を出さない（端末状態を変えない原則）。
