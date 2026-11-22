@@ -772,9 +772,10 @@ fn run(args: AishArgs) -> Result<ExitInfo, Box<dyn std::error::Error>> {
                     }
                     ui::passthrough_read(&input_tx, &input_bg, &input_aish_label);
                 }
-                ui::InputRequest::ReadConfirmKey => {
-                    // Y/n/a 1 キー即確定。None は Ctrl+C / Ctrl+D / ESC = 全キャンセル。
-                    let event = match ui::read_confirm_key() {
+                ui::InputRequest::ReadConfirmKey { has_remaining } => {
+                    // y/n/A 1 キー即確定。None は Ctrl+C / Ctrl+D / ESC = 全キャンセル。
+                    // has_remaining で Enter の意味を切り替える (残あり=All / 最後=Yes)。
+                    let event = match ui::read_confirm_key(has_remaining) {
                         Some(choice) => ui::InputEvent::Confirm(choice),
                         None => ui::InputEvent::ReadLineCancelled,
                     };
@@ -994,8 +995,9 @@ KEYS (起動後):
     Enter / Alt+Enter      aish プロンプトで送信 / 改行挿入 (ESC / Ctrl+C でキャンセル)
     Up / Down              aish プロンプトの履歴を呼び出す (~/.aish/history に永続化)
 
-  提案コマンドの確認 (Exec? <cmd> [Y/n/a/q/e]):
-    y / Space / Enter      このコマンドを実行 (Enter がデフォルト)
+  提案コマンドの確認 (Exec? <cmd> [y/n/A/q/e]):
+    y / Space              このコマンドを実行 (1 件だけ)
+    Enter                  残コマンドありなら残り全部を自動承認 (= a)、最後/単一なら 1 件実行
     n / ESC                このコマンドをスキップ
     a                      このコマンドを実行し、残りを自動承認
     q                      残りを中止 (AI に結果を報告)

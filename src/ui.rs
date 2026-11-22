@@ -102,11 +102,14 @@ pub fn cleanup_terminal_indicator() {
 
 pub enum InputRequest {
     Passthrough(String),
-    /// Y/n/a 確認プロンプト用。1 キー (Enter 不要) で確定する。
+    /// y/n/A 確認プロンプト用。1 キー (Enter 不要) で確定する。
     /// IME 経由の全角・ひらがな確定文字 (`ｙ` / `ｎ` / `あ` 等) も受理する。
-    /// Enter のデフォルトは常に Yes (このコマンド 1 件だけ実行)。残り自動承認 (All) は
-    /// 明示的に `a`/`A` キーを押して選ぶ (安全側 = 意図しない一括承認を防ぐ)。
-    ReadConfirmKey,
+    /// `has_remaining` = 残コマンドがあるか (= このコマンドが最後ではない)。Enter の
+    /// 意味をここで切り替える: 残あり → All (残り全部を自動承認)、最後/単一 → Yes
+    /// (このコマンド 1 件だけ実行)。Space は文脈に依らず常に Yes (1 件だけ)。
+    ReadConfirmKey {
+        has_remaining: bool,
+    },
 }
 
 pub fn build_color_start(color: &str) -> String {
@@ -447,16 +450,16 @@ fn build_confirm_prompt(
     confirm_color: &str,
     show_help: bool,
 ) -> String {
-    // 残コマンドがある (= 最後ではない) ときだけ [a]/[q] を出す。
-    // a = 残り全部を自動承認 (apt / sudo の慣習)、q = 残りを中止。
-    // デフォルトは常に Yes (このコマンド 1 件だけ実行) なので Y を大文字にして示す。
-    // a は明示押下でのみ効くので小文字のまま (Enter に載せない = 安全側)。
-    // 最後のコマンドでは「残り」が無いので a も q も隠して [Y/n/e] に畳む
-    // (q は押せば効くが最後では n とほぼ等価)。
+    // 残コマンドがある (= 最後ではない) ときだけ [A]/[q] を出す。
+    // A = 残り全部を自動承認 (apt / sudo の慣習)、q = 残りを中止。
+    // 残コマンドありのデフォルト (Enter) は All なので A を大文字にして示す。
+    // Space (または y) を押せばこのコマンド 1 件だけ実行する (y は小文字)。
+    // 最後のコマンドでは「残り」が無いので A も q も隠して [y/n/e] に畳む
+    // (この場合 Enter=Yes = このコマンド 1 件。q は押せば効くが最後では n とほぼ等価)。
     // e = このコマンドを編集してから再確認 (§ 15.15)。最後のコマンドでも編集は
-    // 有用なので隠さず [Y/n/e] に出す。
-    // e (編集) はキー列挙の末尾に置く (ユーザ要望 2026-09)。残コマンドありは a/q も出す。
-    let options = if index < total { "Y/n/a/q/e" } else { "Y/n/e" };
+    // 有用なので隠さず [y/n/e] に出す。
+    // e (編集) はキー列挙の末尾に置く (ユーザ要望 2026-09)。残コマンドありは A/q も出す。
+    let options = if index < total { "y/n/A/q/e" } else { "y/n/e" };
     // コマンド本文だけを危険度色にする。`Exec?` ラベルと `[options]` ブラケットは従来の
     // confirm_color を保つ (ブラケットは bold+reverse なので危険度色を当てると reverse と
     // 相まって派手になり視認性が落ちる — ユーザ指摘 2026-09。SPEC §15.7「ラベル/ブラケットは不変」)。
@@ -483,7 +486,7 @@ fn build_confirm_prompt(
     // カーソル移動が必要 = ConPTY 対策でカーソル操作を増やさない原則に反する)。
     if show_help {
         let help = if index < total {
-            "  Enter=run  n=skip  a=run all  q=abort  e=edit"
+            "  Enter=run all  Space=run  n=skip  q=abort  e=edit"
         } else {
             "  Enter=run  n=skip  e=edit"
         };
@@ -540,10 +543,10 @@ fn char_width(c: char) -> usize {
 /// 未知キー / 制御文字は無視して次のキーを待つ (打ち間違いで意図せず No に
 /// なるのを避けるため)。raw mode は ECHO off なので、マッチした文字のみ
 /// stdout に echo する。
-/// Enter のデフォルトは常に Yes (このコマンド 1 件だけ実行)。残り自動承認 (All) は
-/// `a`/`A` キーの明示押下でのみ選ぶ。
-pub fn read_confirm_key() -> Option<ConfirmChoice> {
-    read_confirm_key_impl()
+/// `has_remaining` = 残コマンドがあるか。Enter のデフォルトは残あり → All (残り全部を
+/// 自動承認)、最後/単一 → Yes (このコマンド 1 件だけ実行)。Space は常に Yes (1 件だけ)。
+pub fn read_confirm_key(has_remaining: bool) -> Option<ConfirmChoice> {
+    read_confirm_key_impl(has_remaining)
 }
 
 /// 押されたキーをそのまま `\n` 付きでターミナルに描画する。
@@ -559,11 +562,12 @@ fn echo_confirm(c: char) {
 
 /// 1 文字を Yes / No / All / Quit / なし にマッピングする。
 /// ASCII y/Y/n/N/a/A/q/Q + IME 経由の全角・ひらがな確定文字をサポート。
-/// Enter (`\n` / `\r`) と Space はデフォルト Yes 扱い。
+/// Enter と Space は文脈 (残コマンド有無) で意味が変わるため、ここでは扱わず
+/// `read_confirm_key_impl` の `Tok::Enter` / Space 分岐で判定する。
 fn match_confirm_char(c: char) -> Option<ConfirmChoice> {
     match c {
-        // Yes: ASCII / 全角小文字 / 全角大文字 / Enter / Space
-        'y' | 'Y' | 'ｙ' | 'Ｙ' | '\n' | '\r' | ' ' => Some(ConfirmChoice::Yes),
+        // Yes: ASCII / 全角小文字 / 全角大文字
+        'y' | 'Y' | 'ｙ' | 'Ｙ' => Some(ConfirmChoice::Yes),
         // No: ASCII / 全角小文字 / 全角大文字 / ひらがな「ん」(romaji "n" 確定の自然結果)
         'n' | 'N' | 'ｎ' | 'Ｎ' | 'ん' => Some(ConfirmChoice::No),
         // All: ASCII / 全角小文字 / 全角大文字 / ひらがな「あ」(romaji "a" 確定の自然結果)
@@ -576,7 +580,7 @@ fn match_confirm_char(c: char) -> Option<ConfirmChoice> {
     }
 }
 
-fn read_confirm_key_impl() -> Option<ConfirmChoice> {
+fn read_confirm_key_impl(has_remaining: bool) -> Option<ConfirmChoice> {
     // 入力の framing は crate::input に集約済み。ここは Tok を解釈するだけの薄い層。
     // Enter が制御文字フィルタに飲まれる順序トラップは next_event 側で型として解消済み。
     let mut src = StdinSource::new();
@@ -604,15 +608,24 @@ fn read_confirm_key_impl() -> Option<ConfirmChoice> {
                 echo_confirm('n');
                 return Some(ConfirmChoice::No);
             }
-            // Enter = デフォルト = 常に Yes (このコマンド 1 件だけ実行)。残り自動承認 (All) は
-            // 意図しない一括実行を避けるため Enter に載せず、明示的な `a`/`A` 押下でのみ選ぶ。
-            // 入力 char が無いのでデフォルト表記の 'Y' を echo する (prompt の大文字と一致)。
+            // Enter = デフォルト。残コマンドあり → All (残り全部を自動承認)、
+            // 最後/単一 → Yes (このコマンド 1 件だけ実行)。入力 char が無いので
+            // prompt のデフォルト表記に合わせて echo する (残あり=大文字 'A' / 最後=小文字 'y')。
             Tok::Enter => {
-                echo_confirm('Y');
+                if has_remaining {
+                    echo_confirm('A');
+                    return Some(ConfirmChoice::All);
+                }
+                echo_confirm('y');
                 return Some(ConfirmChoice::Yes);
             }
-            // マッチする文字なら確定 (Space も match_confirm_char で Yes 扱い)。
-            // 未知文字は無視して再読み取り (打ち間違いで意図せず No になる事故を避ける)。
+            // Space = 常に Yes (このコマンド 1 件だけ実行)。文脈に依らず、echo は 'y'。
+            Tok::Char(' ') => {
+                echo_confirm('y');
+                return Some(ConfirmChoice::Yes);
+            }
+            // マッチする文字なら確定。未知文字は無視して再読み取り
+            // (打ち間違いで意図せず No になる事故を避ける)。
             Tok::Char(c) => {
                 if let Some(choice) = match_confirm_char(c) {
                     echo_confirm(c);
@@ -1465,7 +1478,7 @@ mod tests {
         assert!(s.contains("rm -rf /var/log/app")); // コマンドバイトはそのまま
         assert!(s.contains("38;5;196")); // コマンドは Red 色
         assert!(s.contains("CONF")); // Exec? ラベルと [options] ブラケットは confirm_color を維持
-        assert!(s.contains("[Y/n/e]")); // 最後のコマンド (index==total)
+        assert!(s.contains("[y/n/e]")); // 最後のコマンド (index==total)
     }
 
     #[test]
@@ -1474,7 +1487,7 @@ mod tests {
         let s = build_confirm_prompt(&v, 1, 3, Some(Risk::Green), "CONF", false);
         assert!(s.contains("ls -la"));
         assert!(s.contains("38;5;108")); // Green
-        assert!(s.contains("[Y/n/a/q/e]")); // 残コマンドあり: デフォルト Yes (Y 大文字)、e は末尾
+        assert!(s.contains("[y/n/A/q/e]")); // 残コマンドあり: デフォルト All (A 大文字)、e は末尾
     }
 
     #[test]
@@ -1500,22 +1513,23 @@ mod tests {
     #[test]
     fn confirm_prompt_help_line_shown_only_when_requested() {
         let v = VettedCommand::vet("ls -la").unwrap();
-        // 残コマンドあり + show_help=true: ヘルプ行が Exec? より前に出て a/q も含む。
+        // 残コマンドあり + show_help=true: ヘルプ行が Exec? より前に出て Enter=run all / q を含む。
         let with_help = build_confirm_prompt(&v, 1, 3, Some(Risk::Green), "CONF", true);
         let help_pos = with_help.find("Enter=run").expect("help line present");
         let exec_pos = with_help.find("Exec?").expect("Exec? present");
         assert!(help_pos < exec_pos); // ヘルプはプロンプトの上
-        assert!(with_help.contains("a=run all"));
+        assert!(with_help.contains("Enter=run all")); // 残あり = Enter で残り全部
+        assert!(with_help.contains("Space=run")); // Space でこのコマンド 1 件
         assert!(with_help.contains("q=abort"));
         assert!(with_help.contains("e=edit"));
         // show_help=false ならヘルプ行は出ない。
         let without_help = build_confirm_prompt(&v, 1, 3, Some(Risk::Green), "CONF", false);
         assert!(!without_help.contains("Enter=run"));
-        // 最後/単一コマンドのヘルプは a/q を含まない (e は含む)。
+        // 最後/単一コマンドのヘルプは run all / q を含まない (e は含む)。Enter=run (1 件)。
         let last = build_confirm_prompt(&v, 1, 1, Some(Risk::Green), "CONF", true);
         assert!(last.contains("Enter=run"));
         assert!(last.contains("e=edit"));
-        assert!(!last.contains("a=run all"));
+        assert!(!last.contains("run all"));
         assert!(!last.contains("q=abort"));
     }
 
@@ -1611,10 +1625,12 @@ mod tests {
     }
 
     #[test]
-    fn match_confirm_enter_and_space_default_yes() {
-        assert_eq!(match_confirm_char('\n'), Some(ConfirmChoice::Yes));
-        assert_eq!(match_confirm_char('\r'), Some(ConfirmChoice::Yes));
-        assert_eq!(match_confirm_char(' '), Some(ConfirmChoice::Yes));
+    fn match_confirm_enter_and_space_handled_elsewhere() {
+        // Enter / Space は残コマンド有無で意味が変わるため match_confirm_char では
+        // 扱わない (read_confirm_key_impl の Tok::Enter / Space 分岐で判定)。
+        assert_eq!(match_confirm_char('\n'), None);
+        assert_eq!(match_confirm_char('\r'), None);
+        assert_eq!(match_confirm_char(' '), None);
     }
 
     #[test]
